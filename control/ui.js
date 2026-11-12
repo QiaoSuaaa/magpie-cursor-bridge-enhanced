@@ -155,6 +155,7 @@
 
   function fillSettings(values) {
     if (values?.runMode !== undefined) $('runMode').value = values.runMode;
+    if (values?.subagentMode !== undefined) $('subagentMode').value = values.subagentMode;
     for (const key of ['refreshSeconds', 'gatewayGraceSeconds', 'logLimitMB']) {
       if (values?.[key] !== undefined) $(key).value = values[key];
     }
@@ -207,8 +208,10 @@
   async function saveSettings(event) {
     event.preventDefault();
     const beforeMode = lastOverview?.settings?.values?.runMode;
+    const beforeSubagentMode = lastOverview?.settings?.values?.subagentMode;
     const body = {
       runMode: $('runMode').value,
+      subagentMode: $('subagentMode').value,
       refreshSeconds: Number($('refreshSeconds').value),
       gatewayGraceSeconds: Number($('gatewayGraceSeconds').value),
       logLimitMB: Number($('logLimitMB').value)
@@ -220,7 +223,10 @@
       const modeHint = beforeMode && beforeMode !== result.settings.runMode
         ? '运行模式已变更，引擎将在数秒内自动重启，当前对话可能中断一次；'
         : '';
-      $('settingsHint').textContent = `已保存：${modeHint}同步间隔与容错下一轮生效，日志上限下次后台启动生效`;
+      const subagentHint = beforeSubagentMode && beforeSubagentMode !== result.settings.subagentMode
+        ? '子代理模式已变更，引擎将在数秒内自动重启，下一次 Task 调用生效；'
+        : '';
+      $('settingsHint').textContent = `已保存：${modeHint}${subagentHint}同步间隔与容错下一轮生效，日志上限下次后台启动生效`;
       loadStatus({quiet: true});
     } catch (error) {
       $('settingsHint').textContent = `保存失败：${error.message}`;
@@ -234,7 +240,7 @@
     $('refresh').addEventListener('click', () => loadStatus());
     $('settingsForm').addEventListener('submit', saveSettings);
     $('resetSettings').addEventListener('click', () => {
-      const defaults = lastOverview?.settings?.defaults || {runMode: 'default', refreshSeconds: 15, gatewayGraceSeconds: 60, logLimitMB: 4};
+      const defaults = lastOverview?.settings?.defaults || {runMode: 'default', subagentMode: 'async', refreshSeconds: 15, gatewayGraceSeconds: 60, logLimitMB: 4};
       fillSettings(defaults);
       $('settingsHint').textContent = '已填入默认值，点击「保存」后生效';
     });

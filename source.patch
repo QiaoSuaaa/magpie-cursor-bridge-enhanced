@@ -117,12 +117,57 @@ index f069981..7c3e6bc 100644
      })
  }
  
+diff --git a/server/src/api/cursor/handlers.rs b/server/src/api/cursor/handlers.rs
+index 623566a..6d9fcf7 100644
+--- a/server/src/api/cursor/handlers.rs
++++ b/server/src/api/cursor/handlers.rs
+@@ -236,6 +236,15 @@ async fn bidi_handler(
+     let first_model = decoded.model_id().map(str::to_owned);
+     let conversation_id = decoded.conversation_id().map(str::to_owned);
+     let trace_metadata = decoded.trace_metadata();
++    tracing::info!(
++        request_id = %decoded.request_id,
++        conversation_id = conversation_id.as_deref().unwrap_or(""),
++        action = trace_metadata
++            .get("action_type")
++            .and_then(|value| value.as_str())
++            .unwrap_or("none"),
++        "bidi append received"
++    );
+     let trace = registry.trace(&decoded.request_id);
+     let local = if let Some(model_id) = decoded.model_id() {
+         // 插件模型 ID 只在本地有意义,永远不转发到 Cursor 官方上游。
+@@ -261,15 +270,16 @@ async fn bidi_handler(
+     } else if registry.upstream(&decoded.request_id).await {
+         false
+     } else {
+-        trace.resume();
+-        trace.request(
+-            "bidi_request",
+-            body.clone(),
+-            trace_outcome(trace_metadata, false, "missing_transport", None),
++        // Agent-host transports can open a stream with server-bound traffic
++        // (heartbeats, exec results) before any model-bearing RunRequest, and
++        // retries reuse a fresh request id after a failed append. Upstream
++        // streams always identify their model on the first append, so an
++        // unknown model-less stream is treated as local instead of rejected.
++        tracing::info!(
++            request_id = decoded.request_id,
++            "routing model-less append to BYOK provider"
+         );
+-        return Err(crate::Error::Protocol(
+-            "first BidiAppend message must select a model".into(),
+-        ));
++        true
+     };
+     if first_model.is_some() {
+         trace.begin(
 diff --git a/server/src/bin/cursor-magpie-bridge.rs b/server/src/bin/cursor-magpie-bridge.rs
 new file mode 100644
-index 0000000..23c83eb
+index 0000000..08c551e
 --- /dev/null
 +++ b/server/src/bin/cursor-magpie-bridge.rs
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,211 @@
 +//! Headless Cursor protocol bridge. No desktop/account writes or management API.
 +use std::{path::PathBuf, sync::Arc, time::Duration};
 +use cursor_server::{api, config, cursor::{prompting::{PromptAssets, PromptCompiler}, transport::TransportRegistry}, local_app::CursorHarness, model::ModelConfigInput, network::NetworkClients, plugin::{PluginRegistry, PluginRuntime}, provider::ProviderRouter, search::WebCache, store::Store};
@@ -162,20 +207,42 @@ index 0000000..23c83eb
 +            "group_name":"Magpie", "type":"openai", "base_url": c.gateway.trim_end_matches('/'),
 +            "api_key":c.key, "tooltip_data":format!("Magpie / {}",m.id), "model_id":m.id,
 +            "context_window_tokens":m.context.filter(|v| *v > 0),
-+            "custom_headers_enabled":true, "custom_headers":{"User-Agent":"cursor-magpie-bridge/0.2.6"}
++            "custom_headers_enabled":true, "custom_headers":{"User-Agent":"cursor-magpie-bridge/0.2.8"}
 +        }))?)
 +    }).collect()
 +}
 +
++/// Diagnostics go to stderr: stdout carries the ready event the supervisor
++/// parses, so log output must never share that stream. The supervisor already
++/// redirects stderr into the size-limited engine log.
++fn init_diagnostics() {
++    use tracing_subscriber::prelude::*;
++    tracing_subscriber::registry()
++        .with(
++            tracing_subscriber::EnvFilter::try_from_default_env()
++                .unwrap_or_else(|_| "cursor_server=info".into()),
++        )
++        .with(
++            tracing_subscriber::fmt::layer()
++                .with_writer(std::io::stderr)
++                .with_ansi(false),
++        )
++        .init();
++}
++
 +#[tokio::main]
 +async fn main() -> Result<(), Box<dyn std::error::Error>> {
++    init_diagnostics();
++    config::set_subagent_sync(
++        std::env::var("CURSOR_BRIDGE_SUBAGENT_MODE").as_deref() == Ok("sync"),
++    );
 +    let argument = std::env::args().nth(1);
 +    if argument.as_deref() == Some("--version") {
-+        println!("0.2.6");
++        println!("0.2.8");
 +        return Ok(());
 +    }
 +    if argument.as_deref() == Some("--help") || argument.is_none() {
-+        println!("cursor-magpie-bridge 0.2.6\nUsage: cursor-magpie-bridge --init-ca | CONNECTION.json\nRequires CURSOR_BYOK_DATA_DIR (absolute path). --init-ca never modifies certificate trust.");
++        println!("cursor-magpie-bridge 0.2.8\nUsage: cursor-magpie-bridge --init-ca | CONNECTION.json\nRequires CURSOR_BYOK_DATA_DIR (absolute path). --init-ca never modifies certificate trust.");
 +        return Ok(());
 +    }
 +    // A dedicated directory is mandatory: never open the desktop BYOK database.
@@ -313,12 +380,40 @@ index 0000000..23c83eb
 +    }
 +}
 diff --git a/server/src/config.rs b/server/src/config.rs
-index d2a9810..18bacc6 100644
+index d2a9810..abdecdc 100644
 --- a/server/src/config.rs
 +++ b/server/src/config.rs
-@@ -14,9 +14,18 @@ const DEFAULT_PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+@@ -1,5 +1,11 @@
+ //! Loads and validates process-level server configuration.
+-use std::{env, fs, net::SocketAddr, path::PathBuf, time::Duration};
++use std::{
++    env, fs,
++    net::SocketAddr,
++    path::PathBuf,
++    sync::OnceLock,
++    time::Duration,
++};
+ 
+ #[cfg(unix)]
+ use std::os::unix::fs::PermissionsExt;
+@@ -13,10 +19,33 @@ const V0049_CONFIG_FILE_NAME: &str = "config.yaml";
+ const DEFAULT_PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(60 * 60);
  const DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
  
++/// Set from `CURSOR_BRIDGE_SUBAGENT_MODE`. In sync mode every Task call is
++/// forced to `run_in_background = false`, so the client runs the subagent
++/// inline and the parent turn waits for its result. Async mode leaves the
++/// model's intent untouched and the bridge wakes the parent on completion.
++static SUBAGENT_SYNC: OnceLock<bool> = OnceLock::new();
++
++pub fn set_subagent_sync(sync: bool) {
++    let _ = SUBAGENT_SYNC.set(sync);
++}
++
++pub fn subagent_sync() -> bool {
++    *SUBAGENT_SYNC.get().unwrap_or(&false)
++}
++
  pub fn managed_data_dir() -> Result<PathBuf> {
 -    let home_dir = dirs::home_dir()
 -        .ok_or_else(|| Error::Config("cannot resolve user home directory".into()))?;
@@ -339,7 +434,7 @@ index d2a9810..18bacc6 100644
      #[cfg(unix)]
      fs::set_permissions(&data_dir, fs::Permissions::from_mode(0o700))?;
 diff --git a/server/src/cursor/checkpoint/builder.rs b/server/src/cursor/checkpoint/builder.rs
-index 704833a..ecab985 100644
+index 704833a..13ccc1d 100644
 --- a/server/src/cursor/checkpoint/builder.rs
 +++ b/server/src/cursor/checkpoint/builder.rs
 @@ -160,9 +160,8 @@ impl CheckpointBuilder {
@@ -353,6 +448,57 @@ index 704833a..ecab985 100644
          let communicate_update_states_by_parent_tool_call_id = self
              .parent_tool_call_id
              .as_ref()
+@@ -260,6 +259,50 @@ impl CheckpointBuilder {
+         }
+     }
+ 
++    /// Applies finished background-task notifications to the persisted
++    /// subagent run states. Without this the checkpoint keeps reporting
++    /// `Backgrounded` forever, which Cursor renders as "Stopped" even after a
++    /// subagent has completed.
++    pub fn record_subagent_completions(&mut self, action: &pb::BackgroundTaskCompletionAction) {
++        for completion in &action.completions {
++            if completion.kind != pb::BackgroundTaskKind::Subagent as i32
++                || completion.reason != pb::BackgroundTaskCompletionReason::TaskFinished as i32
++            {
++                continue;
++            }
++            let status = match pb::BackgroundTaskStatus::try_from(completion.status) {
++                Ok(pb::BackgroundTaskStatus::Success) => pb::SubagentRunStatus::Success,
++                Ok(pb::BackgroundTaskStatus::Error) => pb::SubagentRunStatus::Error,
++                Ok(pb::BackgroundTaskStatus::Aborted) => pb::SubagentRunStatus::Aborted,
++                _ => continue,
++            };
++            let Some(tool_call_id) = completion
++                .tool_call_id
++                .as_deref()
++                .filter(|id| !id.is_empty())
++            else {
++                continue;
++            };
++            let now = crate::cursor::tools::runtime::now_ms();
++            if let Some(state) = self
++                .base
++                .subagent_runs_by_parent_tool_call_id
++                .get_mut(tool_call_id)
++            {
++                state.status = status as i32;
++                state.completed_timestamp_ms = Some(now);
++                state.completion_reason = Some(completion.reason);
++                if let Some(agent_state) = completion
++                    .subagent_id
++                    .as_deref()
++                    .and_then(|id| self.base.subagent_states.get_mut(id))
++                {
++                    agent_state.last_used_timestamp_ms = now;
++                }
++            }
++        }
++    }
++
+     pub async fn publish(
+         &self,
+         handle: &TransportHandle,
 diff --git a/server/src/cursor/checkpoint/derived.rs b/server/src/cursor/checkpoint/derived.rs
 index dfd0151..09f46b3 100644
 --- a/server/src/cursor/checkpoint/derived.rs
@@ -371,54 +517,894 @@ index dfd0151..09f46b3 100644
          } else {
              None
          };
+diff --git a/server/src/cursor/compile/break_messages.rs b/server/src/cursor/compile/break_messages.rs
+index 82b89c8..b048d8f 100644
+--- a/server/src/cursor/compile/break_messages.rs
++++ b/server/src/cursor/compile/break_messages.rs
+@@ -20,6 +20,7 @@ use super::{context, images};
+ pub(crate) enum RuntimeAction {
+     Inject(pb::InjectContextAction),
+     UserMessage(pb::UserMessageAction),
++    BackgroundCompletion(pb::BackgroundTaskCompletionAction),
+ }
+ 
+ pub(crate) async fn compile_user_message_action(
+@@ -28,14 +29,15 @@ pub(crate) async fn compile_user_message_action(
+     compiler: &PromptCompiler,
+     blobs: &BlobSynchronizer,
+ ) -> Result<CanonicalMessage> {
+-    let user = action
++    let mut user = action
+         .user_message
+         .as_ref()
+-        .ok_or_else(|| Error::Protocol("Cursor user message action has no UserMessage".into()))?;
++        .ok_or_else(|| Error::Protocol("Cursor user message action has no UserMessage".into()))?
++        .clone();
+     if user.message_id.is_empty() {
+-        return Err(Error::Protocol(
+-            "Cursor user message action has no message_id".into(),
+-        ));
++        // Agent-host runs do not assign message ids; keep the event identity
++        // stable across retries by deriving it from the text.
++        user.message_id = format!("local:{}", BlobId::digest(user.text.as_bytes()).to_base64());
+     }
+     let mode = if user.mode == pb::AgentMode::Unspecified as i32 {
+         current_mode
+@@ -59,7 +61,7 @@ pub(crate) async fn compile_user_message_action(
+     compile(
+         format!("user-message:{}", user.message_id),
+         super::run::mode_from_proto(mode)?,
+-        user,
++        &user,
+         action.request_context.as_ref().unwrap_or(&empty_context),
+         &action_context.join("\\n\\n"),
+         compiler,
+diff --git a/server/src/cursor/compile/insert_messages.rs b/server/src/cursor/compile/insert_messages.rs
+index 8058221..9b65cb6 100644
+--- a/server/src/cursor/compile/insert_messages.rs
++++ b/server/src/cursor/compile/insert_messages.rs
+@@ -1,7 +1,10 @@
+ //! Compiles non-interrupting runtime information into append-only Messages.
+ use std::collections::BTreeMap;
+ 
+-use crate::{cursor::protocol::proto::agent::v1 as pb, Error, Result};
++use crate::{
++    cursor::{protocol::proto::agent::v1 as pb, services::blob_sync::BlobSynchronizer},
++    Error, Result,
++};
+ 
+ pub(super) const FOLLOW_UP: &str = concat!(
+     "Perform any necessary follow-up actions in response to the subagent completion above. ",
+@@ -141,6 +144,28 @@ pub(super) fn project(
+     })
+ }
+ 
++/// Compiles a completion notification into the message pair that resumes the
++/// parent conversation: the runtime event identity, the simulated user message
++/// Cursor renders, and the canonical message the model consumes.
++pub(crate) async fn compile_background_completion(
++    action: &pb::BackgroundTaskCompletionAction,
++    mode: i32,
++    request_context: &pb::RequestContext,
++    blobs: &BlobSynchronizer,
++) -> Result<(String, pb::UserMessage, crate::model::CanonicalMessage)> {
++    let projection = project(action, mode)?;
++    let event_id = projection.turn_user.message_id.clone();
++    let (message, _) = super::break_messages::compile_background(
++        event_id.clone(),
++        &projection.turn_user,
++        request_context,
++        &projection.context,
++        blobs,
++    )
++    .await?;
++    Ok((event_id, projection.turn_user, message))
++}
++
+ fn status(completion: &pb::BackgroundTaskCompletion) -> Result<pb::BackgroundTaskStatus> {
+     let status = pb::BackgroundTaskStatus::try_from(completion.status).map_err(|_| {
+         Error::Protocol(format!(
+diff --git a/server/src/cursor/compile/mod.rs b/server/src/cursor/compile/mod.rs
+index 15817cf..b7b21e2 100644
+--- a/server/src/cursor/compile/mod.rs
++++ b/server/src/cursor/compile/mod.rs
+@@ -10,4 +10,5 @@ mod run;
+ 
+ pub use action::*;
+ pub(crate) use break_messages::{compile_injection, compile_user_message_action, RuntimeAction};
++pub(crate) use insert_messages::compile_background_completion;
+ pub use run::*;
+diff --git a/server/src/cursor/compile/run.rs b/server/src/cursor/compile/run.rs
+index b3712ce..efc753c 100644
+--- a/server/src/cursor/compile/run.rs
++++ b/server/src/cursor/compile/run.rs
+@@ -43,6 +43,9 @@ pub struct CursorRunContext {
+     pub checkpoint_prompt: PromptSpec,
+     pub compacting: bool,
+     pub background_completion: bool,
++    /// Kept so a completion notification arriving on an active stream can be
++    /// compiled into the same context the initial Run used.
++    pub request_context: pb::RequestContext,
+ }
+ 
+ pub(crate) struct PrepareDependencies<'a> {
+@@ -352,6 +355,7 @@ pub(crate) async fn prepare(
+             checkpoint_prompt,
+             compacting,
+             background_completion,
++            request_context,
+         },
+     ))
+ }
+@@ -423,18 +427,22 @@ fn action(request: &pb::AgentRunRequest) -> Result<ActionProjection> {
+     };
+     match action {
+         pb::conversation_action::Action::UserMessageAction(action) => {
+-            let user = action.user_message.as_ref().ok_or_else(|| {
++            let mut user = action.user_message.as_ref().ok_or_else(|| {
+                 Error::Protocol("Cursor user message action has no UserMessage".into())
+-            })?;
++            })?.clone();
+             let mode = if user.mode == pb::AgentMode::Unspecified as i32 {
+                 conversation_mode.unwrap_or(user.mode)
+             } else {
+                 user.mode
+             };
+             if user.message_id.is_empty() {
+-                return Err(Error::Protocol(
+-                    "Cursor user message action has no message_id".into(),
+-                ));
++                // Agent-host runs do not assign message ids. Derive one from the
++                // text so a retried append stays idempotent instead of creating
++                // a duplicate turn.
++                user.message_id = format!(
++                    "local:{}",
++                    BlobId::digest(user.text.as_bytes()).to_base64()
++                );
+             }
+             if user.text.trim() == "/summarize" {
+                 return Ok(ActionProjection {
+diff --git a/server/src/cursor/conversation/command.rs b/server/src/cursor/conversation/command.rs
+index 4ba5f2b..bfb8fbd 100644
+--- a/server/src/cursor/conversation/command.rs
++++ b/server/src/cursor/conversation/command.rs
+@@ -4,7 +4,10 @@ use crate::{cursor::protocol::proto::agent::v1 as pb, Error};
+ 
+ #[derive(Debug)]
+ pub enum RunFinish {
+-    TurnCompleted,
++    /// The model turn ended and the transport waits for the next client
++    /// action. `final_text` carries the assistant's last answer so a finished
++    /// background subagent can hand its result to the parent conversation.
++    TurnCompleted { final_text: String },
+     Transport(TransportFinish),
+ }
+ 
+@@ -25,5 +28,11 @@ pub enum TransportCommand {
+         generation: u64,
+         finish: RunFinish,
+     },
++    /// A finished background subagent hands its result back to the parent
++    /// conversation. The client does not always dispatch this completion on
++    /// its own, so the bridge drives the wake-up itself.
++    WakeBackgroundCompletion {
++        action: Box<pb::BackgroundTaskCompletionAction>,
++    },
+     Disconnect,
+ }
+diff --git a/server/src/cursor/conversation/output.rs b/server/src/cursor/conversation/output.rs
+index 55dd9b6..3bcff6d 100644
+--- a/server/src/cursor/conversation/output.rs
++++ b/server/src/cursor/conversation/output.rs
+@@ -14,7 +14,8 @@ use crate::{
+             CheckpointBuilder,
+         },
+         compile::{
+-            compile_injection, compile_user_message_action, CursorRunContext, RuntimeAction,
++            compile_background_completion, compile_injection, compile_user_message_action,
++            CursorRunContext, RuntimeAction,
+         },
+         prompting::PromptCompiler,
+         protocol::events,
+@@ -243,6 +244,17 @@ impl ConversationOutput {
+                         )
+                         .await?;
+                     }
++                    RuntimeAction::BackgroundCompletion(action) => {
++                        self.forward_background_completion(
++                            action,
++                            active_round.as_ref(),
++                            &active_tool_calls,
++                            &completions,
++                            &mut interrupted_rounds,
++                            &mut interrupted_tool_calls,
++                        )
++                        .await?;
++                    }
+                 },
+                 Input::RuntimeAction(None) => {
+                     return Err(Error::Protocol("runtime action channel closed".into()));
+@@ -555,6 +567,30 @@ impl ConversationOutput {
+                                 self.handle
+                                     .emit(&codec::tool_completed(call, &completion))?;
+                                 presentation.tool_completed(&completion);
++                                if let Some(pb::tool_call::Tool::TaskToolCall(task)) =
++                                    completion.tool_call().tool.as_ref()
++                                {
++                                    if let Some(pb::task_result::Result::Success(success)) =
++                                        task.result
++                                            .as_ref()
++                                            .and_then(|result| result.result.as_ref())
++                                    {
++                                        if success.is_background {
++                                            if let Some(agent_id) = success
++                                                .agent_id
++                                                .as_deref()
++                                                .filter(|id| !id.is_empty())
++                                            {
++                                                self.registry
++                                                    .mark_background_subagent(
++                                                        &self.context.request_id,
++                                                        agent_id,
++                                                    )
++                                                    .await;
++                                            }
++                                        }
++                                    }
++                                }
+                             }
+                             completed.insert(call_id.clone());
+                             tool_round_settled = snapshot.status == ToolRoundStatus::Settled;
+@@ -746,12 +782,25 @@ impl ConversationOutput {
+                                     for _ in 0..3 {
+                                         self.checkpoint.publish(&self.handle, &checkpoint).await?;
+                                     }
+-                                    return Ok(RunFinish::TurnCompleted);
++                                    return Ok(RunFinish::TurnCompleted {
++                                        final_text: response_text.clone(),
++                                    });
+                                 }
+                                 let checkpoints = final_checkpoint.take().ok_or_else(|| {
+                                     Error::Protocol("Completed without final state".into())
+                                 })?;
+-                                self.handle.emit(&events::turn_ended(turn_usage))?;
++                                // With a subagent still running in the background the
++                                // client must keep the parent turn open: the bridge wakes
++                                // it later and streams the follow-up on this same
++                                // transport. Signalling turn end here would make the
++                                // client discard that follow-up.
++                                if !self
++                                    .registry
++                                    .has_background_subagents(&self.context.request_id)
++                                    .await
++                                {
++                                    self.handle.emit(&events::turn_ended(turn_usage))?;
++                                }
+                                 self.checkpoint
+                                     .publish(&self.handle, &checkpoints.staged)
+                                     .await?;
+@@ -762,7 +811,9 @@ impl ConversationOutput {
+                                     ttft_breakdown: None,
+                                     message: Some(pb::agent_server_message::Message::ConversationCheckpointUpdate(checkpoints.settled)),
+                                 })?;
+-                                Ok(RunFinish::TurnCompleted)
++                                Ok(RunFinish::TurnCompleted {
++                                    final_text: response_text.clone(),
++                                })
+                             }
+                             RunOutcome::Cancelled => {
+                                 worker.abort();
+@@ -865,6 +916,41 @@ impl ConversationOutput {
+         .await
+     }
+ 
++    async fn forward_background_completion(
++        &mut self,
++        action: pb::BackgroundTaskCompletionAction,
++        active_round: Option<&ToolRoundId>,
++        active_tool_calls: &HashSet<String>,
++        completions: &HashMap<String, ToolCompletion>,
++        interrupted_rounds: &mut HashSet<ToolRoundId>,
++        interrupted_tool_calls: &mut HashSet<String>,
++    ) -> Result<()> {
++        // The completion may also arrive on an active stream, where no new
++        // RunRequest is prepared; persist the finished subagent state here so
++        // the next checkpoint does not keep reporting it as backgrounded.
++        self.checkpoint.record_subagent_completions(&action);
++        let (event_id, user_message, message) = compile_background_completion(
++            &action,
++            self.context.mode,
++            &self.context.request_context,
++            &self.blob_sync,
++        )
++        .await?;
++        self.queue_injection(
++            format!("background-completion:{event_id}"),
++            Some(user_message),
++            message,
++            InjectionState {
++                active_round,
++                active_tool_calls,
++                completions,
++                interrupted_rounds,
++                interrupted_tool_calls,
++            },
++        )
++        .await
++    }
++
+     async fn forward_injection(
+         &mut self,
+         action: pb::InjectContextAction,
+diff --git a/server/src/cursor/conversation/registry.rs b/server/src/cursor/conversation/registry.rs
+index 7a97a40..28c7ea7 100644
+--- a/server/src/cursor/conversation/registry.rs
++++ b/server/src/cursor/conversation/registry.rs
+@@ -1,6 +1,9 @@
+ //! Maps conversation IDs to active conversation runtimes.
+ 
+-use std::{collections::HashMap, sync::Arc};
++use std::{
++    collections::{HashMap, HashSet},
++    sync::Arc,
++};
+ 
+ use tokio::sync::{mpsc, Mutex, Notify};
+ 
+@@ -33,6 +36,13 @@ pub(crate) struct ConversationDependencies {
+ struct RegistryInner {
+     current: Mutex<HashMap<ConversationId, ActiveRun>>,
+     pending: Mutex<HashMap<ConversationId, PendingMessages>>,
++    /// Parent Cursor request id -> subagent ids that are still running in the
++    /// background. A parent transport keeps its continuation window open while
++    /// this set is non-empty so the bridge can wake it when a subagent ends.
++    background_subagents: Mutex<HashMap<String, HashSet<String>>>,
++    /// Live conversations by Cursor request id. A finished subagent uses the
++    /// parent request id from its headers to find the transport to wake.
++    transports: Mutex<HashMap<String, TransportHandle>>,
+     changed: Notify,
+     pub dependencies: ConversationDependencies,
+ }
+@@ -55,6 +65,8 @@ impl ConversationRegistry {
+             inner: Arc::new(RegistryInner {
+                 current: Mutex::new(HashMap::new()),
+                 pending: Mutex::new(HashMap::new()),
++                background_subagents: Mutex::new(HashMap::new()),
++                transports: Mutex::new(HashMap::new()),
+                 changed: Notify::new(),
+                 dependencies: ConversationDependencies {
+                     store,
+@@ -71,6 +83,70 @@ impl ConversationRegistry {
+         &self.inner.dependencies
+     }
+ 
++    /// Records a subagent that the client is running in the background for the
++    /// given parent request. The parent transport then keeps waiting for the
++    /// completion instead of closing its stream after the idle timeout.
++    pub(crate) async fn mark_background_subagent(&self, parent_request_id: &str, agent_id: &str) {
++        self.inner
++            .background_subagents
++            .lock()
++            .await
++            .entry(parent_request_id.to_owned())
++            .or_default()
++            .insert(agent_id.to_owned());
++    }
++
++    pub(crate) async fn clear_background_subagent(&self, parent_request_id: &str, agent_id: &str) {
++        let mut all = self.inner.background_subagents.lock().await;
++        if let Some(agents) = all.get_mut(parent_request_id) {
++            agents.remove(agent_id);
++            if agents.is_empty() {
++                all.remove(parent_request_id);
++            }
++        }
++    }
++
++    pub(crate) async fn has_background_subagents(&self, parent_request_id: &str) -> bool {
++        self.inner
++            .background_subagents
++            .lock()
++            .await
++            .get(parent_request_id)
++            .is_some_and(|agents| !agents.is_empty())
++    }
++
++    /// Only subagents that were actually parked in the background may wake the
++    /// parent. Synchronous subagents (forced or client-chosen) never register,
++    /// so their completion must not produce a second parent turn.
++    pub(crate) async fn is_background_subagent(
++        &self,
++        parent_request_id: &str,
++        agent_id: &str,
++    ) -> bool {
++        self.inner
++            .background_subagents
++            .lock()
++            .await
++            .get(parent_request_id)
++            .is_some_and(|agents| agents.contains(agent_id))
++    }
++
++    pub(crate) async fn register_transport(&self, handle: TransportHandle) {
++        self.inner
++            .transports
++            .lock()
++            .await
++            .insert(handle.request_id().to_owned(), handle);
++    }
++
++    pub(crate) async fn unregister_transport(&self, request_id: &str) {
++        self.inner.transports.lock().await.remove(request_id);
++    }
++
++    pub(crate) async fn transport(&self, request_id: &str) -> Option<TransportHandle> {
++        self.inner.transports.lock().await.get(request_id).cloned()
++    }
++
+     pub(crate) fn bind_transport(
+         &self,
+         handle: TransportHandle,
+diff --git a/server/src/cursor/conversation/runtime.rs b/server/src/cursor/conversation/runtime.rs
+index dae5cf5..3e3f726 100644
+--- a/server/src/cursor/conversation/runtime.rs
++++ b/server/src/cursor/conversation/runtime.rs
+@@ -29,6 +29,11 @@ use super::{
+ pub struct ConversationRuntime;
+ 
+ const CONTINUATION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
++/// While a subagent runs in the background the parent transport must stay open:
++/// the client ends the parent turn immediately, and the bridge wakes it with the
++/// completion once the subagent finishes.
++const BACKGROUND_CONTINUATION_TIMEOUT: std::time::Duration =
++    std::time::Duration::from_secs(15 * 60);
+ 
+ #[derive(Clone)]
+ struct RunGeneration {
+@@ -67,6 +72,7 @@ impl ConversationRuntime {
+     ) {
+         tokio::spawn(async move {
+             let _actor_guard = TransportActorGuard(handle.clone());
++            registry.register_transport(handle.clone()).await;
+             let dependencies = registry.dependencies().clone();
+             let blob_sync = BlobSynchronizer::new(
+                 handle.request_id().into(),
+@@ -82,6 +88,13 @@ impl ConversationRuntime {
+             let mut pending_finish = None::<(u64, TransportFinish)>;
+             let mut draining = false;
+             let mut waiting_for_action = false;
++            let mut action_timeout = CONTINUATION_IDLE_TIMEOUT;
++            // Completions that arrived while a wake-up generation was already
++            // loading or running are merged into the next wake-up instead of
++            // starting a competing generation (which fails while the Cursor
++            // request context is still being loaded).
++            let mut wake_pending: Vec<pb::BackgroundTaskCompletion> = Vec::new();
++            let mut wake_in_progress = false;
+             loop {
+                 let command = if draining {
+                     if !handle.admissions_drained() {
+@@ -116,7 +129,7 @@ impl ConversationRuntime {
+                                 break;
+                             }
+                         },
+-                        _ = tokio::time::sleep(CONTINUATION_IDLE_TIMEOUT) => {
++                        _ = tokio::time::sleep(action_timeout) => {
+                             let Some(generation) = current.as_ref() else {
+                                 super::finish_success(&handle);
+                                 break;
+@@ -145,6 +158,55 @@ impl ConversationRuntime {
+                     }
+                 };
+                 match command {
++                    TransportCommand::WakeBackgroundCompletion { action } => {
++                        wake_pending.extend(action.completions);
++                        if wake_in_progress {
++                            // The current wake-up generation is still loading or
++                            // running; its RunFinished handler drains the queue.
++                            continue;
++                        }
++                        let Some(generation) = current.as_ref() else {
++                            wake_pending.clear();
++                            continue;
++                        };
++                        let mut request = generation.request.clone();
++                        request.action = Some(pb::ConversationAction {
++                            action: Some(
++                                pb::conversation_action::Action::BackgroundTaskCompletionAction(
++                                    pb::BackgroundTaskCompletionAction {
++                                        completions: std::mem::take(&mut wake_pending),
++                                        ..Default::default()
++                                    },
++                                ),
++                            ),
++                            ..Default::default()
++                        });
++                        request.conversation_state = None;
++                        request.pre_fetched_blobs.clear();
++                        waiting_for_action = false;
++                        if draining {
++                            handle.reopen();
++                            draining = false;
++                            pending_finish = None;
++                        }
++                        wake_in_progress = true;
++                        tracing::info!(
++                            request_id = handle.request_id(),
++                            "waking parent for background completion"
++                        );
++                        start_generation(
++                            &registry,
++                            &handle,
++                            &dependencies,
++                            &blob_sync,
++                            &context_sync,
++                            &tool_runtime_factory,
++                            &mut current,
++                            &mut next_generation,
++                            request,
++                        )
++                        .await;
++                    }
+                     TransportCommand::Disconnect => {
+                         handle.mark_disconnected();
+                         if let Some(generation) = current.as_ref() {
+@@ -179,18 +241,66 @@ impl ConversationRuntime {
+                             continue;
+                         }
+                         match finish {
+-                            RunFinish::TurnCompleted => {
++                            RunFinish::TurnCompleted { .. } => {
+                                 pending_finish = None;
+                                 draining = false;
+                                 waiting_for_action = true;
++                                wake_in_progress = false;
++                                action_timeout =
++                                    if registry.has_background_subagents(&handle.request_id()).await
++                                    {
++                                        BACKGROUND_CONTINUATION_TIMEOUT
++                                    } else {
++                                        CONTINUATION_IDLE_TIMEOUT
++                                    };
+                             }
+                             RunFinish::Transport(finish) => {
+                                 waiting_for_action = false;
+                                 handle.begin_close();
+                                 pending_finish = Some((generation, finish));
+                                 draining = true;
++                                wake_in_progress = false;
++                                wake_pending.clear();
+                             }
+                         }
++                        if waiting_for_action && !wake_pending.is_empty() && !draining {
++                            let Some(queued) = current.as_ref() else {
++                                wake_pending.clear();
++                                continue;
++                            };
++                            let mut request = queued.request.clone();
++                            request.action = Some(pb::ConversationAction {
++                                action: Some(
++                                    pb::conversation_action::Action::BackgroundTaskCompletionAction(
++                                        pb::BackgroundTaskCompletionAction {
++                                            completions: std::mem::take(&mut wake_pending),
++                                            ..Default::default()
++                                        },
++                                    ),
++                                ),
++                                ..Default::default()
++                            });
++                            request.conversation_state = None;
++                            request.pre_fetched_blobs.clear();
++                            waiting_for_action = false;
++                            wake_in_progress = true;
++                            tracing::info!(
++                                request_id = handle.request_id(),
++                                "waking parent for queued background completions"
++                            );
++                            start_generation(
++                                &registry,
++                                &handle,
++                                &dependencies,
++                                &blob_sync,
++                                &context_sync,
++                                &tool_runtime_factory,
++                                &mut current,
++                                &mut next_generation,
++                                request,
++                            )
++                            .await;
++                        }
+                     }
+                     TransportCommand::Append { seqno, message } => {
+                         for (_seqno, message) in inbox.push(seqno, *message) {
+@@ -435,6 +545,57 @@ impl ConversationRuntime {
+                                             )
+                                             .await;
+                                         }
++                                        Some(
++                                            pb::conversation_action::Action::BackgroundTaskCompletionAction(
++                                                action,
++                                            ),
++                                        ) => {
++                                            tracing::info!(
++                                                request_id = handle.request_id(),
++                                                completions = action.completions.len(),
++                                                "background completion on active stream"
++                                            );
++                                            // A completion arriving on an active stream must resume the
++                                            // parent conversation. While a Run is still producing, inject
++                                            // the notification and let it interrupt the round; otherwise
++                                            // replay the previous request with the completion as its action
++                                            // so a fresh generation consumes it. Silently dropping this
++                                            // action leaves the parent waiting behind a finished subagent.
++                                            let delivered_to_active_run =
++                                                current.as_ref().is_some_and(|generation| {
++                                                    generation.run.lock().as_ref().is_some_and(
++                                                        |run| run.phase() == RunPhase::Running,
++                                                    ) && generation
++                                                        .runtime_actions
++                                                        .send(compile::RuntimeAction::BackgroundCompletion(
++                                                            action.clone(),
++                                                        ))
++                                                        .is_ok()
++                                                });
++                                            if delivered_to_active_run {
++                                                continue;
++                                            }
++                                            let Some(previous) = current.as_ref() else {
++                                                continue;
++                                            };
++                                            let mut request = previous.request.clone();
++                                            request.action = Some(conversation_action);
++                                            request.conversation_state = None;
++                                            request.pre_fetched_blobs.clear();
++                                            waiting_for_action = false;
++                                            start_generation(
++                                                &registry,
++                                                &handle,
++                                                &dependencies,
++                                                &blob_sync,
++                                                &context_sync,
++                                                &tool_runtime_factory,
++                                                &mut current,
++                                                &mut next_generation,
++                                                request,
++                                            )
++                                            .await;
++                                        }
+                                         Some(pb::conversation_action::Action::CancelAction(_)) => {
+                                             if let Some(generation) = current.as_ref() {
+                                                 if let Some(run) = generation.run.lock().clone() {
+@@ -506,6 +667,7 @@ impl ConversationRuntime {
+                     }
+                 }
+             }
++            registry.unregister_transport(handle.request_id()).await;
+         });
+     }
+ }
+@@ -631,6 +793,16 @@ fn spawn_run_request(
+             handle.parent().map(|parent| parent.tool_call_id.clone()),
+             request.conversation_state.clone(),
+         );
++        if let Some(pb::conversation_action::Action::BackgroundTaskCompletionAction(action)) =
++            request.action.as_ref().and_then(|action| action.action.as_ref())
++        {
++            tracing::info!(
++                request_id = handle.request_id(),
++                completions = action.completions.len(),
++                "background completion run request"
++            );
++            checkpoint.record_subagent_completions(action);
++        }
+         let prepared = tokio::select! {
+             biased;
+             _ = generation.superseded.cancelled() => return,
+@@ -804,6 +976,80 @@ fn spawn_run_request(
+             }
+         };
+         let _ = core_run.await;
++        if let Some(parent) = handle.parent() {
++            let parent_request_id = parent.request_id.clone();
++            let parent_tool_call_id = parent.tool_call_id.clone();
++            let (status, detail) = match &finish {
++                RunFinish::TurnCompleted { final_text } => {
++                    (pb::BackgroundTaskStatus::Success, final_text.clone())
++                }
++                RunFinish::Transport(TransportFinish::Success) => {
++                    (pb::BackgroundTaskStatus::Success, String::new())
++                }
++                RunFinish::Transport(TransportFinish::Failed(_)) => {
++                    (pb::BackgroundTaskStatus::Error, String::new())
++                }
++                RunFinish::Transport(TransportFinish::Cancelled) => {
++                    (pb::BackgroundTaskStatus::Aborted, String::new())
++                }
++            };
++            let agent_id = handle.conversation_id().unwrap_or_default().to_owned();
++            // Synchronous subagents never register as background work; waking
++            // the parent for them would run the answer twice.
++            if registry
++                .is_background_subagent(&parent_request_id, &agent_id)
++                .await
++            {
++            let action = pb::BackgroundTaskCompletionAction {
++                completions: vec![pb::BackgroundTaskCompletion {
++                    task_id: parent_tool_call_id.clone(),
++                    kind: pb::BackgroundTaskKind::Subagent as i32,
++                    status: status as i32,
++                    title: "Subagent task".into(),
++                    detail: (!detail.is_empty()).then_some(detail),
++                    reason: pb::BackgroundTaskCompletionReason::TaskFinished as i32,
++                    subagent_id: (!agent_id.is_empty()).then_some(agent_id.clone()),
++                    tool_call_id: Some(parent_tool_call_id),
++                    ..Default::default()
++                }],
++                ..Default::default()
++            };
++            registry
++                .clear_background_subagent(&parent_request_id, &agent_id)
++                .await;
++            match registry.transport(&parent_request_id).await {
++                Some(parent_handle) => {
++                    match parent_handle
++                        .command(TransportCommand::WakeBackgroundCompletion {
++                            action: Box::new(action),
++                        })
++                        .await
++                    {
++                        Ok(()) => tracing::info!(
++                            parent_request_id = %parent_request_id,
++                            subagent_id = %agent_id,
++                            "background completion delivered to parent"
++                        ),
++                        Err(error) => tracing::warn!(
++                            parent_request_id = %parent_request_id,
++                            %error,
++                            "parent transport rejected background completion"
++                        ),
++                    }
++                }
++                None => tracing::info!(
++                    parent_request_id = %parent_request_id,
++                    "parent transport already closed; background completion skipped"
++                ),
++            }
++            } else {
++                tracing::info!(
++                    parent_request_id = %parent_request_id,
++                    subagent_id = %agent_id,
++                    "subagent was not backgrounded; parent wake skipped"
++                );
++            }
++        }
+         registry.release(&conversation_id, &run_id).await;
+         if generation
+             .run
 diff --git a/server/src/cursor/services/analytics.rs b/server/src/cursor/services/analytics.rs
-index 80103d1..472c127 100644
+index 80103d1..b3a7d11 100644
 --- a/server/src/cursor/services/analytics.rs
 +++ b/server/src/cursor/services/analytics.rs
-@@ -14,6 +14,9 @@ use crate::{api::cursor::proxy, Error, Result};
+@@ -14,6 +14,27 @@ use crate::{api::cursor::proxy, Error, Result};
  
  pub const BOOTSTRAP_STATSIG_PATH: &str = "/aiserver.v1.AnalyticsService/BootstrapStatsig";
  const AGENT_RETRIES_GATE: &str = "nal_agent_retries";
++/// Cursor only dispatches background-task completion wake-ups when this gate
++/// is on. Without a Cursor login the upstream Statsig bootstrap is rejected
++/// and the client falls back to our local one, so it must opt in explicitly;
++/// otherwise a Multitask subagent finishes in the background while the parent
++/// turn is never resumed.
++const LONG_RUNNING_JOBS_GATE: &str = "long_running_jobs";
++/// The local agent host only mirrors session background work (and therefore
++/// subagent completions) into the renderer while the agent store harness runs.
++/// Its gate defaults to off; without a Cursor login the client uses our local
++/// Statsig bootstrap, so it must be enabled here or Multitask completions are
++/// never dispatched back to the parent conversation.
++const AGENT_STORE_SYNC_GATE: &str = "agent_store_sync_client";
++/// Enables the local agent-host topology that owns background subagent
++/// sessions. The model loop stays on this backend because
++/// `agent_host_local_loop` remains off; only execution/session management
++/// moves to the local host, which is what mirrors and dispatches background
++/// task completions.
++const AGENT_HOST_GATE: &str = "cursor_agent_host";
 +/// Cursor 3.27 的 `agent_host_local_loop` 会切换到全新的本地循环协议
 +/// (RunInferenceRunRequest),桥接尚未实现,所以显式关闭,继续走经典 agent 循环。
 +const LOCAL_LOOP_GATE: &str = "agent_host_local_loop";
  const LOCAL_RULE: &str = "local_enabled";
  
  #[derive(Clone, PartialEq, Message)]
-@@ -52,6 +55,7 @@ fn patch_upstream(response: proxy::BufferedResponse) -> Result<Response<Body>> {
+@@ -52,6 +73,11 @@ fn patch_upstream(response: proxy::BufferedResponse) -> Result<Response<Body>> {
      let mut message = BootstrapStatsigResponse::decode(payload)?;
      let mut config = serde_json::from_str::<Value>(&message.config)?;
      enable_agent_retries(&mut config)?;
 +    disable_local_loop(&mut config)?;
++    enable_long_running_jobs(&mut config)?;
++    enable_agent_store_sync(&mut config)?;
++    enable_agent_host(&mut config)?;
++    log_gates("upstream", &config);
      message.config = serde_json::to_string(&config)?;
      Ok(response.with_body(encode_unary(&message, framed)))
  }
-@@ -75,6 +79,7 @@ fn local_response() -> Result<Response<Body>> {
+@@ -67,7 +93,10 @@ fn local_response() -> Result<Response<Body>> {
+             "customIDs": { "localUserID": "local_ultra" }
+         },
+         "has_updates": true,
+-        "hash_used": "none",
++        // Cursor's Statsig client defaults to the djb2 key hash. Declaring the
++        // same algorithm keeps gate lookups pointing at the hashed keys this
++        // response emits; "none" made every lookup miss after bootstrap.
++        "hash_used": "djb2",
+         "sdkParams": {
+             "stableID": "local_ultra",
+             "disableDiagnosticsLogging": true
+@@ -75,6 +104,11 @@ fn local_response() -> Result<Response<Body>> {
          "time": generated_at_ms
      });
      enable_agent_retries(&mut config)?;
 +    disable_local_loop(&mut config)?;
++    enable_long_running_jobs(&mut config)?;
++    enable_agent_store_sync(&mut config)?;
++    enable_agent_host(&mut config)?;
++    log_gates("local", &config);
      let message = BootstrapStatsigResponse {
          config: serde_json::to_string(&config)?,
          generated_at_ms,
-@@ -110,6 +115,28 @@ fn enable_agent_retries(config: &mut Value) -> Result<()> {
+@@ -97,7 +131,37 @@ fn local_response() -> Result<Response<Body>> {
+ }
+ 
+ fn enable_agent_retries(config: &mut Value) -> Result<()> {
+-    let gate_key = statsig_key(config, AGENT_RETRIES_GATE);
++    set_gate(config, AGENT_RETRIES_GATE, true)
++}
++
++fn disable_local_loop(config: &mut Value) -> Result<()> {
++    set_gate(config, LOCAL_LOOP_GATE, false)
++}
++
++fn enable_long_running_jobs(config: &mut Value) -> Result<()> {
++    set_gate(config, LONG_RUNNING_JOBS_GATE, true)
++}
++
++fn enable_agent_host(config: &mut Value) -> Result<()> {
++    set_gate(config, AGENT_HOST_GATE, true)
++}
++
++fn enable_agent_store_sync(config: &mut Value) -> Result<()> {
++    set_gate(config, AGENT_STORE_SYNC_GATE, true)
++}
++
++/// Applies a gate under both its canonical name and its Statsig lookup key.
++/// The client reads bootstrap values through different paths (persisted cache
++/// vs network response, canonical name vs hashed key); an entry missing from
++/// the path in use silently evaluates to the default. Publishing both keys
++/// keeps every lookup correct regardless of which path the client takes.
++fn set_gate(config: &mut Value, name: &str, enabled: bool) -> Result<()> {
++    let hashed = statsig_key(config, name);
++    let keys = if hashed == name {
++        vec![name.to_owned()]
++    } else {
++        vec![name.to_owned(), hashed]
++    };
+     let root = config
+         .as_object_mut()
+         .ok_or_else(|| Error::Protocol("Statsig bootstrap config must be an object".into()))?;
+@@ -106,10 +170,27 @@ fn enable_agent_retries(config: &mut Value) -> Result<()> {
+         .or_insert_with(|| Value::Object(Map::new()))
+         .as_object_mut()
+         .ok_or_else(|| Error::Protocol("Statsig feature_gates must be an object".into()))?;
+-    gates.insert(gate_key.clone(), enabled_gate(&gate_key));
++    for key in keys {
++        gates.insert(
++            key.clone(),
++            if enabled {
++                enabled_gate(&key)
++            } else {
++                disabled_gate(&key)
++            },
++        );
++    }
      Ok(())
  }
  
-+fn disable_local_loop(config: &mut Value) -> Result<()> {
-+    let gate_key = statsig_key(config, LOCAL_LOOP_GATE);
-+    let root = config
-+        .as_object_mut()
-+        .ok_or_else(|| Error::Protocol("Statsig bootstrap config must be an object".into()))?;
-+    let gates = root
-+        .entry("feature_gates")
-+        .or_insert_with(|| Value::Object(Map::new()))
-+        .as_object_mut()
-+        .ok_or_else(|| Error::Protocol("Statsig feature_gates must be an object".into()))?;
-+    gates.insert(gate_key.clone(), disabled_gate(&gate_key));
-+    Ok(())
-+}
-+
 +fn disabled_gate(name: &str) -> Value {
 +    let mut gate = enabled_gate(name);
 +    if let Some(object) = gate.as_object_mut() {
@@ -430,6 +1416,71 @@ index 80103d1..472c127 100644
  fn statsig_key(config: &Value, name: &str) -> String {
      match config.get("hash_used").and_then(Value::as_str) {
          Some("djb2") => djb2(name),
+@@ -118,13 +199,39 @@ fn statsig_key(config: &Value, name: &str) -> String {
+     }
+ }
+ 
++/// Statsig's key hash: start at 5381, then `hash * 33 ^ charCode` over UTF-16
++/// code units, emitted as base36. The client looks gates up by that string, so
++/// both the algorithm and the radix must match or every lookup misses.
+ fn djb2(value: &str) -> String {
+-    value
++    let hash = value
+         .encode_utf16()
+-        .fold(0_u32, |hash, character| {
+-            hash.wrapping_mul(31).wrapping_add(u32::from(character))
+-        })
+-        .to_string()
++        .fold(5381_u32, |hash, character| {
++            hash.wrapping_mul(33) ^ u32::from(character)
++        });
++    base36(hash)
++}
++
++fn base36(mut value: u32) -> String {
++    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
++    let mut output = Vec::new();
++    loop {
++        output.push(DIGITS[(value % 36) as usize]);
++        value /= 36;
++        if value == 0 {
++            break;
++        }
++    }
++    output.reverse();
++    String::from_utf8(output).expect("base36 digits are ASCII")
++}
++
++fn log_gates(source: &str, config: &Value) {
++    let gates: Vec<&str> = config
++        .get("feature_gates")
++        .and_then(Value::as_object)
++        .map(|gates| gates.keys().map(String::as_str).collect())
++        .unwrap_or_default();
++    tracing::info!(source, ?gates, "serving Cursor Statsig bootstrap");
+ }
+ 
+ fn enabled_gate(name: &str) -> Value {
+@@ -174,3 +281,19 @@ fn encode_unary(message: &impl Message, framed: bool) -> Bytes {
+     output.extend_from_slice(&payload);
+     output.freeze()
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn djb2_matches_statsig_base36_keys() {
++        // Values computed with the client's own hash: `(hash * 33 ^ charCode)`
++        // over UTF-16 code units, emitted as base36.
++        assert_eq!(djb2("agent_store_sync_client"), "1e0oiyq");
++        assert_eq!(djb2("cursor_agent_host"), "h5qa9i");
++        assert_eq!(djb2("long_running_jobs"), "1idh0nw");
++        assert_eq!(djb2("nal_agent_retries"), "1mapxu9");
++        assert_eq!(djb2("agent_host_local_loop"), "1ju43v6");
++    }
++}
 diff --git a/server/src/cursor/services/model_catalog.rs b/server/src/cursor/services/model_catalog.rs
 index b9dbd08..209b430 100644
 --- a/server/src/cursor/services/model_catalog.rs
@@ -642,6 +1693,140 @@ index b9dbd08..209b430 100644
 +    }
 +
  }
+diff --git a/server/src/cursor/tools/codec/request.rs b/server/src/cursor/tools/codec/request.rs
+index 26d0686..b708cd0 100644
+--- a/server/src/cursor/tools/codec/request.rs
++++ b/server/src/cursor/tools/codec/request.rs
+@@ -136,10 +136,12 @@ pub fn request(id: u32, call: &ToolCall, context: &ExecContext) -> Result<pb::Ag
+             prompt: string("prompt")?,
+             readonly: false,
+             resume_agent_id: optional_string("resume"),
+-            run_in_background: call
+-                .arguments
+-                .get("run_in_background")
+-                .and_then(Value::as_bool),
++            run_in_background: if crate::config::subagent_sync() {
++                // Sync mode: the client must execute this subagent inline.
++                Some(false)
++            } else {
++                call.arguments.get("run_in_background").and_then(Value::as_bool)
++            },
+             continuation_config: None,
+             parent_conversation_id: Some(context.conversation_id.clone()),
+             interrupt: call.arguments.get("interrupt").and_then(Value::as_bool),
+diff --git a/server/src/cursor/tools/tool_call_result/exec/render.rs b/server/src/cursor/tools/tool_call_result/exec/render.rs
+index c882804..5851b8c 100644
+--- a/server/src/cursor/tools/tool_call_result/exec/render.rs
++++ b/server/src/cursor/tools/tool_call_result/exec/render.rs
+@@ -190,13 +190,30 @@ pub(super) fn task(
+     use pb::{subagent_result::Result as Input, task_result::Result as Output};
+     let result = match result.result.as_ref() {
+         Some(Input::Success(value)) => {
+-            let is_background = value.background_reason
+-                != pb::SubagentBackgroundReason::Unspecified as i32
+-                || call
++            // Keep both asynchronous signals: the model's explicit
++            // `run_in_background` intent and the client-confirmed
++            // `background_reason`. A subagent is synchronous only when it ran
++            // inline and neither side asked for the background.
++            let is_background = !crate::config::subagent_sync()
++                && (value.background_reason
++                    != pb::SubagentBackgroundReason::Unspecified as i32
++                    || call
++                        .arguments
++                        .get("run_in_background")
++                        .and_then(serde_json::Value::as_bool)
++                        == Some(true));
++            tracing::info!(
++                tool_call_id = %call.call_id,
++                agent_id = %value.agent_id,
++                background_reason = value.background_reason,
++                model_background = call
+                     .arguments
+                     .get("run_in_background")
+                     .and_then(serde_json::Value::as_bool)
+-                    == Some(true);
++                    .unwrap_or(false),
++                is_background,
++                "subagent result"
++            );
+             Output::Success(pb::TaskSuccess {
+                 agent_id: Some(value.agent_id.clone()),
+                 is_background,
+@@ -253,3 +270,73 @@ pub(super) fn glob(result: &pb::GrepResult) -> Result<pb::GlobToolResult> {
+ fn missing(name: &str) -> Error {
+     Error::Protocol(format!("{name} returned no result"))
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn subagent(reason: pb::SubagentBackgroundReason) -> pb::SubagentResult {
++        pb::SubagentResult {
++            result: Some(pb::subagent_result::Result::Success(pb::SubagentSuccess {
++                agent_id: "agent-1".into(),
++                background_reason: reason as i32,
++                ..Default::default()
++            })),
++        }
++    }
++
++    fn task_call(arguments: serde_json::Value) -> crate::model::ToolCall {
++        crate::model::ToolCall {
++            index: 0,
++            call_id: "call-1".into(),
++            model_call_id: "model-1".into(),
++            name: "Task".into(),
++            arguments_text: arguments.to_string(),
++            arguments,
++            argument_error: None,
++        }
++    }
++
++    fn success(result: pb::TaskResult) -> pb::TaskSuccess {
++        let Some(pb::task_result::Result::Success(success)) = result.result else {
++            panic!("expected task success")
++        };
++        success
++    }
++
++    #[test]
++    fn inline_subagent_without_background_intent_stays_synchronous() {
++        let call = task_call(serde_json::json!({"run_in_background": false}));
++        let task = task(
++            &subagent(pb::SubagentBackgroundReason::Unspecified),
++            &call,
++            0,
++        )
++        .unwrap();
++        assert!(!success(task).is_background);
++    }
++
++    #[test]
++    fn model_background_intent_is_preserved() {
++        let call = task_call(serde_json::json!({"run_in_background": true}));
++        let task = task(
++            &subagent(pb::SubagentBackgroundReason::Unspecified),
++            &call,
++            0,
++        )
++        .unwrap();
++        assert!(success(task).is_background);
++    }
++
++    #[test]
++    fn client_background_reason_marks_the_subagent_backgrounded() {
++        let call = task_call(serde_json::json!({}));
++        let task = task(
++            &subagent(pb::SubagentBackgroundReason::AgentRequest),
++            &call,
++            0,
++        )
++        .unwrap();
++        assert!(success(task).is_background);
++    }
++}
 diff --git a/server/src/local_app/mod.rs b/server/src/local_app/mod.rs
 index 7c50336..582da2b 100644
 --- a/server/src/local_app/mod.rs

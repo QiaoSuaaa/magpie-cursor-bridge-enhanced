@@ -38,19 +38,24 @@
   <section class="card">
     <div class="card-head"><h2>可编辑参数</h2><span class="hint">写入 bridge-settings.json</span></div>
     <form id="settingsForm" class="settings">
-      <label><span>运行模式</span><span class="field"><select id="runMode">
+      <label><span class="label">运行模式</span><span class="field select"><select id="runMode">
         <option value="default">默认模式</option>
         <option value="lite">轻量模式</option>
       </select></span></label>
-      <label><span>模型目录同步间隔</span><span class="field"><input id="refreshSeconds" type="number" min="5" max="300" step="1"> 秒</span></label>
-      <label><span>网关断线容错</span><span class="field"><input id="gatewayGraceSeconds" type="number" min="10" max="600" step="1"> 秒</span></label>
-      <label><span>引擎日志上限</span><span class="field"><input id="logLimitMB" type="number" min="1" max="64" step="1"> MB</span></label>
+      <label><span class="label">子代理模式</span><span class="field select"><select id="subagentMode">
+        <option value="async">异步后台（默认）</option>
+        <option value="sync">同步阻塞</option>
+      </select></span></label>
+      <label><span class="label">模型目录同步间隔</span><span class="field"><input id="refreshSeconds" type="number" min="5" max="300" step="1" inputmode="numeric"><span class="unit">秒</span></span></label>
+      <label><span class="label">网关断线容错</span><span class="field"><input id="gatewayGraceSeconds" type="number" min="10" max="600" step="1" inputmode="numeric"><span class="unit">秒</span></span></label>
+      <label><span class="label">引擎日志上限</span><span class="field"><input id="logLimitMB" type="number" min="1" max="64" step="1" inputmode="numeric"><span class="unit">MB</span></span></label>
       <div class="form-actions">
         <button id="saveSettings" class="primary" type="submit">保存</button>
         <button id="resetSettings" class="ghost" type="button">填入默认值</button>
         <span id="settingsHint" class="hint"></span>
       </div>
       <p class="hint mode-hint">轻量模式把 SQLite 放在引擎进程内存：bridge.db 不再写入，引擎重启后会话历史清空；切换模式会自动重启引擎，当前对话可能中断一次。</p>
+      <p class="hint mode-hint">子代理模式：异步后台为默认，子代理在后台运行，完成后由桥接唤醒父代理继续；同步阻塞会强制 Task 以 run_in_background=false 执行，父代理等待子代理返回结果。切换同样会在数秒内重启引擎。</p>
     </form>
   </section>
 

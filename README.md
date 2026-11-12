@@ -2,7 +2,7 @@
 
 让普通版 Cursor 使用 **Magpie** 中配置的模型与路由组：模型菜单只列出 Magpie 目录，隐藏 Cursor Auto 入口，保留 Cursor 原有登录与 Tab 补全。
 
-- **当前版本**：`0.2.6`（本地增强版）
+- **当前版本**：`0.2.8`（本地增强版）
 - **适配范围**：Cursor 3.28.x ～ 3.30.8（已实测），Apple Silicon macOS
 - **与上游的关系**：基于 [nodlles/magpie-agent-cursor-bridge](https://github.com/nodlles/magpie-agent-cursor-bridge) `v0.2.2` 与本机 fork 增补，原生核心来自 [leookun/cursor-byok v1.0.1](https://github.com/leookun/cursor-byok/tree/v1.0.1)
 - **本仓库定位**：本机使用与二次开发，不通过 GitHub 插件页分发
@@ -51,6 +51,8 @@ Cursor 的 Agent / Composer 默认只认自家订阅与官方后端。通过 Mag
 | 模型选择器隐藏 Cursor Auto | ✅ |
 | 模型显示名短名化（`Opus` 而非三段长名） | ✅ 0.2.4 |
 | 运行模式：默认 / 轻量（SQLite 不落盘） | ✅ 0.2.6 |
+| Multitask 后台子代理完成后父代理接管 | ✅ 0.2.7 |
+| 子代理模式：异步后台 / 同步阻塞 | ✅ 0.2.8 |
 | Cursor 3.29+ 二进制协议编码 | ✅ 0.2.3 |
 | Cursor 3.27 本地循环开关回退 | ✅ 上游 0.2.2 |
 | Tab 补全 / 行内补全 | 沿用 Cursor 原路径 |
@@ -201,7 +203,7 @@ bash "$HOME/Code/tools/magpie-agent-cursor-bridge-enhanced/setup.command"
 
 1. 校验二进制摘要与版本配对；
 2. 复用已有证书，或在首次安装时生成本机 CA 并请求 macOS 信任；
-3. 把完整版本目录 stage 到 `releases/0.2.6-xxxxxx`；
+3. 把完整版本目录 stage 到 `releases/0.2.8-xxxxxx`；
 4. 把 `~/.local/share/magpie-cursor-bridge` 注册为本地 Magpie 插件；
 5. 停止旧后台、切换 LaunchAgent、启动新后台。
 
@@ -261,7 +263,7 @@ bash setup.command status    # 输出 status.json 原文
 
 ```json
 {
-  "version": "0.2.6",
+  "version": "0.2.8",
   "state": "connected",
   "mode": "lite",
   "engineMode": "lite",
@@ -277,7 +279,7 @@ bash setup.command status    # 输出 status.json 原文
 
 排障时优先查看：
 
-- `~/.config/magpie-cursor-bridge/engine.log`（原生桥接诊断）
+- `~/.config/magpie-cursor-bridge/engine.log`（原生桥接诊断；0.2.7 起默认记录 `info` 级事件，可用 `RUST_LOG=cursor_server=debug` 提高详细度）
 - `~/.config/magpie-cursor-bridge/supervisor-error.log`
 - `~/Library/Application Support/Cursor/logs/<时间戳>/`（Cursor 侧）
 
@@ -429,7 +431,7 @@ node test/manual-lifecycle.mjs
 
 ### 5.1 差异总览
 
-| 项目 | 上游 0.2.2 | 增强版 0.2.6 | 机制 |
+| 项目 | 上游 0.2.2 | 增强版 0.2.8 | 机制 |
 |---|---|---|---|
 | Cursor 3.29+ / 3.30.8 | ❌ 30 秒后 “Connection stalled” | ✅ 正常对话 | 上行编码从 hex 文本改为原始 protobuf 字节 |
 | `BidiAppend` 载荷 | 只接受 `data`（tag 1，hex） | `data_binary`（tag 4）优先，`data` 兜底 | 同一消息的两种编码，共用一个解码器 |
@@ -437,9 +439,24 @@ node test/manual-lifecycle.mjs
 | 解码失败转储 | `.hex` 文本 | `.bin` 原始字节 | 3.29+ 的载荷本就不经过 hex |
 | Cursor 3.27 / 3.28.x | ✅ | ✅ | 公共路径未改动 |
 | 运行模式 | 仅文件库 | 默认 + 轻量（内存库） | 轻量模式不写 `bridge.db`，适合磁盘敏感或只做转发的场景 |
-| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.6 | 避免与上游 release 目录、摘要互相覆盖 |
+| Multitask 后台子代理 | 完成后不接管，子代理停在 Stopped | 完成即唤醒父代理，状态回写 Success | 完成通知进入运行时，不再当作 unsupported action 丢弃 |
+| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.8 | 避免与上游 release 目录、摘要互相覆盖 |
 
-### 5.2 0.2.3：为什么 3.29+ 是“卡住”而不是报错
+### 5.2 0.2.7：Multitask 后台子代理完成后的接管
+
+Cursor 的 Multitask 把子代理放到后台：父对话先结束自己的 turn，子代理完成后客户端再发一条完成通知，唤醒父代理继续。桥接在这条链路上有三处断点，叠在一起表现为「子代理停在 Stopped，父代理不再说话」：
+
+| 断点 | 原因 | 修复 |
+|---|---|---|
+| 完成派发 | 客户端只在 Statsig gate `long_running_jobs` 开启时派发后台完成通知；Cursor 未登录时上游 bootstrap 401，桥接的本地 bootstrap 没有这个 gate | 本地 bootstrap 与上游 patch 两条路径都显式启用 |
+| 完成通知 | 活跃流上的 `BackgroundTaskCompletionAction` 落到 unsupported 分支被忽略 | 运行中注入通知并打断当前 round；已结束则用完成通知重放父请求 |
+| 状态回写 | checkpoint 永远写 `Backgrounded`，`Success / Error / Aborted` 从未写入 | 收到完成通知时按 `BackgroundTaskStatus` 更新状态与完成时间 |
+
+**异步语义保留**：`is_background` 同时接受模型显式 `run_in_background` 意图与客户端 `SubagentSuccess.background_reason` 回报，任一为真即按后台处理。下行 `agent.v1.TaskArgs` 本身没有后台字段（3.30.8 实测），客户端是否异步执行由它自己的模式决定；两条信号取并集，异步模式不被降级。
+
+**同步阻塞不受影响**：模型显式 `run_in_background=false` 且客户端同步完成时，两条信号都为空 → `is_background=false` → 工具结果直接回到模型循环，不经过后台状态机。
+
+### 5.3 0.2.3：为什么 3.29+ 是“卡住”而不是报错
 
 ```text
 Cursor 3.29+（gate bidi_append_binary_encoding_disabled 默认 false）
@@ -472,7 +489,7 @@ let payload = if !request.data_binary.is_empty() {
 - 分支依据是**字段是否为空**，不是版本号或 User-Agent。Cursor 若把 gate 灰度关回去，`data_binary` 为空，自动落回 hex 分支；反之亦然。桥接因此对客户端的灰度回退免疫，也不需要每次升级 Cursor 后补版本判断。
 - 解码失败转储改为 `.bin`：3.29+ 的载荷不再经过 hex，落原始字节可原样喂给 `protoc --decode` 复现，同时避免“转储内容 ≠ 实际载荷”。
 
-### 5.3 0.2.4：短名只动渲染层
+### 5.4 0.2.4：短名只动渲染层
 
 模型条目里有三个各司其职的字段，上游把前两个混用了：
 
@@ -486,13 +503,13 @@ let payload = if !request.data_binary.is_empty() {
 
 `model_id` 参与哈希与路由查表（见 2.4），所以短名改造**只能**停在渲染层。两处原生改动（0.2.3 的解码、0.2.4 的短名）都必须重建二进制并重算 `integrity.json` 摘要，否则安装器的版本配对校验会拒绝加载（见 4.3）。
 
-### 5.4 沿用上游、但值得说明原理的部分
+### 5.5 沿用上游、但值得说明原理的部分
 
 - **3.27 本地循环开关**：Cursor 用 Statsig gate `agent_host_local_loop` 决定客户端走新的本地循环（`RunInferenceRunRequest`）还是经典 agent 循环。桥接在 `BootstrapStatsig` 的响应里把该 gate 置为 `false`，客户端于是继续发送桥接能解码的 `AgentRunRequest`。这是改客户端配置而非改协议：循环实现仍由客户端决定，桥接只影响选择结果。
 - **隐藏 Auto**：在 `AvailableModels` 的 field 15 下发 `hide_routed_model_view = true`，并附带一个**空的** `NoButton` 子消息。空消息必须显式编码存在——protobuf 的 presence 本身就是语义，它负责覆盖客户端此前缓存的 Auto 控件；字段缺省等于不表态，客户端会沿用旧配置。
 - **其余沿用**：15 秒目录同步（内容未变不重写）、端口持久化、网关 60 秒宽限、代理 journal 恢复、独立 CA。
 
-### 5.5 未改变的部分（差异边界）
+### 5.6 未改变的部分（差异边界）
 
 - 不修改 Cursor 安装包或二进制；
 - 不改变 Cursor 的登录与账号体系；

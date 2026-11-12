@@ -105,10 +105,14 @@ test('control settings validate and are written to the bridge root', async (t) =
   assert.equal(badMode.status, 400);
   assert.match(badMode.body, /default 或 lite/);
 
-  const good = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify({runMode: 'lite', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6})});
+  const badSubagentMode = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify({subagentMode: 'parallel'})});
+  assert.equal(badSubagentMode.status, 400);
+  assert.match(badSubagentMode.body, /async 或 sync/);
+
+  const good = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify({runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6})});
   assert.equal(good.status, 200);
-  assert.deepEqual(JSON.parse(good.body).settings, {runMode: 'lite', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6});
+  assert.deepEqual(JSON.parse(good.body).settings, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6});
   const file = paths(repoRoot).settings;
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), {runMode: 'lite', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6});
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6});
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 });

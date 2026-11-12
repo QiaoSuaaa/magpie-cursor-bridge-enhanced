@@ -5,7 +5,7 @@ import http from 'node:http';
 import {execFile, spawn} from 'node:child_process';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, settingsFile} from '../lib/bridge-settings.js';
+import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, settingsFile} from '../lib/bridge-settings.js';
 
 // The control console is served from the Magpie plugin host. It runs the
 // same setup.command the user would type in a terminal, so the panel and
@@ -170,6 +170,7 @@ async function overview(repoRoot, port) {
       defaults: bridgeDefaults,
       rules: bridgeRules,
       modes: bridgeModes,
+      subagentModes: bridgeSubagentModes,
       file: p.settings
     },
     paths: {
@@ -384,7 +385,7 @@ export function createControlServer({repoRoot, port, log = console.log}) {
 
       if (req.method === 'GET' && url.pathname === '/api/settings') {
         const p = paths(repoRoot);
-        return sendJson(res, 200, {ok: true, settings: readBridgeSettings(p.root), defaults: bridgeDefaults, rules: bridgeRules, modes: bridgeModes, file: p.settings});
+        return sendJson(res, 200, {ok: true, settings: readBridgeSettings(p.root), defaults: bridgeDefaults, rules: bridgeRules, modes: bridgeModes, subagentModes: bridgeSubagentModes, file: p.settings});
       }
 
       if (req.method === 'POST' && url.pathname === '/api/settings') {

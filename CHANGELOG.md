@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.8（本地增强版）
+
+- 控制台新增「子代理模式」：
+  - `异步后台`（默认）：保持现状，子代理在后台运行，完成后由桥接唤醒父代理继续。
+  - `同步阻塞`：原生层强制 Task 以 `run_in_background=false` 下发，客户端内联执行子代理，父代理等待其结果；同时 `is_background` 恒为 false，不进入后台唤醒逻辑。
+  - 切换后 supervisor 在数秒内重启引擎，下一次 Task 调用生效。
+- 原生层新增 `CURSOR_BRIDGE_SUBAGENT_MODE`（`async` / `sync`），仅在 `sync` 时改写 `SubagentArgs.run_in_background`。
+- 版本号升至 0.2.8，原生桥接重建并重算 `integrity.json` 摘要。
+
+## 0.2.7（本地增强版）
+
+- 修复 Multitask 后台子代理完成后父代理不继续的问题：
+  - 本地 Statsig bootstrap 显式启用 `long_running_jobs`。Cursor 未登录时上游 bootstrap 返回 401，客户端只有在 gate 开启时才会派发后台任务完成通知；缺失它时子代理即使跑完也不会唤醒父代理，这是本次的主因。
+  - `is_background` 保留两条异步信号：模型显式 `run_in_background` 与客户端回报的 `SubagentBackgroundReason`，任一为真即按后台处理；只有两者都没有时才视为同步。异步模式语义不变。
+  - 活跃流上收到 `BackgroundTaskCompletionAction` 不再被当作 unsupported action 丢弃：父 run 仍在输出时注入通知并打断当前 round；已结束时用完成通知重放父请求，开启新一轮模型调用。
+  - 收到完成通知时把 `subagent_runs_by_parent_tool_call_id` 的状态从 `Backgrounded` 更新为 `Success / Error / Aborted` 并写入完成时间；界面不再停在 “Stopped”。
+- 原生桥接启动时初始化 tracing，诊断日志走 stderr 进入 `engine.log`（默认 `cursor_server=info`，可用 `RUST_LOG` 覆盖）；stdout 仍只承载 supervisor 解析的 ready 事件。
+- 同步阻塞模式（`run_in_background=false` 或客户端同步完成）路径不变。
+- 版本号升至 0.2.7，原生桥接重建并重算 `integrity.json` 摘要。
+
 ## 0.2.6（本地增强版）
 
 - 控制台新增「运行模式」：默认模式（现状）与轻量模式。轻量模式把整个 SQLite 放入引擎进程内存（sqlx shared-cache 内存库）：请求转发、会话、工具调用照常工作，但不再写入 `data/bridge.db`；引擎重启后会话历史清空。
@@ -22,7 +42,7 @@
 ## 0.2.4（本地增强版）
 
 - 模型选择器显示名只保留第一段（如 `Opus`、`Sonnet`、`Fable`、`Qwen4-Max-Preview`），不再拼接 ` · routing group` 与模型 ID，避免三段长名挤占 Cursor 的模型列表。
-- 短名规则：取 Magpie 模型名中第一个 ` · ` 之前的部分；名称为空时回退到模型 ID。
+- 短名规则：取 Magpie 模型名中第一个 `·` 之前的部分；名称为空时回退到模型 ID。
 
 ## 0.2.3（本地增强版）
 

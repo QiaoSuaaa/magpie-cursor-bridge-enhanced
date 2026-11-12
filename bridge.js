@@ -55,7 +55,7 @@ if(command==='status') {
     fs.rmSync(lock,{recursive:true,force:true}); fs.mkdirSync(lock);
   }
   fs.writeFileSync(path.join(lock,'pid'),String(process.pid));
-  let child=null,ready=null,ending=false,lastConfig='',nextRefresh=0,paused=false,catalogueDownSince=0,lastModelCount=0,lastEffective='',runningMode='default',activeMode='default';
+  let child=null,ready=null,ending=false,lastConfig='',nextRefresh=0,paused=false,catalogueDownSince=0,lastModelCount=0,lastEffective='',runningMode='default',activeMode='default',runningSubagentMode='async';
   // Lite mode starts from an empty in-memory database, so the proxy port cannot
   // be read back from SQLite. Carry the last port across restarts: Cursor does
   // not re-read http.proxy until it restarts.
@@ -66,7 +66,7 @@ if(command==='status') {
   const update=(state,extra={})=>status(state,{mode:activeMode,engineMode:runningMode||null,...extra});
   async function stop() {
     // Restore before stopping the listener so Cursor does not point at a dead port.
-    const old=child;child=null;ready=null;runningMode='';
+    const old=child;child=null;ready=null;runningMode='';runningSubagentMode='';
     try {
       return restoreProxy(file('settings-journal.json'));
     } finally {
@@ -80,14 +80,14 @@ if(command==='status') {
       }
     }
   }
-  async function start(c,mode) {
+  async function start(c,mode,subagentMode) {
     const serialized=JSON.stringify(c);
     atomic(file('effective.json'),serialized);
     lastEffective=serialized;
     const engine=spawn(path.join(packageDir,'bin/cursor-magpie-bridge'),[file('effective.json')],{
-      env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,...(preferredProxyPort?{CURSOR_BRIDGE_PROXY_PORT:preferredProxyPort}:{})},stdio:['pipe','pipe','pipe']
+      env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(preferredProxyPort?{CURSOR_BRIDGE_PROXY_PORT:preferredProxyPort}:{})},stdio:['pipe','pipe','pipe']
     });
-    runningMode=mode;
+    runningMode=mode;runningSubagentMode=subagentMode;
     child=engine;
     // Native diagnostics can contain request information; keep them in a private local file.
     engine.stderr.pipe(engineLog(),{end:false});
@@ -118,7 +118,8 @@ if(command==='status') {
           // A saved run mode is applied by restarting the engine once; the
           // supervisor never rewrites effective.json just for a mode switch.
           const modeChanged=engineAlive && runningMode!==cfg.runMode;
-          if(changed || Date.now()>=nextRefresh || !engineAlive || modeChanged) {
+          const subagentModeChanged=engineAlive && runningSubagentMode!==cfg.subagentMode;
+          if(changed || Date.now()>=nextRefresh || !engineAlive || modeChanged || subagentModeChanged) {
             let effective=null,failure=null;
             try {effective=await gatewayModels(c);} catch(e) {failure=e;}
             nextRefresh=Date.now()+cfg.refreshSeconds*1000;
@@ -133,8 +134,8 @@ if(command==='status') {
               continue;
             }
             catalogueDownSince=0;
-            if(!engineAlive || modeChanged) {
-              await stop();await start(effective,cfg.runMode);
+            if(!engineAlive || modeChanged || subagentModeChanged) {
+              await stop();await start(effective,cfg.runMode,cfg.subagentMode);
             } else {
               const serialized=JSON.stringify(effective);
               if(serialized!==lastEffective) {atomic(file('effective.json'),serialized);lastEffective=serialized;}
