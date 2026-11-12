@@ -6,6 +6,7 @@
 - **适配范围**：Cursor 3.28.x ～ 3.30.8（已实测），Apple Silicon macOS
 - **与上游的关系**：基于 [nodlles/magpie-agent-cursor-bridge](https://github.com/nodlles/magpie-agent-cursor-bridge) `v0.2.2` 与本机 fork 增补，原生核心来自 [leookun/cursor-byok v1.0.1](https://github.com/leookun/cursor-byok/tree/v1.0.1)
 - **本仓库定位**：公开增强版，GitHub topic 已标记 `magpie-plugin`；可从 Magpie 插件页安装 `github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.9`，也支持本机源码安装
+- **变更记录**：[CHANGELOG.md](CHANGELOG.md)
 
 ---
 
@@ -17,6 +18,7 @@
 4. [如何开发](#四如何开发)
 5. [与原版的升级点](#五与原版的升级点)
 6. [回滚与致谢](#六回滚与致谢)
+7. [变更记录](CHANGELOG.md)
 
 ---
 
