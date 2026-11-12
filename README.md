@@ -5,7 +5,7 @@
 - **当前版本**：`0.2.8`（本地增强版）
 - **适配范围**：Cursor 3.28.x ～ 3.30.8（已实测），Apple Silicon macOS
 - **与上游的关系**：基于 [nodlles/magpie-agent-cursor-bridge](https://github.com/nodlles/magpie-agent-cursor-bridge) `v0.2.2` 与本机 fork 增补，原生核心来自 [leookun/cursor-byok v1.0.1](https://github.com/leookun/cursor-byok/tree/v1.0.1)
-- **本仓库定位**：本机使用与二次开发，不通过 GitHub 插件页分发
+- **本仓库定位**：公开增强版，GitHub topic 已标记 `magpie-plugin`；可从 Magpie 插件页安装 `github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.8`，也支持本机源码安装
 
 ---
 
@@ -194,6 +194,20 @@ Cursor 请求里的 `requested_model.model_id` 是桥接生成的 `model_hash`�
 - 无需安装 Cursor BYOK、Node 或 Rust。
 
 ### 3.2 安装
+
+从 Magpie 插件页安装（推荐）——在 **Magpie → Plugins** 添加固定版本地址：
+
+```text
+github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.8
+```
+
+安装后在终端运行一次包内初始化：
+
+```sh
+bash "$HOME/.config/magpie/plugins/node_modules/magpie-agent-cursor-bridge/setup.command"
+```
+
+本机源码安装：
 
 ```sh
 bash "$HOME/Code/tools/magpie-agent-cursor-bridge-enhanced/setup.command"
