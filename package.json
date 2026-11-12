@@ -77,9 +77,9 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nodlles/magpie-agent-cursor-bridge.git"
+    "url": "git+https://github.com/kingchen95272025/magpie-agent-cursor-bridge-enhanced.git"
   },
-  "homepage": "https://github.com/nodlles/magpie-agent-cursor-bridge#readme",
+  "homepage": "https://github.com/kingchen95272025/magpie-agent-cursor-bridge-enhanced#readme",
   "bugs": {
     "url": "https://github.com/nodlles/magpie-agent-cursor-bridge/issues"
   }
