@@ -1,6 +1,6 @@
 {
   "name": "magpie-agent-cursor-bridge",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "type": "module",
   "description": "Cursor protocol bridge backed by Magpie",
   "license": "MIT",
@@ -38,9 +38,6 @@
     "setup": "bash setup.command",
     "uninstall": "bash setup.command uninstall"
   },
-  "dependencies": {
-    "jsonc-parser": "3.3.1"
-  },
   "os": [
     "darwin"
   ],
@@ -65,9 +62,6 @@
     "npm-shrinkwrap.json",
     "scripts",
     "test"
-  ],
-  "bundleDependencies": [
-    "jsonc-parser"
   ],
   "keywords": [
     "magpie",

@@ -2,10 +2,10 @@
 
 让普通版 Cursor 使用 **Magpie** 中配置的模型与路由组：模型菜单只列出 Magpie 目录，隐藏 Cursor Auto 入口，保留 Cursor 原有登录与 Tab 补全。
 
-- **当前版本**：`0.2.8`（本地增强版）
+- **当前版本**：`0.2.9`（本地增强版）
 - **适配范围**：Cursor 3.28.x ～ 3.30.8（已实测），Apple Silicon macOS
 - **与上游的关系**：基于 [nodlles/magpie-agent-cursor-bridge](https://github.com/nodlles/magpie-agent-cursor-bridge) `v0.2.2` 与本机 fork 增补，原生核心来自 [leookun/cursor-byok v1.0.1](https://github.com/leookun/cursor-byok/tree/v1.0.1)
-- **本仓库定位**：公开增强版，GitHub topic 已标记 `magpie-plugin`；可从 Magpie 插件页安装 `github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.8`，也支持本机源码安装
+- **本仓库定位**：公开增强版，GitHub topic 已标记 `magpie-plugin`；可从 Magpie 插件页安装 `github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.9`，也支持本机源码安装
 
 ---
 
@@ -198,7 +198,7 @@ Cursor 请求里的 `requested_model.model_id` 是桥接生成的 `model_hash`�
 从 Magpie 插件页安装（推荐）——在 **Magpie → Plugins** 添加固定版本地址：
 
 ```text
-github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.8
+github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.9
 ```
 
 安装后在终端运行一次包内初始化：
@@ -217,7 +217,7 @@ bash "$HOME/Code/tools/magpie-agent-cursor-bridge-enhanced/setup.command"
 
 1. 校验二进制摘要与版本配对；
 2. 复用已有证书，或在首次安装时生成本机 CA 并请求 macOS 信任；
-3. 把完整版本目录 stage 到 `releases/0.2.8-xxxxxx`；
+3. 把完整版本目录 stage 到 `releases/0.2.9-xxxxxx`；
 4. 把 `~/.local/share/magpie-cursor-bridge` 注册为本地 Magpie 插件；
 5. 停止旧后台、切换 LaunchAgent、启动新后台。
 
@@ -277,7 +277,7 @@ bash setup.command status    # 输出 status.json 原文
 
 ```json
 {
-  "version": "0.2.8",
+  "version": "0.2.9",
   "state": "connected",
   "mode": "lite",
   "engineMode": "lite",
@@ -445,7 +445,7 @@ node test/manual-lifecycle.mjs
 
 ### 5.1 差异总览
 
-| 项目 | 上游 0.2.2 | 增强版 0.2.8 | 机制 |
+| 项目 | 上游 0.2.2 | 增强版 0.2.9 | 机制 |
 |---|---|---|---|
 | Cursor 3.29+ / 3.30.8 | ❌ 30 秒后 “Connection stalled” | ✅ 正常对话 | 上行编码从 hex 文本改为原始 protobuf 字节 |
 | `BidiAppend` 载荷 | 只接受 `data`（tag 1，hex） | `data_binary`（tag 4）优先，`data` 兜底 | 同一消息的两种编码，共用一个解码器 |
@@ -454,7 +454,7 @@ node test/manual-lifecycle.mjs
 | Cursor 3.27 / 3.28.x | ✅ | ✅ | 公共路径未改动 |
 | 运行模式 | 仅文件库 | 默认 + 轻量（内存库） | 轻量模式不写 `bridge.db`，适合磁盘敏感或只做转发的场景 |
 | Multitask 后台子代理 | 完成后不接管，子代理停在 Stopped | 完成即唤醒父代理，状态回写 Success | 完成通知进入运行时，不再当作 unsupported action 丢弃 |
-| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.8 | 避免与上游 release 目录、摘要互相覆盖 |
+| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.9 | 避免与上游 release 目录、摘要互相覆盖 |
 
 ### 5.2 0.2.7：Multitask 后台子代理完成后的接管
 

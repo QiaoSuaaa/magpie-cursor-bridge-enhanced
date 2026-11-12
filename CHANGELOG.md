@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.9（本地增强版）
+
+- 修复通过 Magpie 插件页从 GitHub 安装后启动报 `Cannot find package 'jsonc-parser'` 的问题：`jsonc-parser` 以 ESM 运行时形式 vendored 到 `vendor/jsonc-parser`，不再依赖 `npm install`。
+- staging 与安装校验改为读取 vendored 目录；移除 `package.json` 的 npm 依赖与 `npm-shrinkwrap.json`。
+- 版本号升至 0.2.9，原生桥接重建并重算 `integrity.json` 摘要。
+
 ## 0.2.8（本地增强版）
 
 - 控制台新增「子代理模式」：

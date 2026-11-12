@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {createRequire} from 'node:module';
 import {createHash} from 'node:crypto';
 import {paths,verifyPackage,initializeCertificate,stage,activate,plistText} from '../lib/install.js';
 const source=fileURLToPath(new URL('..',import.meta.url));
@@ -24,7 +23,7 @@ test('fresh machines generate distinct CAs without a BYOK install, database or t
  assert.deepEqual(fs.readdirSync(one),['ca']);
  fs.unlinkSync(path.join(one,'ca/ca.crt'));assert.notEqual(init(one).status,0);assert.equal(hash(path.join(one,'ca/ca.key')),before);
 });
-test('package and native engine have the same pinned version and digest',()=>{assert.equal(verifyPackage(source).version,'0.2.8');});
+test('package and native engine have the same pinned version and digest',()=>{assert.equal(verifyPackage(source).version,'0.2.9');});
 test('certificate trust uses SSL policy and argument arrays, and refuses failed authorization',t=>{
  const p=paths(temp(t)),calls=[];let trusted=false;
  const exec=(cmd,args,options)=>{calls.push({cmd,args,options});if(args[0]==='--init-ca')return {status:0,stdout:'{"ca":"untrusted"}'};if(args[0]==='add-trusted-cert'){trusted=true;return {status:0};}return {status:trusted?0:1};};
@@ -41,9 +40,9 @@ test('service plist escapes paths and uses an installed runtime, independent of 
 });
 test('complete staging never overwrites an existing running release',t=>{
  const p=paths(temp(t));const fakeRuntime=path.join(p.home,'runtime');fs.writeFileSync(fakeRuntime,'test');
- const one=stage(source,p,'0.2.8',fakeRuntime),two=stage(source,p,'0.2.8',fakeRuntime);
+ const one=stage(source,p,'0.2.9',fakeRuntime),two=stage(source,p,'0.2.9',fakeRuntime);
  assert.notEqual(one,two);assert.equal(hash(path.join(one,'bin/cursor-magpie-bridge')),hash(engine));
- assert.ok(fs.existsSync(path.join(two,'node_modules/jsonc-parser/package.json')));
+ assert.ok(fs.existsSync(path.join(two,'vendor/jsonc-parser/package.json')));
  assert.equal(fs.statSync(path.join(two,'bin/runtime')).mode&0o777,0o755);
 });
 test('failed activation restores previous launch configuration and restarts previous release',{timeout:15000},async t=>{
@@ -53,16 +52,15 @@ test('failed activation restores previous launch configuration and restarts prev
  assert.equal(fs.readFileSync(p.plist,'utf8'),'previous');assert.equal(bootstraps,6);
 });
 
-test('GitHub installation supports a dependency hoisted by Magpie Bun',t=>{
+test('GitHub installation stages the vendored JSONC parser without npm install',t=>{
  const home=temp(t),parent=path.join(home,'node_modules'),plugin=path.join(parent,'magpie-agent-cursor-bridge');
  fs.mkdirSync(plugin,{recursive:true});
  for(const name of fs.readdirSync(source)) {
    if(['node_modules','.git'].includes(name)) continue;
    fs.cpSync(path.join(source,name),path.join(plugin,name),{recursive:true});
  }
- fs.cpSync(path.dirname(createRequire(import.meta.url).resolve('jsonc-parser/package.json')),path.join(parent,'jsonc-parser'),{recursive:true});
- assert.equal(verifyPackage(plugin).version,'0.2.8');
+ assert.equal(verifyPackage(plugin).version,'0.2.9');
  const runtime=path.join(home,'runtime');fs.writeFileSync(runtime,'test');
- const release=stage(plugin,paths(home),'0.2.8',runtime);
- assert.ok(fs.existsSync(path.join(release,'node_modules/jsonc-parser/package.json')));
+ const release=stage(plugin,paths(home),'0.2.9',runtime);
+ assert.ok(fs.existsSync(path.join(release,'vendor/jsonc-parser/lib/umd/main.js')));
 });
