@@ -7,6 +7,7 @@ import {spawn,execFileSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {atomic,applyProxy,restoreProxy} from './lib/settings.js';
 import {validate,gatewayModels} from './lib/config.js';
+import {read as readBridgeSettings} from './lib/bridge-settings.js';
 
 const packageDir=path.dirname(fileURLToPath(import.meta.url));
 const version=JSON.parse(fs.readFileSync(path.join(packageDir,'package.json'),'utf8')).version;
@@ -17,13 +18,14 @@ let lastStatus='';
 const status=(state,extra={})=>{const signature=JSON.stringify({version,state,...extra});if(signature!==lastStatus){atomic(file('status.json'),JSON.stringify({version,state,...extra,updated:new Date().toISOString()},null,2));lastStatus=signature;}};
 const read=name=>JSON.parse(fs.readFileSync(file(name),'utf8'));
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
-// Native diagnostics stay local: 0600 file next to the other bridge state, rotated at 4 MiB.
-const ENGINE_LOG_LIMIT=4*1024*1024;
+// Native diagnostics stay local: 0600 file next to the other bridge state,
+// rotated at the size the control panel configured (default 4 MiB).
 let engineLogStream=null;
 function engineLog() {
   if(engineLogStream) return engineLogStream;
   const log=file('engine.log');
-  try {if(fs.statSync(log).size>ENGINE_LOG_LIMIT) fs.renameSync(log,file('engine.log.1'));} catch {}
+  const limit=readBridgeSettings(root).logLimitMB*1024*1024;
+  try {if(fs.statSync(log).size>limit) fs.renameSync(log,file('engine.log.1'));} catch {}
   engineLogStream=fs.createWriteStream(log,{flags:'a',mode:0o600});
   engineLogStream.on('error',()=>{engineLogStream=null;});
   return engineLogStream;
@@ -54,7 +56,6 @@ if(command==='status') {
   }
   fs.writeFileSync(path.join(lock,'pid'),String(process.pid));
   let child=null,ready=null,ending=false,lastConfig='',nextRefresh=0,paused=false,catalogueDownSince=0,lastModelCount=0,lastEffective='';
-  const GATEWAY_GRACE_MS=60_000;
   async function stop() {
     // Restore before stopping the listener so Cursor does not point at a dead port.
     const old=child;child=null;ready=null;
@@ -94,6 +95,7 @@ if(command==='status') {
   try {
     restoreProxy(file('settings-journal.json'));
     while(!ending) {
+      const cfg=readBridgeSettings(root);
       try {
         const raw=fs.existsSync(file('connection.json'))?fs.readFileSync(file('connection.json'),'utf8'):'{}';
         const c=validate(JSON.parse(raw));
@@ -105,13 +107,13 @@ if(command==='status') {
           if(changed || Date.now()>=nextRefresh || !engineAlive) {
             let effective=null,failure=null;
             try {effective=await gatewayModels(c);} catch(e) {failure=e;}
-            nextRefresh=Date.now()+15000;
+            nextRefresh=Date.now()+cfg.refreshSeconds*1000;
             if(failure) {
               // A transient Magpie hiccup must not drop Cursor's proxy: keep the running
               // engine (and its port) and only fall back once the outage is sustained.
               if(!catalogueDownSince) catalogueDownSince=Date.now();
               const downFor=Date.now()-catalogueDownSince;
-              if(!engineAlive || downFor>=GATEWAY_GRACE_MS) throw failure;
+              if(!engineAlive || downFor>=cfg.gatewayGraceSeconds*1000) throw failure;
               status('connected',{model:c.model,models:lastModelCount,proxy:ready.proxy,backend:ready.backend,pid:child.pid,warning:`Magpie gateway unavailable for ${Math.round(downFor/1000)}s: ${failure.message}`});
               await wait(2000);
               continue;

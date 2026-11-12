@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cursor · Magpie Bridge 控制台</title>
+<link rel="stylesheet" href="ui.css">
+</head>
+<body>
+<main>
+  <header class="head">
+    <div class="identity">
+      <span class="dot" id="dot" data-state="unknown"></span>
+      <div>
+        <h1>Cursor · Magpie Bridge</h1>
+        <p class="sub" id="stateText">读取状态…</p>
+      </div>
+    </div>
+    <div class="head-actions">
+      <span class="port">127.0.0.1:<span id="port">…</span></span>
+      <button id="refresh" class="ghost" type="button">刷新</button>
+    </div>
+  </header>
+
+  <section class="bar">
+    <button id="start" class="primary" type="button">启动</button>
+    <button id="status" type="button">状态</button>
+    <button id="restart" class="danger" type="button">重启</button>
+    <span id="busy" class="busy" hidden>执行中，请稍候…</span>
+    <button id="back" class="ghost right" type="button" title="回到 Magpie 面板修改控制端口">端口设置</button>
+  </section>
+
+  <div id="notice" class="notice" hidden></div>
+  <pre id="output" class="output" hidden></pre>
+
+  <section class="grid" id="overview" aria-live="polite"></section>
+
+  <section class="card">
+    <div class="card-head"><h2>可编辑参数</h2><span class="hint">写入 bridge-settings.json</span></div>
+    <form id="settingsForm" class="settings">
+      <label><span>模型目录同步间隔</span><span class="field"><input id="refreshSeconds" type="number" min="5" max="300" step="1"> 秒</span></label>
+      <label><span>网关断线容错</span><span class="field"><input id="gatewayGraceSeconds" type="number" min="10" max="600" step="1"> 秒</span></label>
+      <label><span>引擎日志上限</span><span class="field"><input id="logLimitMB" type="number" min="1" max="64" step="1"> MB</span></label>
+      <div class="form-actions">
+        <button id="saveSettings" class="primary" type="submit">保存</button>
+        <button id="resetSettings" class="ghost" type="button">填入默认值</button>
+        <span id="settingsHint" class="hint"></span>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>快捷入口</h2><span class="hint">在本机打开</span></div>
+    <div class="links">
+      <button type="button" data-target="config">配置目录</button>
+      <button type="button" data-target="engine-log">engine.log</button>
+      <button type="button" data-target="supervisor-log">supervisor.log</button>
+      <button type="button" data-target="supervisor-error-log">supervisor-error.log</button>
+      <button type="button" data-target="install">安装目录</button>
+      <button type="button" data-target="repo">插件目录</button>
+    </div>
+  </section>
+
+  <p class="foot">控制台只监听 127.0.0.1；「启动」与「重启」直接调用 <code>bash setup.command</code>，「状态」调用 <code>bash setup.command status</code>。</p>
+</main>
+<script>window.__BRIDGE_TOKEN__="__CONTROL_TOKEN__";window.__BRIDGE_PORT__=__CONTROL_PORT__;</script>
+<script src="ui.js"></script>
+</body>
+</html>

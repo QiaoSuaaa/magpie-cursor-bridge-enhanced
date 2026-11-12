@@ -2,7 +2,7 @@
 
 让普通版 Cursor 使用 **Magpie** 中配置的模型与路由组：模型菜单只列出 Magpie 目录，隐藏 Cursor Auto 入口，保留 Cursor 原有登录与 Tab 补全。
 
-- **当前版本**：`0.2.4`（本地增强版）
+- **当前版本**：`0.2.5`（本地增强版）
 - **适配范围**：Cursor 3.28.x ～ 3.30.8（已实测），Apple Silicon macOS
 - **与上游的关系**：基于 [nodlles/magpie-agent-cursor-bridge](https://github.com/nodlles/magpie-agent-cursor-bridge) `v0.2.2` 与本机 fork 增补，原生核心来自 [leookun/cursor-byok v1.0.1](https://github.com/leookun/cursor-byok/tree/v1.0.1)
 - **本仓库定位**：本机使用与二次开发，不通过 GitHub 插件页分发
@@ -199,7 +199,7 @@ bash "$HOME/Code/tools/magpie-agent-cursor-bridge-enhanced/setup.command"
 
 1. 校验二进制摘要与版本配对；
 2. 复用已有证书，或在首次安装时生成本机 CA 并请求 macOS 信任；
-3. 把完整版本目录 stage 到 `releases/0.2.4-xxxxxx`；
+3. 把完整版本目录 stage 到 `releases/0.2.5-xxxxxx`；
 4. 把 `~/.local/share/magpie-cursor-bridge` 注册为本地 Magpie 插件；
 5. 停止旧后台、切换 LaunchAgent、启动新后台。
 
@@ -227,7 +227,28 @@ magpie cursor-bridge default        # 断开，Cursor 恢复原代理
 - 新增模型后桥接会在 15 秒内同步，Cursor 菜单可能需要重新打开才能看到；
 - 已有聊天若仍显示 Auto，手动改选一次即可。
 
-### 3.5 状态与日志
+### 3.5 控制台（Agent 行菜单）
+
+Magpie 的代理卡片内部是内置 UI，插件无法把控件插进那张卡片。本插件通过 Magpie 的 **Agent 行菜单**提供入口（Magpie 0.1.3830 实测）：
+
+- 在 **Cursor · Magpie Bridge** 行的把手（或右键）选择「桥接控制台」；侧栏「插件」组也会出现同名页面。
+- Agent 行与侧栏页使用 Cursor 官方图标（`ui/cursor.svg`）。
+- 打开后跳转到本机控制台 `127.0.0.1:3580`（首次进入的引导页可修改端口）。
+- `magpie.actions` 的菜单项对全部 Agent 行生效；从其他 Agent 行打开时会提示该入口只服务于 Cursor · Magpie Bridge。
+
+控制台提供：
+
+- **启动**：`bash setup.command`（校验包、stage 新版本、切换 LaunchAgent）
+- **状态**：`bash setup.command status`，同时刷新运行概览
+- **重启**：`launchctl bootout` → 终止 supervisor 与原生引擎 → `bash setup.command`
+- **可编辑参数**：模型目录同步间隔（默认 15 秒）、网关断线容错（默认 60 秒）、引擎日志上限（默认 4 MiB），写入 `~/.config/magpie-cursor-bridge/bridge-settings.json`。同步间隔与容错在下一轮循环生效；日志上限在下次后台启动时生效。
+- **快捷入口**：配置目录、`engine.log`、`supervisor.log`、`supervisor-error.log`、安装目录、插件目录。
+
+控制服务只监听 `127.0.0.1:3580`（可在引导页修改，约 2 秒切换），每次启动生成随机口令，并校验 `Host` 与 `Origin`。它由 Magpie 插件宿主拉起，**后台桥接停止时仍能点「启动」**。`magpie web`（浏览器远程）下无法访问本机环回地址，控制台不可用。
+
+> 从旧版本升级后，需要在 Magpie 插件页**关闭再开启**本插件（或重启 Magpie），宿主才会加载新的 `control/host.js`、页面与菜单清单。
+
+### 3.6 状态与日志
 
 ```sh
 bash setup.command status    # 输出 status.json 原文
@@ -237,7 +258,7 @@ bash setup.command status    # 输出 status.json 原文
 
 ```json
 {
-  "version": "0.2.4",
+  "version": "0.2.5",
   "state": "connected",
   "model": "group/opus",
   "models": 4,
@@ -255,7 +276,7 @@ bash setup.command status    # 输出 status.json 原文
 - `~/.config/magpie-cursor-bridge/supervisor-error.log`
 - `~/Library/Application Support/Cursor/logs/<时间戳>/`（Cursor 侧）
 
-### 3.6 更新
+### 3.7 更新
 
 ```sh
 cd ~/Code/tools/magpie-agent-cursor-bridge-enhanced
@@ -265,7 +286,7 @@ bash setup.command                # stage 新版本并切换后台
 
 只改 Agent / JS 文件不足以替换正在运行的后台，必须重跑 `setup.command`。若 Magpie 提示 agent 已断开，执行 `magpie cursor-bridge group/opus` 重连。
 
-### 3.7 卸载
+### 3.8 卸载
 
 ```sh
 bash setup.command uninstall
@@ -273,7 +294,7 @@ bash setup.command uninstall
 
 会停止后台、还原 Cursor 代理、从 Magpie 移除本地插件。**证书、`data/` 与恢复记录会保留**，便于日后重装。
 
-### 3.8 常见问题
+### 3.9 常见问题
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
@@ -282,6 +303,10 @@ bash setup.command uninstall
 | 提示未登录 / `ERROR_NOT_LOGGED_IN` | 非 AI 请求被转发到 Cursor 官方，属预期 | 忽略；不影响 Agent 对话 |
 | 修改代理后桥接暂停 | 检测到外部程序改动 `http.proxy` | 在 Magpie 中断开后重新连接 |
 | 更新后仍是旧行为 | 后台未切换 | 重跑 `setup.command`，必要时重启 Cursor |
+| Agent 行菜单没有「桥接控制台」 | 插件宿主仍加载旧清单 | 在 Magpie 插件页关闭再开启本插件，或重启 Magpie |
+| 从其他 Agent 行打开控制台被提示 | `magpie.actions` 对全部 Agent 行生效 | 从 Cursor · Magpie Bridge 行打开，或直接用侧栏插件页 |
+| 控制台打不开 / 端口被占用 | 控制服务未启动或端口冲突 | 在引导页修改控制端口后重试；确认插件处于开启状态 |
+| 控制台没有样式、按钮无响应 | 沙箱页的 CSP 拦截了外链资源 | 升级到包含 CSP 修复的版本；旧页面强制刷新或重新打开 |
 
 ---
 
@@ -295,14 +320,23 @@ bash setup.command uninstall
 ├── bridge.js                # 后台监视器：目录同步、启停桥接、代理接管
 ├── install.js               # 安装器：校验、证书、stage、注册、激活
 ├── setup.command            # 初始化入口（setup/status/uninstall/--version）
+├── control/                 # Agent 行菜单控制台：插件宿主服务 + 本机 HTTP 控制台
+│   ├── host.js              # 由 Magpie 插件宿主加载，守护控制服务与端口切换
+│   ├── server.js            # 127.0.0.1 控制 API：启动/状态/重启/参数/快捷入口
+│   ├── ui.html / ui.css / ui.js
+├── ui/                      # Magpie 插件页与 Agent 行菜单入口（沙箱页）
+│   ├── console.html
+│   ├── console-page.js
+│   └── cursor.svg           # Cursor 官方图标（Agent 行 / 侧栏页）
 ├── lib/
 │   ├── config.js            # connection.json 校验与 Magpie 模型目录拉取
+│   ├── bridge-settings.js   # 可编辑参数（同步间隔、断线容错、日志上限）
 │   ├── install.js           # 版本配对、证书、release stage、LaunchAgent
 │   └── settings.js          # Cursor settings.json 的原子写与代理恢复
 ├── bin/cursor-magpie-bridge # 编译产物（Rust）
 ├── source.patch             # 相对上游 v1.0.1 的全部源码改动
 ├── scripts/build-native.sh  # 克隆上游 → 应用补丁 → cargo build → 写摘要
-├── test/                    # Node 测试（16 项）
+├── test/                    # Node 测试（22 项）
 ├── integrity.json           # 二进制版本与 SHA-256
 └── CHANGELOG.md
 ```
@@ -373,7 +407,7 @@ node test/manual-lifecycle.mjs
 
 | 目标 | 方法 |
 |---|---|
-| 看后台状态 | `bash setup.command status` |
+| 看后台状态 | `bash setup.command status`，或 Magpie → Cursor · Magpie Bridge 行菜单「桥接控制台」 |
 | 看桥接诊断 | `~/.config/magpie-cursor-bridge/engine.log` |
 | 看最近模型调用 | `sqlite3 data/bridge.db "SELECT ... FROM llm_calls ORDER BY created_at_ms DESC LIMIT 10"` |
 | 看 Agent 运行 | `data/bridge.db` 的 `runs`、`cursor_run_traces` |
@@ -390,14 +424,14 @@ node test/manual-lifecycle.mjs
 
 ### 5.1 差异总览
 
-| 项目 | 上游 0.2.2 | 增强版 0.2.4 | 机制 |
+| 项目 | 上游 0.2.2 | 增强版 0.2.5 | 机制 |
 |---|---|---|---|
 | Cursor 3.29+ / 3.30.8 | ❌ 30 秒后 “Connection stalled” | ✅ 正常对话 | 上行编码从 hex 文本改为原始 protobuf 字节 |
 | `BidiAppend` 载荷 | 只接受 `data`（tag 1，hex） | `data_binary`（tag 4）优先，`data` 兜底 | 同一消息的两种编码，共用一个解码器 |
 | 模型选择器显示名 | `Opus · routing group · group/opus` | `Opus` | 展示名与路由标识解耦 |
 | 解码失败转储 | `.hex` 文本 | `.bin` 原始字节 | 3.29+ 的载荷本就不经过 hex |
 | Cursor 3.27 / 3.28.x | ✅ | ✅ | 公共路径未改动 |
-| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.4 | 避免与上游 release 目录、摘要互相覆盖 |
+| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.5 | 避免与上游 release 目录、摘要互相覆盖 |
 
 ### 5.2 0.2.3：为什么 3.29+ 是“卡住”而不是报错
 

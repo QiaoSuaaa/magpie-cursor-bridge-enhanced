@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.5（本地增强版）
+
+- Magpie Agent 行菜单新增「桥接控制台」入口（侧栏插件组同名页面）：打开本机控制台执行启动（`bash setup.command`）、状态（`bash setup.command status`）与重启（`launchctl bootout` + 终止进程 + `setup.command`），并展示运行概览、日志与目录快捷入口。代理卡片内部由 Magpie 内置 UI 渲染，插件无法直接插入控件。
+- 新增可编辑参数 `~/.config/magpie-cursor-bridge/bridge-settings.json`：模型目录同步间隔（默认 15 秒）、网关断线容错（默认 60 秒）、引擎日志上限（默认 4 MiB）；控制台保存后下一轮生效（日志上限下次后台启动生效）。
+- 控制服务由 Magpie 插件宿主拉起，仅监听 `127.0.0.1`（默认 3580），带每次启动随机口令并校验 `Host`/`Origin`；后台桥接停止时仍可启动。
+- 修复控制台在 Magpie 沙箱页中 CSS/JS 被 CSP `'self'` 拦截的问题（沙箱为 opaque origin）：改为显式 `http://127.0.0.1:<port>` / `http://localhost:<port>` 源，样式与按钮恢复。
+- Agent 行与侧栏插件页改用 Cursor 官方图标（`ui/cursor.svg`，`agent.icon` 内联 data URI）。
+- 修复 `setup.command` 在插件按本地路径注册时误判未注册、重复注册本地描述符的问题。
+- 版本号升至 0.2.5，原生桥接重建并重算 `integrity.json` 摘要。
+
 ## 0.2.4（本地增强版）
 
 - 模型选择器显示名只保留第一段（如 `Opus`、`Sonnet`、`Fable`、`Qwen4-Max-Preview`），不再拼接 ` · routing group` 与模型 ID，避免三段长名挤占 Cursor 的模型列表。

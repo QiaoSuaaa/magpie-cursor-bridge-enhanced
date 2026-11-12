@@ -39,12 +39,26 @@ try {
         // A package installed by Magpie is already registered; ZIP installs register a stable local descriptor.
         const configHome=process.env.XDG_CONFIG_HOME||path.join(p.home,'.config');
         const packagePath=path.join(configHome,'magpie/plugins/node_modules',manifest.name);
-        const registered=fs.existsSync(packagePath)&&fs.realpathSync(packagePath)===fs.realpathSync(source);
+        // Magpie also registers a plugin by its local path (this repository), so
+        // a missing npm-style copy does not mean the descriptor is unregistered.
+        let registered=fs.existsSync(packagePath)&&fs.realpathSync(packagePath)===fs.realpathSync(source);
+        if(!registered) try {
+          const list=JSON.parse(fs.readFileSync(path.join(configHome,'magpie/plugins.json'),'utf8')).plugins||[];
+          registered=list.some(entry=>{
+            const spec=String(entry?.spec||'');
+            try {return !!spec && path.resolve(spec)===path.resolve(source);} catch {return false;}
+          });
+        } catch { /* no plugins.json yet */ }
         if(registered) {
           run(magpie,['plugin','rm',p.target],{optional:true});
         } else {
+          // The registered descriptor needs the agent, the Agents-page panel and
+          // the control host. setup.command itself stays in the package this was
+          // installed from; control/host.js reads the location file below.
+          for(const name of ['control','ui']) fs.cpSync(path.join(source,name),path.join(p.target,name),{recursive:true,force:true});
           atomic(path.join(p.target,'agent.js'),fs.readFileSync(path.join(source,'agent.js'),'utf8'));
-          atomic(path.join(p.target,'package.json'),JSON.stringify({name:manifest.name,version:manifest.version,type:'module',magpie:manifest.magpie},null,2));
+          atomic(path.join(p.target,'package.json'),JSON.stringify({name:manifest.name,version:manifest.version,type:'module',main:manifest.main,magpie:manifest.magpie},null,2));
+          atomic(path.join(p.target,'control-location.json'),JSON.stringify({source},null,2));
           run(magpie,['plugin','add',p.target]);
         }
         await activate(p,release,domain);

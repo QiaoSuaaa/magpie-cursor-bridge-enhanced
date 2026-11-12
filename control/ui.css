@@ -1,0 +1,99 @@
+:root {
+  --bg: #f6f6f7;
+  --card: #ffffff;
+  --fg: #1c1c1e;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --accent: #4f46e5;
+  --accent-soft: #eef2ff;
+  --green: #16a34a;
+  --amber: #d97706;
+  --red: #dc2626;
+  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  --code: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color-scheme: light;
+}
+[data-theme="dark"] {
+  --bg: #111214;
+  --card: #18191c;
+  --fg: #f4f4f5;
+  --muted: #a1a1aa;
+  --line: #2a2c30;
+  --accent: #818cf8;
+  --accent-soft: #24263f;
+  --green: #4ade80;
+  --amber: #fbbf24;
+  --red: #f87171;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--magpie-bg, var(--bg)); color: var(--magpie-fg, var(--fg)); font: 13px/1.5 var(--magpie-font, var(--font)); -webkit-font-smoothing: antialiased; }
+main { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 12px; }
+h1, h2 { margin: 0; font-weight: 600; letter-spacing: -.01em; }
+h1 { font-size: 14px; }
+h2 { font-size: 12.5px; color: var(--magpie-muted, var(--muted)); font-weight: 600; }
+
+.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.sub { margin: 1px 0 0; font-size: 12px; color: var(--magpie-muted, var(--muted)); }
+.head-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.port { font: 11.5px var(--magpie-code, var(--code)); color: var(--magpie-muted, var(--muted)); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex-shrink: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--muted) 18%, transparent); }
+.dot[data-state="connected"] { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 18%, transparent); }
+.dot[data-state="paused"] { background: var(--amber); box-shadow: 0 0 0 3px color-mix(in srgb, var(--amber) 18%, transparent); }
+.dot[data-state="error"] { background: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 18%, transparent); }
+
+.bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bar .right { margin-left: auto; }
+.busy { font-size: 12px; color: var(--magpie-muted, var(--muted)); }
+.busy::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; border: 1.5px solid var(--muted); border-top-color: transparent; animation: spin .7s linear infinite; vertical-align: -1px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+button { font: inherit; color: inherit; background: var(--magpie-card, var(--card)); border: 1px solid var(--magpie-line, var(--line)); border-radius: 7px; padding: 4px 12px; cursor: pointer; transition: border-color .12s, background .12s; }
+button:hover:not(:disabled) { border-color: var(--magpie-muted, var(--muted)); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--magpie-accent, var(--accent)); border-color: transparent; color: #fff; }
+button.primary:hover:not(:disabled) { filter: brightness(1.06); }
+button.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 38%, var(--line)); }
+button.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 8%, var(--card)); }
+button.ghost { background: transparent; }
+:focus-visible { outline: 2px solid var(--magpie-accent, var(--accent)); outline-offset: 1px; }
+
+.notice { border-radius: 8px; padding: 7px 10px; font-size: 12px; border: 1px solid var(--line); background: var(--magpie-card, var(--card)); }
+.notice[data-kind="warning"] { border-color: color-mix(in srgb, var(--amber) 40%, var(--line)); color: var(--amber); }
+.notice[data-kind="error"] { border-color: color-mix(in srgb, var(--red) 40%, var(--line)); color: var(--red); }
+.notice[data-kind="ok"] { border-color: color-mix(in srgb, var(--green) 40%, var(--line)); color: var(--green); }
+
+.output { margin: 0; padding: 10px 12px; max-height: 230px; overflow: auto; border-radius: 8px; border: 1px solid var(--magpie-line, var(--line)); background: var(--magpie-card, var(--card)); font: 11.5px/1.5 var(--magpie-code, var(--code)); white-space: pre-wrap; word-break: break-word; }
+.output[data-kind="error"] { border-color: color-mix(in srgb, var(--red) 40%, var(--line)); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 9px 18px; padding: 12px 14px; border: 1px solid var(--magpie-line, var(--line)); border-radius: 9px; background: var(--magpie-card, var(--card)); }
+.item { min-width: 0; }
+.item .k { display: block; font-size: 11px; color: var(--magpie-muted, var(--muted)); }
+.item .v { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item .v.mono { font-family: var(--magpie-code, var(--code)); font-size: 11.5px; }
+.item .v.ok { color: var(--green); }
+.item .v.warn { color: var(--amber); }
+.item .v.bad { color: var(--red); }
+
+.card { border: 1px solid var(--magpie-line, var(--line)); border-radius: 9px; background: var(--magpie-card, var(--card)); padding: 11px 14px 13px; }
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+.hint { font-size: 11.5px; color: var(--magpie-muted, var(--muted)); }
+.settings { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.settings label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--magpie-muted, var(--muted)); }
+.field { display: flex; align-items: center; gap: 6px; color: var(--fg); }
+input[type="number"] { width: 78px; font: 12.5px var(--magpie-code, var(--code)); color: var(--magpie-fg, var(--fg)); background: var(--bg); border: 1px solid var(--magpie-line, var(--line)); border-radius: 6px; padding: 4px 7px; }
+.form-actions { display: flex; align-items: center; gap: 8px; }
+
+.links { display: flex; gap: 8px; flex-wrap: wrap; }
+.links button { font-size: 12px; }
+
+.foot { margin: 0; font-size: 11.5px; color: var(--magpie-muted, var(--muted)); }
+code { font: 11.5px var(--magpie-code, var(--code)); }
+
+@media (max-width: 620px) {
+  main { padding: 14px; }
+  .head { align-items: flex-start; flex-direction: column; }
+  .head-actions { width: 100%; justify-content: space-between; }
+  .bar .right { margin-left: 0; }
+}
