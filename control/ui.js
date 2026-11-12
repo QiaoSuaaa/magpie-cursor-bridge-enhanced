@@ -12,6 +12,7 @@
     error: {label: '错误', kind: 'error'},
     stopped: {label: '已停止', kind: 'idle'}
   };
+  const MODES = {default: '默认模式', lite: '轻量模式'};
 
   let busy = null;
   let settingsFilled = false;
@@ -63,6 +64,14 @@
     return text.length > most ? `…${text.slice(-(most - 1))}` : text;
   }
 
+  function bytes(value) {
+    if (!Number.isFinite(value)) return '—';
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+    return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  }
+
   function setBusy(value) {
     for (const id of ['start', 'status', 'restart']) $(id).disabled = value;
     $('busy').hidden = !value;
@@ -106,9 +115,19 @@
     if (warning) notice(warning, runtime?.state === 'error' ? 'error' : 'warning');
     else if (!quiet || $('notice').dataset.kind === 'warning') notice('');
 
+    const configuredMode = runtime?.mode || overview.settings?.values?.runMode || 'default';
+    const engineMode = runtime?.engineMode || null;
+    const switching = engineMode && engineMode !== configuredMode;
+    const engineModeText = MODES[engineMode || configuredMode] || configuredMode;
+    const databaseText = engineMode === 'lite'
+      ? '内存 · 不落盘'
+      : (overview.database ? `${bytes(overview.database.size)} · bridge.db` : '未创建');
+
     const grid = $('overview');
     grid.replaceChildren(
       item('版本', overview.version || overview.installation?.version || '—', {mono: true}),
+      item('运行模式', `${engineModeText}${switching ? ' · 切换中' : ''}`, {tone: switching ? 'warn' : ''}),
+      item('数据库', databaseText, {tone: engineMode === 'lite' ? 'ok' : ''}),
       item('后台监视器', overview.supervisor.alive
         ? `运行中 · PID ${overview.supervisor.pid}`
         : '未运行', {tone: overview.supervisor.alive ? 'ok' : 'warn'}),
@@ -135,6 +154,7 @@
   }
 
   function fillSettings(values) {
+    if (values?.runMode !== undefined) $('runMode').value = values.runMode;
     for (const key of ['refreshSeconds', 'gatewayGraceSeconds', 'logLimitMB']) {
       if (values?.[key] !== undefined) $(key).value = values[key];
     }
@@ -186,7 +206,9 @@
 
   async function saveSettings(event) {
     event.preventDefault();
+    const beforeMode = lastOverview?.settings?.values?.runMode;
     const body = {
+      runMode: $('runMode').value,
       refreshSeconds: Number($('refreshSeconds').value),
       gatewayGraceSeconds: Number($('gatewayGraceSeconds').value),
       logLimitMB: Number($('logLimitMB').value)
@@ -195,7 +217,10 @@
       const result = await api('/api/settings', {method: 'POST', body});
       fillSettings(result.settings);
       settingsFilled = true;
-      $('settingsHint').textContent = '已保存：同步间隔与容错下一轮生效，日志上限下次后台启动生效';
+      const modeHint = beforeMode && beforeMode !== result.settings.runMode
+        ? '运行模式已变更，引擎将在数秒内自动重启，当前对话可能中断一次；'
+        : '';
+      $('settingsHint').textContent = `已保存：${modeHint}同步间隔与容错下一轮生效，日志上限下次后台启动生效`;
       loadStatus({quiet: true});
     } catch (error) {
       $('settingsHint').textContent = `保存失败：${error.message}`;
@@ -209,7 +234,7 @@
     $('refresh').addEventListener('click', () => loadStatus());
     $('settingsForm').addEventListener('submit', saveSettings);
     $('resetSettings').addEventListener('click', () => {
-      const defaults = lastOverview?.settings?.defaults || {refreshSeconds: 15, gatewayGraceSeconds: 60, logLimitMB: 4};
+      const defaults = lastOverview?.settings?.defaults || {runMode: 'default', refreshSeconds: 15, gatewayGraceSeconds: 60, logLimitMB: 4};
       fillSettings(defaults);
       $('settingsHint').textContent = '已填入默认值，点击「保存」后生效';
     });

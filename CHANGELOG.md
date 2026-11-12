@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.6（本地增强版）
+
+- 控制台新增「运行模式」：默认模式（现状）与轻量模式。轻量模式把整个 SQLite 放入引擎进程内存（sqlx shared-cache 内存库）：请求转发、会话、工具调用照常工作，但不再写入 `data/bridge.db`；引擎重启后会话历史清空。
+- supervisor 每轮读取 `bridge-settings.json`；运行模式变化后自动重启原生引擎，当前对话可能中断一次。
+- 接入此前声明但未生效的三个参数：模型目录同步间隔、网关断线容错、引擎日志上限现在由 `bridge.js` 实际读取（前两者下一轮生效，日志上限下次后台启动生效）。
+- 控制台概览新增「运行模式」「数据库」：轻量模式显示「内存 · 不落盘」；`status.json` 增加 `mode` / `engineMode`，可区分已保存与已应用。
+- 原生桥接读取 `CURSOR_BRIDGE_RUN_MODE=lite` 时改用 `Store::connect_lite()`；内存库保持共享缓存与常驻连接，避免空闲回收后丢失表结构。
+- 版本号升至 0.2.6，原生桥接重建并重算 `integrity.json` 摘要。
+
 ## 0.2.5（本地增强版）
 
 - Magpie Agent 行菜单新增「桥接控制台」入口（侧栏插件组同名页面）：打开本机控制台执行启动（`bash setup.command`）、状态（`bash setup.command status`）与重启（`launchctl bootout` + 终止进程 + `setup.command`），并展示运行概览、日志与目录快捷入口。代理卡片内部由 Magpie 内置 UI 渲染，插件无法直接插入控件。

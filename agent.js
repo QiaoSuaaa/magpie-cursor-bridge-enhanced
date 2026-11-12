@@ -7,7 +7,7 @@ export const agent = {
   format: "json",
   model: "model",
   ua: ["cursor-magpie-bridge"],
-  notice: "v0.2.5（增强版）：支持 Cursor 3.29+ 的 BidiAppend 二进制编码（data_binary）。安装或更新插件后，请运行包内 setup.command 完成后台初始化。首次连接后重启 Cursor。后台桥接随连接启停；断开后还原代理。Agent 行菜单「桥接控制台」可启动、查看状态与重启后台。请勿同时开启 Cursor BYOK 接管。"
+  notice: "v0.2.6（增强版）：支持 Cursor 3.29+ 的 BidiAppend 二进制编码（data_binary）；控制台新增「轻量模式」，SQLite 仅驻留内存、不写 bridge.db。安装或更新插件后，请运行包内 setup.command 完成后台初始化。首次连接后重启 Cursor。后台桥接随连接启停；断开后还原代理。Agent 行菜单「桥接控制台」可启动、查看状态与重启后台。请勿同时开启 Cursor BYOK 接管。"
 };
 export function connect({ gateway, model, models }) {
   return {

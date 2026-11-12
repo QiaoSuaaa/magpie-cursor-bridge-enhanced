@@ -119,10 +119,10 @@ index f069981..7c3e6bc 100644
  
 diff --git a/server/src/bin/cursor-magpie-bridge.rs b/server/src/bin/cursor-magpie-bridge.rs
 new file mode 100644
-index 0000000..1afd6f1
+index 0000000..23c83eb
 --- /dev/null
 +++ b/server/src/bin/cursor-magpie-bridge.rs
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,189 @@
 +//! Headless Cursor protocol bridge. No desktop/account writes or management API.
 +use std::{path::PathBuf, sync::Arc, time::Duration};
 +use cursor_server::{api, config, cursor::{prompting::{PromptAssets, PromptCompiler}, transport::TransportRegistry}, local_app::CursorHarness, model::ModelConfigInput, network::NetworkClients, plugin::{PluginRegistry, PluginRuntime}, provider::ProviderRouter, search::WebCache, store::Store};
@@ -162,7 +162,7 @@ index 0000000..1afd6f1
 +            "group_name":"Magpie", "type":"openai", "base_url": c.gateway.trim_end_matches('/'),
 +            "api_key":c.key, "tooltip_data":format!("Magpie / {}",m.id), "model_id":m.id,
 +            "context_window_tokens":m.context.filter(|v| *v > 0),
-+            "custom_headers_enabled":true, "custom_headers":{"User-Agent":"cursor-magpie-bridge/0.2.5"}
++            "custom_headers_enabled":true, "custom_headers":{"User-Agent":"cursor-magpie-bridge/0.2.6"}
 +        }))?)
 +    }).collect()
 +}
@@ -171,11 +171,11 @@ index 0000000..1afd6f1
 +async fn main() -> Result<(), Box<dyn std::error::Error>> {
 +    let argument = std::env::args().nth(1);
 +    if argument.as_deref() == Some("--version") {
-+        println!("0.2.5");
++        println!("0.2.6");
 +        return Ok(());
 +    }
 +    if argument.as_deref() == Some("--help") || argument.is_none() {
-+        println!("cursor-magpie-bridge 0.2.5\nUsage: cursor-magpie-bridge --init-ca | CONNECTION.json\nRequires CURSOR_BYOK_DATA_DIR (absolute path). --init-ca never modifies certificate trust.");
++        println!("cursor-magpie-bridge 0.2.6\nUsage: cursor-magpie-bridge --init-ca | CONNECTION.json\nRequires CURSOR_BYOK_DATA_DIR (absolute path). --init-ca never modifies certificate trust.");
 +        return Ok(());
 +    }
 +    // A dedicated directory is mandatory: never open the desktop BYOK database.
@@ -189,8 +189,27 @@ index 0000000..1afd6f1
 +    let mut contents = tokio::fs::read(&path).await?;
 +    let inputs = catalogue(&contents)?;
 +    let root = config::managed_data_dir()?;
-+    let store = Store::connect(&format!("sqlite://{}",root.join("bridge.db").display())).await?;
++    // Lite mode keeps SQLite in process memory. Request forwarding, runs and
++    // tool rounds keep working, but nothing is written to data/bridge.db.
++    let lite = std::env::var("CURSOR_BRIDGE_RUN_MODE").as_deref() == Ok("lite");
++    let store = if lite {
++        Store::connect_lite().await?
++    } else {
++        Store::connect(&format!("sqlite://{}",root.join("bridge.db").display())).await?
++    };
 +    store.replace_bridge_models(&inputs).await?;
++    if lite {
++        // The in-memory database cannot remember the port across restarts, but
++        // Cursor keeps using the old http.proxy until it restarts. Reuse the
++        // port the supervisor observed last time; a busy port still falls back
++        // to a random one inside the proxy listener.
++        if let Some(port) = std::env::var("CURSOR_BRIDGE_PROXY_PORT").ok()
++            .and_then(|value| value.parse::<u16>().ok())
++            .filter(|port| *port != 0)
++        {
++            store.set_proxy_port(port).await?;
++        }
++    }
 +    let plugins = PluginRegistry::managed(store.clone(), PluginRuntime::managed()?, "1.0.1".into())?;
 +    let clients = NetworkClients::new(store.clone());
 +    let provider = Arc::new(ProviderRouter::new(store.clone(),plugins.clone(),clients.clone(),Duration::from_secs(3600),Duration::from_secs(1800)));
@@ -206,7 +225,7 @@ index 0000000..1afd6f1
 +    let shutdown = CancellationToken::new();
 +    let cancel = shutdown.clone();
 +    let server = tokio::spawn(async move { axum::serve(listener,router).with_graceful_shutdown(async move {cancel.cancelled().await}).await });
-+    println!("{}",json!({"event":"ready","proxy":proxy,"backend":format!("http://{address}"),"models":inputs.len()}));
++    println!("{}",json!({"event":"ready","proxy":proxy,"backend":format!("http://{address}"),"models":inputs.len(),"mode":if lite{"lite"}else{"default"}}));
 +    // The supervisor owns stdin. Its death must not leave an orphan TLS proxy.
 +    let parent_closed = CancellationToken::new();
 +    let parent_signal = parent_closed.clone();
@@ -278,6 +297,19 @@ index 0000000..1afd6f1
 +        assert_eq!(store.models().await.unwrap().len(),2);
 +        store.replace_bridge_models(&inputs[..1]).await.unwrap();
 +        assert_eq!(store.models().await.unwrap().len(),1);
++    }
++    #[tokio::test]
++    async fn lite_store_keeps_its_schema_in_shared_memory() {
++        let store=Store::connect_lite().await.unwrap();
++        let inputs=catalogue(&serde_json::to_vec(&config()).unwrap()).unwrap();
++        store.replace_bridge_models(&inputs).await.unwrap();
++        // Two concurrent queries may use different pool connections; both must
++        // see the same in-memory database and its migrated schema.
++        let (a,b)=tokio::join!(store.models(),store.models());
++        assert_eq!(a.unwrap().len(),2);
++        assert_eq!(b.unwrap().len(),2);
++        // The seeded service_settings row proves migrations ran in memory too.
++        assert!(!store.detailed_logging().await.unwrap());
 +    }
 +}
 diff --git a/server/src/config.rs b/server/src/config.rs
@@ -693,3 +725,59 @@ index 6d29d3c..f47ac3e 100644
      pub async fn models(&self) -> Result<Vec<ModelConfig>> {
          let query =
              format!("SELECT {MODEL_COLUMNS} FROM model_configs ORDER BY sort_order, display_name");
+diff --git a/server/src/store/sqlite.rs b/server/src/store/sqlite.rs
+index 1403cf8..a5d7844 100644
+--- a/server/src/store/sqlite.rs
++++ b/server/src/store/sqlite.rs
+@@ -18,17 +18,43 @@ pub struct Store {
+ 
+ impl Store {
+     pub async fn connect(database_url: &str) -> Result<Self> {
+-        let options = SqliteConnectOptions::from_str(database_url)?
+-            .create_if_missing(true)
++        Self::connect_mode(database_url, false).await
++    }
++
++    /// Lite mode keeps the whole database in process memory. The schema,
++    /// migrations and every query stay identical; only the backing store
++    /// changes, so no session data or call log reaches disk.
++    pub async fn connect_lite() -> Result<Self> {
++        Self::connect_mode("sqlite::memory:", true).await
++    }
++
++    async fn connect_mode(database_url: &str, in_memory: bool) -> Result<Self> {
++        let mut options = SqliteConnectOptions::from_str(database_url)?
+             .foreign_keys(true)
+-            .journal_mode(SqliteJournalMode::Wal)
+-            .synchronous(SqliteSynchronous::Full)
+             .busy_timeout(Duration::from_secs(5));
++        let mut pool = SqlitePoolOptions::new().max_connections(8);
++        if in_memory {
++            // A shared-cache in-memory database exists only while a connection
++            // is open. Keep one connection for the life of the process and
++            // never recycle it, otherwise an idle bridge would wake up to an
++            // empty database with no schema.
++            options = options
++                .create_if_missing(false)
++                .journal_mode(SqliteJournalMode::Memory)
++                .synchronous(SqliteSynchronous::Normal)
++                .shared_cache(true);
++            pool = pool
++                .min_connections(1)
++                .idle_timeout(None::<Duration>)
++                .max_lifetime(None::<Duration>);
++        } else {
++            options = options
++                .create_if_missing(true)
++                .journal_mode(SqliteJournalMode::Wal)
++                .synchronous(SqliteSynchronous::Full);
++        }
+         let database_path = options.get_filename().to_owned();
+-        let pool = SqlitePoolOptions::new()
+-            .max_connections(8)
+-            .connect_with(options)
+-            .await?;
++        let pool = pool.connect_with(options).await?;
+         migrations::run(&pool, &database_path).await?;
+         Ok(Self {
+             pool,

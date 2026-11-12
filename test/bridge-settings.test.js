@@ -21,14 +21,22 @@ test('missing or malformed bridge settings fall back to defaults', (t) => {
 test('out-of-range values fall back per key when read', (t) => {
   const root = setup(t);
   fs.writeFileSync(settingsFile(root), JSON.stringify({refreshSeconds: 30, gatewayGraceSeconds: 9999, logLimitMB: 8}));
-  assert.deepEqual(read(root), {refreshSeconds: 30, gatewayGraceSeconds: defaults.gatewayGraceSeconds, logLimitMB: 8});
+  assert.deepEqual(read(root), {runMode: 'default', refreshSeconds: 30, gatewayGraceSeconds: defaults.gatewayGraceSeconds, logLimitMB: 8});
+});
+
+test('run mode falls back when read and is rejected strictly', (t) => {
+  const root = setup(t);
+  fs.writeFileSync(settingsFile(root), JSON.stringify({runMode: 'turbo'}));
+  assert.equal(read(root).runMode, 'default');
+  assert.throws(() => write(root, {runMode: 'turbo'}), /default 或 lite/);
+  assert.deepEqual(normalize({runMode: 'lite'}), {...defaults, runMode: 'lite'});
 });
 
 test('writes validate strictly, round-trip and keep the file private', (t) => {
   const root = setup(t);
   assert.throws(() => write(root, {refreshSeconds: 1}), /5–300/);
-  const saved = write(root, {refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8});
-  assert.deepEqual(saved, {refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8});
+  const saved = write(root, {runMode: 'lite', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8});
+  assert.deepEqual(saved, {runMode: 'lite', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8});
   assert.deepEqual(read(root), saved);
   assert.equal(fs.statSync(settingsFile(root)).mode & 0o777, 0o600);
   assert.deepEqual(normalize({}), defaults);

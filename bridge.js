@@ -55,10 +55,18 @@ if(command==='status') {
     fs.rmSync(lock,{recursive:true,force:true}); fs.mkdirSync(lock);
   }
   fs.writeFileSync(path.join(lock,'pid'),String(process.pid));
-  let child=null,ready=null,ending=false,lastConfig='',nextRefresh=0,paused=false,catalogueDownSince=0,lastModelCount=0,lastEffective='';
+  let child=null,ready=null,ending=false,lastConfig='',nextRefresh=0,paused=false,catalogueDownSince=0,lastModelCount=0,lastEffective='',runningMode='default',activeMode='default';
+  // Lite mode starts from an empty in-memory database, so the proxy port cannot
+  // be read back from SQLite. Carry the last port across restarts: Cursor does
+  // not re-read http.proxy until it restarts.
+  let preferredProxyPort='';
+  try {const last=JSON.parse(fs.readFileSync(file('status.json'),'utf8'));const url=new URL(last.proxy);if(url.port) preferredProxyPort=url.port;} catch {}
+  // status.json always advertises the configured mode, so the control panel can
+  // tell "saved but not yet applied" apart from the running engine's mode.
+  const update=(state,extra={})=>status(state,{mode:activeMode,engineMode:runningMode||null,...extra});
   async function stop() {
     // Restore before stopping the listener so Cursor does not point at a dead port.
-    const old=child;child=null;ready=null;
+    const old=child;child=null;ready=null;runningMode='';
     try {
       return restoreProxy(file('settings-journal.json'));
     } finally {
@@ -72,13 +80,14 @@ if(command==='status') {
       }
     }
   }
-  async function start(c) {
+  async function start(c,mode) {
     const serialized=JSON.stringify(c);
     atomic(file('effective.json'),serialized);
     lastEffective=serialized;
     const engine=spawn(path.join(packageDir,'bin/cursor-magpie-bridge'),[file('effective.json')],{
-      env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data')},stdio:['pipe','pipe','pipe']
+      env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,...(preferredProxyPort?{CURSOR_BRIDGE_PROXY_PORT:preferredProxyPort}:{})},stdio:['pipe','pipe','pipe']
     });
+    runningMode=mode;
     child=engine;
     // Native diagnostics can contain request information; keep them in a private local file.
     engine.stderr.pipe(engineLog(),{end:false});
@@ -89,6 +98,7 @@ if(command==='status') {
       engine.once('error',()=>{clearTimeout(timer);reject(new Error('cannot start bridge engine'));});
       engine.once('exit',(code,signal)=>{clearTimeout(timer);reject(new Error(`bridge engine stopped (${signal||code}); check certificate trust`));});
     });
+    try {const url=new URL(ready.proxy);if(url.port) preferredProxyPort=url.port;} catch {}
     applyProxy(settings,file('settings-journal.json'),ready.proxy);
   }
   for(const signal of ['SIGTERM','SIGINT']) process.on(signal,()=>{ending=true;});
@@ -96,15 +106,19 @@ if(command==='status') {
     restoreProxy(file('settings-journal.json'));
     while(!ending) {
       const cfg=readBridgeSettings(root);
+      activeMode=cfg.runMode;
       try {
         const raw=fs.existsSync(file('connection.json'))?fs.readFileSync(file('connection.json'),'utf8'):'{}';
         const c=validate(JSON.parse(raw));
-        if(!c) {await stop();status('disconnected');paused=false;lastConfig='';}
-        else if(paused && raw===lastConfig) {status('paused',{reason:'Cursor 代理设置由其他程序改动；请在 Magpie 中断开后重新连接。'});}
+        if(!c) {await stop();update('disconnected');paused=false;lastConfig='';}
+        else if(paused && raw===lastConfig) {update('paused',{reason:'Cursor 代理设置由其他程序改动；请在 Magpie 中断开后重新连接。'});}
         else {
           const changed=raw!==lastConfig;
           const engineAlive=!!child && child.exitCode===null && child.signalCode===null;
-          if(changed || Date.now()>=nextRefresh || !engineAlive) {
+          // A saved run mode is applied by restarting the engine once; the
+          // supervisor never rewrites effective.json just for a mode switch.
+          const modeChanged=engineAlive && runningMode!==cfg.runMode;
+          if(changed || Date.now()>=nextRefresh || !engineAlive || modeChanged) {
             let effective=null,failure=null;
             try {effective=await gatewayModels(c);} catch(e) {failure=e;}
             nextRefresh=Date.now()+cfg.refreshSeconds*1000;
@@ -114,19 +128,19 @@ if(command==='status') {
               if(!catalogueDownSince) catalogueDownSince=Date.now();
               const downFor=Date.now()-catalogueDownSince;
               if(!engineAlive || downFor>=cfg.gatewayGraceSeconds*1000) throw failure;
-              status('connected',{model:c.model,models:lastModelCount,proxy:ready.proxy,backend:ready.backend,pid:child.pid,warning:`Magpie gateway unavailable for ${Math.round(downFor/1000)}s: ${failure.message}`});
+              update('connected',{model:c.model,models:lastModelCount,proxy:ready.proxy,backend:ready.backend,pid:child.pid,warning:`Magpie gateway unavailable for ${Math.round(downFor/1000)}s: ${failure.message}`});
               await wait(2000);
               continue;
             }
             catalogueDownSince=0;
-            if(!engineAlive) {
-              await stop();await start(effective);
+            if(!engineAlive || modeChanged) {
+              await stop();await start(effective,cfg.runMode);
             } else {
               const serialized=JSON.stringify(effective);
               if(serialized!==lastEffective) {atomic(file('effective.json'),serialized);lastEffective=serialized;}
             }
             lastConfig=raw;paused=false;lastModelCount=effective.models.length;
-            status('connected',{model:c.model,models:effective.models.length,proxy:ready.proxy,backend:ready.backend,pid:child.pid});
+            update('connected',{model:c.model,models:effective.models.length,proxy:ready.proxy,backend:ready.backend,pid:child.pid});
           }
           try {applyProxy(settings,file('settings-journal.json'),ready.proxy);} catch(e) {
             await stop();paused=true;lastConfig=raw;throw e;
@@ -134,11 +148,11 @@ if(command==='status') {
         }
       } catch(e) {
         try {await stop();} catch { /* keep journal for recovery after malformed settings are fixed */ }
-        status('error',{reason:e.message});
+        update('error',{reason:e.message});
       }
       if(!ending) await wait(2000);
     }
   } finally {
-    await stop();status('stopped');fs.rmSync(lock,{recursive:true,force:true});
+    await stop();update('stopped');fs.rmSync(lock,{recursive:true,force:true});
   }
 } else {throw new Error('usage: node bridge.js status|supervise|restore');}

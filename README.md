@@ -2,7 +2,7 @@
 
 让普通版 Cursor 使用 **Magpie** 中配置的模型与路由组：模型菜单只列出 Magpie 目录，隐藏 Cursor Auto 入口，保留 Cursor 原有登录与 Tab 补全。
 
-- **当前版本**：`0.2.5`（本地增强版）
+- **当前版本**：`0.2.6`（本地增强版）
 - **适配范围**：Cursor 3.28.x ～ 3.30.8（已实测），Apple Silicon macOS
 - **与上游的关系**：基于 [nodlles/magpie-agent-cursor-bridge](https://github.com/nodlles/magpie-agent-cursor-bridge) `v0.2.2` 与本机 fork 增补，原生核心来自 [leookun/cursor-byok v1.0.1](https://github.com/leookun/cursor-byok/tree/v1.0.1)
 - **本仓库定位**：本机使用与二次开发，不通过 GitHub 插件页分发
@@ -50,6 +50,7 @@ Cursor 的 Agent / Composer 默认只认自家订阅与官方后端。通过 Mag
 | Magpie 模型目录同步（每 15 秒） | ✅ |
 | 模型选择器隐藏 Cursor Auto | ✅ |
 | 模型显示名短名化（`Opus` 而非三段长名） | ✅ 0.2.4 |
+| 运行模式：默认 / 轻量（SQLite 不落盘） | ✅ 0.2.6 |
 | Cursor 3.29+ 二进制协议编码 | ✅ 0.2.3 |
 | Cursor 3.27 本地循环开关回退 | ✅ 上游 0.2.2 |
 | Tab 补全 / 行内补全 | 沿用 Cursor 原路径 |
@@ -176,7 +177,8 @@ Cursor 请求里的 `requested_model.model_id` 是桥接生成的 `model_hash`�
 - 监听地址只在本机回环，不对外暴露；
 - CA 与私钥仅存在本机，首次安装时请求 macOS 信任；
 - 桥接只对 Cursor 域名做协议转换，其余流量原样转发；
-- `bridge.db` 会记录完整会话与调用，属于敏感数据，注意备份与清理。
+- `bridge.db` 会记录完整会话与调用，属于敏感数据，注意备份与清理；
+- **轻量模式**（控制台可切换）把 SQLite 整体放入引擎进程内存：不创建、不写入 `bridge.db`，请求转发与会话状态在进程内完整可用；引擎重启后会话历史清空，旧 `bridge.db` 保留但不再增长。
 
 ---
 
@@ -199,7 +201,7 @@ bash "$HOME/Code/tools/magpie-agent-cursor-bridge-enhanced/setup.command"
 
 1. 校验二进制摘要与版本配对；
 2. 复用已有证书，或在首次安装时生成本机 CA 并请求 macOS 信任；
-3. 把完整版本目录 stage 到 `releases/0.2.5-xxxxxx`；
+3. 把完整版本目录 stage 到 `releases/0.2.6-xxxxxx`；
 4. 把 `~/.local/share/magpie-cursor-bridge` 注册为本地 Magpie 插件；
 5. 停止旧后台、切换 LaunchAgent、启动新后台。
 
@@ -241,7 +243,8 @@ Magpie 的代理卡片内部是内置 UI，插件无法把控件插进那张卡�
 - **启动**：`bash setup.command`（校验包、stage 新版本、切换 LaunchAgent）
 - **状态**：`bash setup.command status`，同时刷新运行概览
 - **重启**：`launchctl bootout` → 终止 supervisor 与原生引擎 → `bash setup.command`
-- **可编辑参数**：模型目录同步间隔（默认 15 秒）、网关断线容错（默认 60 秒）、引擎日志上限（默认 4 MiB），写入 `~/.config/magpie-cursor-bridge/bridge-settings.json`。同步间隔与容错在下一轮循环生效；日志上限在下次后台启动时生效。
+- **运行模式**：默认模式 / 轻量模式。轻量模式让原生引擎使用进程内存中的 SQLite（shared-cache），不写 `data/bridge.db`；切换后 supervisor 在 2 秒内自动重启引擎，当前对话可能中断一次。轻量模式会沿用上次的代理端口（端口占用时回退随机），避免 Cursor 因端口变化而需要重启。
+- **可编辑参数**：模型目录同步间隔（默认 15 秒）、网关断线容错（默认 60 秒）、引擎日志上限（默认 4 MiB），写入 `~/.config/magpie-cursor-bridge/bridge-settings.json`。运行模式与同步间隔、容错在下一轮循环生效（模式变更会重启引擎）；日志上限在下次后台启动时生效。
 - **快捷入口**：配置目录、`engine.log`、`supervisor.log`、`supervisor-error.log`、安装目录、插件目录。
 
 控制服务只监听 `127.0.0.1:3580`（可在引导页修改，约 2 秒切换），每次启动生成随机口令，并校验 `Host` 与 `Origin`。它由 Magpie 插件宿主拉起，**后台桥接停止时仍能点「启动」**。`magpie web`（浏览器远程）下无法访问本机环回地址，控制台不可用。
@@ -258,8 +261,10 @@ bash setup.command status    # 输出 status.json 原文
 
 ```json
 {
-  "version": "0.2.5",
+  "version": "0.2.6",
   "state": "connected",
+  "mode": "lite",
+  "engineMode": "lite",
   "model": "group/opus",
   "models": 4,
   "proxy": "http://127.0.0.1:58160",
@@ -268,7 +273,7 @@ bash setup.command status    # 输出 status.json 原文
 }
 ```
 
-`state` 取值：`connected` / `disconnected` / `paused` / `error` / `stopped`。
+`state` 取值：`connected` / `disconnected` / `paused` / `error` / `stopped`。`mode` 是控制台保存的运行模式，`engineMode` 是当前引擎实际使用的模式；两者短暂不一致表示切换尚未完成。
 
 排障时优先查看：
 
@@ -330,7 +335,7 @@ bash setup.command uninstall
 │   └── cursor.svg           # Cursor 官方图标（Agent 行 / 侧栏页）
 ├── lib/
 │   ├── config.js            # connection.json 校验与 Magpie 模型目录拉取
-│   ├── bridge-settings.js   # 可编辑参数（同步间隔、断线容错、日志上限）
+│   ├── bridge-settings.js   # 可编辑参数（运行模式、同步间隔、断线容错、日志上限）
 │   ├── install.js           # 版本配对、证书、release stage、LaunchAgent
 │   └── settings.js          # Cursor settings.json 的原子写与代理恢复
 ├── bin/cursor-magpie-bridge # 编译产物（Rust）
@@ -414,7 +419,7 @@ node test/manual-lifecycle.mjs
 | 协议解码失败 | 桥接会把原始报文写到 `$TMPDIR/bidi-dump-<seqno>.bin` |
 | 验证 `data_binary` | 通过代理发送带 `data_binary` 字段的 `BidiAppend`，应返回业务错误而非 `not part of the captured protocol` |
 
-**注意**：`bridge.db` 会持续增长（本机已超过 2 GB），排查时请用 `LIMIT` 限制查询范围。
+**注意**：默认模式下 `bridge.db` 会持续增长（本机已超过 2 GB），排查时请用 `LIMIT` 限制查询范围；切换到轻量模式后不再写入，但旧文件会保留，需要时自行清理。
 
 ---
 
@@ -424,14 +429,15 @@ node test/manual-lifecycle.mjs
 
 ### 5.1 差异总览
 
-| 项目 | 上游 0.2.2 | 增强版 0.2.5 | 机制 |
+| 项目 | 上游 0.2.2 | 增强版 0.2.6 | 机制 |
 |---|---|---|---|
 | Cursor 3.29+ / 3.30.8 | ❌ 30 秒后 “Connection stalled” | ✅ 正常对话 | 上行编码从 hex 文本改为原始 protobuf 字节 |
 | `BidiAppend` 载荷 | 只接受 `data`（tag 1，hex） | `data_binary`（tag 4）优先，`data` 兜底 | 同一消息的两种编码，共用一个解码器 |
 | 模型选择器显示名 | `Opus · routing group · group/opus` | `Opus` | 展示名与路由标识解耦 |
 | 解码失败转储 | `.hex` 文本 | `.bin` 原始字节 | 3.29+ 的载荷本就不经过 hex |
 | Cursor 3.27 / 3.28.x | ✅ | ✅ | 公共路径未改动 |
-| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.5 | 避免与上游 release 目录、摘要互相覆盖 |
+| 运行模式 | 仅文件库 | 默认 + 轻量（内存库） | 轻量模式不写 `bridge.db`，适合磁盘敏感或只做转发的场景 |
+| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.6 | 避免与上游 release 目录、摘要互相覆盖 |
 
 ### 5.2 0.2.3：为什么 3.29+ 是“卡住”而不是报错
 
