@@ -10,6 +10,9 @@ import platform from '../lib/platform.js';
 // A full dbstat walk costs ~45s on a multi-GB database and would freeze the
 // panel; "file size minus content bytes" is reported separately as index and
 // free-page overhead.
+//
+// A normal pass reads messages once and skips the heavy blob-body sums; the
+// explicit "deep" pass adds those at the cost of scanning every blob.
 const QUERY_TIMEOUT = 60000;
 const CLEANUP_TIMEOUT = 300000;
 const VACUUM_TIMEOUT = 900000;
@@ -100,13 +103,17 @@ const TABLES = {
     category: 'content',
     label: '内容块',
     size: 'SUM(length(data))',
-    requires: ['data']
+    requires: ['data'],
+    // Reading every blob body is the most expensive part of a statistics run
+    // (>1 GB on mature installs); only the "deep" pass measures it.
+    heavy: true
   },
   blob_edges: {
     category: 'content',
     label: '内容块引用',
     size: 'SUM(length(parent_blob_id) + length(child_blob_id) + length(CAST(field_name AS BLOB)))',
-    requires: ['parent_blob_id', 'child_blob_id', 'field_name']
+    requires: ['parent_blob_id', 'child_blob_id', 'field_name'],
+    heavy: true
   },
   model_configs: {
     category: 'config',
@@ -219,18 +226,19 @@ async function tableColumns(dbPath) {
   }
 }
 
-function canMeasure(name, columns) {
+function canMeasure(name, columns, deep = true) {
   const meta = TABLES[name];
   if (!meta?.size) return false;
+  if (meta.heavy && !deep) return false;
   if (!columns) return true;
   const available = columns.get(name);
   return !!available && meta.requires.every((column) => available.has(column));
 }
 
-async function tableStats(dbPath, tables, columns) {
+async function tableStats(dbPath, tables, columns, {deep = false} = {}) {
   if (!tables.length) return [];
   const parts = tables.map((name) => {
-    const bytes = canMeasure(name, columns) ? `COALESCE(${TABLES[name].size}, 0)` : '0';
+    const bytes = canMeasure(name, columns, deep) ? `COALESCE(${TABLES[name].size}, 0)` : '0';
     return `SELECT ${quoteText(name)} AS t, COUNT(*) AS rows, ${bytes} AS bytes FROM ${quoteIdent(name)}`;
   });
   const rows = parseJson(await sqlite(dbPath, `${parts.join('\nUNION ALL\n')};`, {readonly: true, json: true}));
@@ -238,47 +246,70 @@ async function tableStats(dbPath, tables, columns) {
     name: String(row.t || ''),
     rows: Number(row.rows) || 0,
     bytes: Number(row.bytes) || 0,
-    measured: canMeasure(String(row.t || ''), columns)
+    measured: canMeasure(String(row.t || ''), columns, deep)
   }));
 }
 
-async function recentConversations(dbPath, tables) {
-  if (!tables.includes('conversations') || !tables.includes('messages')) return [];
-  const rows = parseJson(await sqlite(dbPath, `
-SELECT c.conversation_id AS id,
-       c.updated_at_ms AS updated,
-       COALESCE(m.count, 0) AS messages,
-       COALESCE(m.bytes, 0) AS bytes
-FROM conversations c
-LEFT JOIN (
-  SELECT conversation_id, COUNT(*) AS count, SUM(length(CAST(payload_json AS BLOB))) AS bytes
-  FROM messages GROUP BY conversation_id
-) m ON m.conversation_id = c.conversation_id
-ORDER BY c.updated_at_ms DESC
-LIMIT 12;`, {readonly: true, json: true}));
-  return rows.map((row) => ({
-    id: String(row.id || ''),
-    updated: Number(row.updated) || 0,
-    messages: Number(row.messages) || 0,
-    bytes: Number(row.bytes) || 0
-  }));
+// One pass over messages feeds the table totals, the per-day chart and the
+// per-conversation list. Three separate GROUP BY scans used to read the same
+// payload column three times on multi-GB databases.
+function canGroupMessages(tables, columns) {
+  if (!tables.includes('messages')) return false;
+  const available = columns?.get('messages');
+  if (!available) return true;
+  return available.has('created_at_ms') && available.has('payload_json');
 }
 
-async function dailyMessages(dbPath, tables) {
-  if (!tables.includes('messages')) return [];
+async function messageGroups(dbPath, tables, columns) {
+  if (!canGroupMessages(tables, columns)) return {totals: null, days: [], conversations: []};
   const rows = parseJson(await sqlite(dbPath, `
-SELECT date(created_at_ms / 1000, 'unixepoch', 'localtime') AS day,
+SELECT conversation_id AS id,
+       date(created_at_ms / 1000, 'unixepoch', 'localtime') AS day,
        COUNT(*) AS count,
        COALESCE(SUM(length(CAST(payload_json AS BLOB))), 0) AS bytes
 FROM messages
-GROUP BY day
-ORDER BY day DESC
-LIMIT 7;`, {readonly: true, json: true}));
-  return rows.map((row) => ({
-    day: String(row.day || ''),
-    count: Number(row.count) || 0,
-    bytes: Number(row.bytes) || 0
-  }));
+GROUP BY id, day;`, {readonly: true, json: true}));
+  const dayTotals = new Map();
+  const conversationTotals = new Map();
+  let totalRows = 0;
+  let totalBytes = 0;
+  for (const row of rows) {
+    const count = Number(row.count) || 0;
+    const bytes = Number(row.bytes) || 0;
+    totalRows += count;
+    totalBytes += bytes;
+    const day = String(row.day || '');
+    if (day) {
+      const entry = dayTotals.get(day) || {day, count: 0, bytes: 0};
+      entry.count += count;
+      entry.bytes += bytes;
+      dayTotals.set(day, entry);
+    }
+    const id = String(row.id || '');
+    if (id) {
+      const entry = conversationTotals.get(id) || {id, count: 0, bytes: 0};
+      entry.count += count;
+      entry.bytes += bytes;
+      conversationTotals.set(id, entry);
+    }
+  }
+  let updated = new Map();
+  if (tables.includes('conversations')) {
+    try {
+      const rows = parseJson(await sqlite(dbPath,
+        'SELECT conversation_id AS id, updated_at_ms AS updated FROM conversations;',
+        {readonly: true, json: true}));
+      updated = new Map(rows.map((row) => [String(row.id || ''), Number(row.updated) || 0]));
+    } catch { /* the conversation list is best-effort */ }
+  }
+  return {
+    totals: {rows: totalRows, bytes: totalBytes},
+    days: [...dayTotals.values()].sort((a, b) => (a.day < b.day ? 1 : -1)).slice(0, 7),
+    conversations: [...conversationTotals.values()]
+      .map((entry) => ({id: entry.id, updated: updated.get(entry.id) || 0, messages: entry.count, bytes: entry.bytes}))
+      .sort((a, b) => b.updated - a.updated)
+      .slice(0, 12)
+  };
 }
 
 async function pageInfo(dbPath) {
@@ -368,22 +399,26 @@ function fileSummary(dbPath) {
   };
 }
 
-export async function readDatabase(dbPath) {
+export async function readDatabase(dbPath, {deep = false} = {}) {
   if (!fs.existsSync(dbPath)) {
-    return {exists: false, path: dbPath, file: fileSummary(dbPath), totals: {rows: 0, bytes: 0}};
+    return {exists: false, path: dbPath, file: fileSummary(dbPath), totals: {rows: 0, bytes: 0}, deep};
   }
   const tables = await listTables(dbPath);
-  // Column introspection is fast and gates the size query; the other reads
-  // then run alongside the expensive content-byte scan.
+  // Column introspection is fast and tells us whether one grouped scan over
+  // messages can replace both the table totals and the two report queries.
   const columns = await tableColumns(dbPath);
-  const [page, conversations, days, stats] = await Promise.all([
+  const grouped = canGroupMessages(tables, columns);
+  const [page, messages, stats] = await Promise.all([
     pageInfo(dbPath),
-    recentConversations(dbPath, tables),
-    dailyMessages(dbPath, tables),
-    tableStats(dbPath, tables, columns)
+    messageGroups(dbPath, tables, columns),
+    tableStats(dbPath, grouped ? tables.filter((name) => name !== 'messages') : tables, columns, {deep})
   ]);
-  const categories = groupCategories(stats);
-  const totals = stats.reduce((sum, entry) => ({
+  const entries = stats.slice();
+  if (grouped && messages.totals) {
+    entries.push({name: 'messages', rows: messages.totals.rows, bytes: messages.totals.bytes, measured: true});
+  }
+  const categories = groupCategories(entries);
+  const totals = entries.reduce((sum, entry) => ({
     rows: sum.rows + entry.rows,
     bytes: sum.bytes + entry.bytes
   }), {rows: 0, bytes: 0});
@@ -392,10 +427,11 @@ export async function readDatabase(dbPath) {
     path: dbPath,
     file: fileSummary(dbPath),
     page,
+    deep,
     totals,
     categories,
-    conversations,
-    days
+    conversations: messages.conversations,
+    days: messages.days
   };
 }
 

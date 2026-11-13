@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.13（本地增强版）
+
+- 数据库统计从三次全表扫描降为一次：`messages` 的行数、按天增长与会话分布共用一次 `GROUP BY`；实测 2.6GB 库从 3.0 秒降至 2.3 秒。
+- 内容块（`blobs` / `blob_edges`）的体积改为按需统计：默认快速统计跳过逐行读取 blob 正文，控制台新增「精确统计」按钮补齐；实测精确统计 3.4 秒。
+- 修复 `engine.log` 运行期不轮转的问题：改为按累计写入量轮转，不再依赖 supervisor 重启；超过上限时滚动到 `engine.log.1`。
+- Cursor `settings.json` 按 mtime/size/inode 缓存解析结果，supervisor 每 2 秒的代理检查不再重复解析同一份 10–50KB JSONC。
+- Magpie `plugins.json` 同样按文件标识缓存，2 秒端口轮询不再重复解析。
+- 控制台状态接口增加 2 秒快照缓存，多面板并发轮询只执行一组 `ps`/`launchctl`。
+- `/api/settings` 写操作串行化，避免两个面板同时保存时互相覆盖。
+- 前端轮询在页面隐藏时退避到 30 秒。
+- 原生 SQLite：WAL 下 `synchronous` 调整为 `NORMAL`（崩溃最多丢失最近事务，不损坏数据库），每连接缓存 8MB、mmap 64MB，改善多会话并发写入与读延迟。
+- 版本号升至 0.2.13，原生桥接按新版本号重建并重算 `integrity.json` 摘要。
+
 ## 0.2.12（本地增强版）
 
 - 新增 `lib/platform.js` 跨平台抽象层：配置/数据目录、Cursor 配置与安装目录、Magpie 配置目录、进程命令行探测、打开路径、`sqlite3` 与 `bash` 探测全部按平台解析；macOS 的路径与行为保持不变。

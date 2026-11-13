@@ -351,10 +351,32 @@ export function createControlServer({repoRoot, port, log = console.log}) {
   let ownPort = port;
   // Content-byte statistics scan the whole database (seconds on a multi-GB
   // file), so concurrent panels share one read and a short-lived cache.
-  let databaseCache = {at: 0, data: null};
+  let databaseCache = {at: 0, data: null, deep: false};
   let databasePending = null;
   let databaseEpoch = 0;
   const DATABASE_CACHE_MS = 20000;
+  // /api/status is polled every five seconds per open console, and each miss
+  // spawns ps/launchctl. A two-second cache collapses concurrent panels into
+  // one snapshot without making the panel feel stale.
+  let overviewCache = {at: 0, data: null, pending: null};
+  let settingsQueue = Promise.resolve();
+  function cachedOverview() {
+    if (overviewCache.data && Date.now() - overviewCache.at < 2000) {
+      return Promise.resolve(overviewCache.data);
+    }
+    if (!overviewCache.pending) {
+      overviewCache.pending = overview(repoRoot, ownPort)
+        .then((data) => {
+          overviewCache = {at: Date.now(), data, pending: null};
+          return data;
+        })
+        .catch((error) => {
+          overviewCache.pending = null;
+          throw error;
+        });
+    }
+    return overviewCache.pending;
+  }
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -409,7 +431,7 @@ export function createControlServer({repoRoot, port, log = console.log}) {
       }
 
       if (req.method === 'GET' && url.pathname === '/api/status') {
-        return sendJson(res, 200, {ok: true, overview: await overview(repoRoot, ownPort)});
+        return sendJson(res, 200, {ok: true, overview: await cachedOverview()});
       }
 
       if (req.method === 'GET' && url.pathname === '/api/settings') {
@@ -419,35 +441,56 @@ export function createControlServer({repoRoot, port, log = console.log}) {
 
       if (req.method === 'POST' && url.pathname === '/api/settings') {
         const body = await readBody(req);
-        const p = paths(repoRoot);
-        try {
-          const saved = writeBridgeSettings(p.root, body);
-          log(`bridge settings saved: ${JSON.stringify(saved)}`);
-          return sendJson(res, 200, {ok: true, settings: saved});
-        } catch (error) {
-          return sendJson(res, 400, {ok: false, error: String(error.message || error)});
-        }
+        // Serialise writes so two panels saving at once cannot interleave
+        // read-modify-write and leave the file with the older payload.
+        const job = settingsQueue.then(() => {
+          try {
+            const saved = writeBridgeSettings(paths(repoRoot).root, body);
+            log(`bridge settings saved: ${JSON.stringify(saved)}`);
+            return {status: 200, body: {ok: true, settings: saved}};
+          } catch (error) {
+            return {status: 400, body: {ok: false, error: String(error.message || error)}};
+          }
+        });
+        settingsQueue = job.then(() => {}, () => {});
+        const result = await job;
+        return sendJson(res, result.status, result.body);
       }
 
       if (req.method === 'GET' && url.pathname === '/api/database') {
         if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
         const p = paths(repoRoot);
         const fresh = url.searchParams.get('refresh') === '1';
-        if (!fresh && databaseCache.data && Date.now() - databaseCache.at < DATABASE_CACHE_MS) {
+        const deep = url.searchParams.get('deep') === '1';
+        const usable = () => databaseCache.data
+          && Date.now() - databaseCache.at < DATABASE_CACHE_MS
+          && (databaseCache.deep || !deep);
+        if (!fresh && usable()) {
           return sendJson(res, 200, {ok: true, database: databaseCache.data, cached: true});
         }
         try {
+          // A scan already in flight is shared; wait for it and reuse the
+          // result when it covers what this request asked for.
+          if (databasePending) {
+            await databasePending.promise.catch(() => {});
+            if (usable()) {
+              return sendJson(res, 200, {ok: true, database: databaseCache.data, cached: true});
+            }
+          }
           if (!databasePending) {
             const epoch = databaseEpoch;
-            databasePending = readDatabase(p.database)
+            const promise = readDatabase(p.database, {deep})
               .then((data) => {
-                if (epoch === databaseEpoch) databaseCache = {at: Date.now(), data};
+                if (epoch === databaseEpoch) databaseCache = {at: Date.now(), data, deep};
                 return data;
               })
-              .finally(() => { databasePending = null; });
+              .finally(() => {
+                if (databasePending?.promise === promise) databasePending = null;
+              });
+            databasePending = {deep, promise};
           }
-          const data = await databasePending;
-          return sendJson(res, 200, {ok: true, database: data});
+          const data = await databasePending.promise;
+          return sendJson(res, 200, {ok: true, database: data, cached: false,depth: deep ? 'deep' : 'fast'});
         } catch (error) {
           return sendJson(res, 500, {ok: false, error: `读取数据库失败：${error.message}`});
         }
@@ -497,8 +540,9 @@ export function createControlServer({repoRoot, port, log = console.log}) {
               }
             }
             databaseEpoch += 1;
-            databaseCache = {at: 0, data: null};
+            databaseCache = {at: 0, data: null, deep: false};
             databasePending = null;
+            overviewCache = {at: 0, data: null, pending: null};
           }
           if (failure) {
             return sendJson(res, 500, {ok: false, error: `清理失败：${failure}`, restart});
@@ -530,6 +574,7 @@ export function createControlServer({repoRoot, port, log = console.log}) {
           }
           result.action = action;
           result.overview = await overview(repoRoot, ownPort);
+          overviewCache = {at: Date.now(), data: result.overview, pending: null};
           return sendJson(res, 200, result);
         } finally {
           busy = null;

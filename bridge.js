@@ -19,16 +19,36 @@ const status=(state,extra={})=>{const signature=JSON.stringify({version,state,..
 const read=name=>JSON.parse(fs.readFileSync(file(name),'utf8'));
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 // Native diagnostics stay local: 0600 file next to the other bridge state,
-// rotated at the size the control panel configured (default 4 MiB).
-let engineLogStream=null;
-function engineLog() {
-  if(engineLogStream) return engineLogStream;
+// rotated at the size the control panel configured (default 4 MiB). Writes go
+// through a descriptor so rotation happens while the supervisor runs; a stream
+// created once would let engine.log grow without bound until the next restart.
+let engineLogFd=null;
+let engineLogSize=0;
+let engineLogLimit=0;
+function openEngineLog() {
+  if(engineLogFd!==null) return engineLogFd;
   const log=file('engine.log');
-  const limit=readBridgeSettings(root).logLimitMB*1024*1024;
-  try {if(fs.statSync(log).size>limit) fs.renameSync(log,file('engine.log.1'));} catch {}
-  engineLogStream=fs.createWriteStream(log,{flags:'a',mode:0o600});
-  engineLogStream.on('error',()=>{engineLogStream=null;});
-  return engineLogStream;
+  if(!engineLogLimit) engineLogLimit=readBridgeSettings(root).logLimitMB*1024*1024;
+  try {engineLogSize=fs.statSync(log).size;} catch {engineLogSize=0;}
+  if(engineLogSize>engineLogLimit) {
+    try {fs.renameSync(log,file('engine.log.1'));} catch {}
+    engineLogSize=0;
+  }
+  engineLogFd=fs.openSync(log,'a',0o600);
+  return engineLogFd;
+}
+function appendEngineLog(chunk) {
+  try {
+    const fd=openEngineLog();
+    fs.writeSync(fd,chunk);
+    engineLogSize+=chunk.length;
+    if(engineLogSize>engineLogLimit) {
+      try {fs.closeSync(fd);} catch {}
+      engineLogFd=null;
+      try {fs.renameSync(file('engine.log'),file('engine.log.1'));} catch {}
+      engineLogSize=0;
+    }
+  } catch { /* logging must never take the supervisor down */ }
 }
 // A reused pid must not look like a live supervisor: match the command line too.
 function isLiveSupervisor(pid) {
@@ -92,7 +112,7 @@ if(command==='status') {
     runningMode=mode;runningSubagentMode=subagentMode;
     child=engine;
     // Native diagnostics can contain request information; keep them in a private local file.
-    engine.stderr.pipe(engineLog(),{end:false});
+    engine.stderr.on('data',appendEngineLog);
     ready=await new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>reject(new Error('bridge startup timed out')),30000);
       const lines=createInterface({input:engine.stdout});

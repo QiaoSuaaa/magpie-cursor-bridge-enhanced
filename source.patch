@@ -207,7 +207,7 @@ index 0000000..1f4da30
 +            "group_name":"Magpie", "type":"openai", "base_url": c.gateway.trim_end_matches('/'),
 +            "api_key":c.key, "tooltip_data":format!("Magpie / {}",m.id), "model_id":m.id,
 +            "context_window_tokens":m.context.filter(|v| *v > 0),
-+            "custom_headers_enabled":true, "custom_headers":{"User-Agent":"cursor-magpie-bridge/0.2.12"}
++            "custom_headers_enabled":true, "custom_headers":{"User-Agent":"cursor-magpie-bridge/0.2.13"}
 +        }))?)
 +    }).collect()
 +}
@@ -238,11 +238,11 @@ index 0000000..1f4da30
 +    );
 +    let argument = std::env::args().nth(1);
 +    if argument.as_deref() == Some("--version") {
-+        println!("0.2.12");
++        println!("0.2.13");
 +        return Ok(());
 +    }
 +    if argument.as_deref() == Some("--help") || argument.is_none() {
-+        println!("cursor-magpie-bridge 0.2.12\nUsage: cursor-magpie-bridge --init-ca | CONNECTION.json\nRequires CURSOR_BYOK_DATA_DIR (absolute path). --init-ca never modifies certificate trust.");
++        println!("cursor-magpie-bridge 0.2.13\nUsage: cursor-magpie-bridge --init-ca | CONNECTION.json\nRequires CURSOR_BYOK_DATA_DIR (absolute path). --init-ca never modifies certificate trust.");
 +        return Ok(());
 +    }
 +    // A dedicated directory is mandatory: never open the desktop BYOK database.
@@ -1914,7 +1914,7 @@ diff --git a/server/src/store/sqlite.rs b/server/src/store/sqlite.rs
 index 1403cf8..a5d7844 100644
 --- a/server/src/store/sqlite.rs
 +++ b/server/src/store/sqlite.rs
-@@ -18,17 +18,43 @@ pub struct Store {
+@@ -18,17 +18,45 @@ pub struct Store {
  
  impl Store {
      pub async fn connect(database_url: &str) -> Result<Self> {
@@ -1955,7 +1955,9 @@ index 1403cf8..a5d7844 100644
 +            options = options
 +                .create_if_missing(true)
 +                .journal_mode(SqliteJournalMode::Wal)
-+                .synchronous(SqliteSynchronous::Full);
++                .synchronous(SqliteSynchronous::Normal)
++                .pragma("cache_size", "-8192")
++                .pragma("mmap_size", "67108864");
 +        }
          let database_path = options.get_filename().to_owned();
 -        let pool = SqlitePoolOptions::new()

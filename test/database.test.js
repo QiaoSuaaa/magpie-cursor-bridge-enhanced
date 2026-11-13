@@ -90,13 +90,21 @@ test('database overview groups tables and reports content sizes', async (t) => {
   assert.equal(categories.sessions.tables.find((table) => table.name === 'conversations').rows, 2);
   assert.equal(categories.sessions.tables.find((table) => table.name === 'messages').rows, 3);
   assert.equal(categories.content.tables.find((table) => table.name === 'blobs').rows, 2);
-  assert.equal(categories.content.measured, true);
+  // The default pass skips blob bodies; only the deep pass measures them.
+  assert.equal(categories.content.measured, false);
   assert.equal(categories.config.measured, false);
   assert.equal(data.conversations[0].id, 'conv-new');
   assert.equal(data.conversations.length, 2);
   assert.equal(data.totals.rows, 26);
   assert.equal(data.days.length, 2);
   assert.doesNotMatch(JSON.stringify(data), /secret-api-key/);
+
+  const deep = await readDatabase(dbPath, {deep: true});
+  const deepCategories = Object.fromEntries(deep.categories.map((entry) => [entry.id, entry]));
+  assert.equal(deep.deep, true);
+  assert.equal(deepCategories.content.measured, true);
+  assert.ok(deep.totals.bytes > data.totals.bytes, 'deep pass adds blob body bytes');
+  assert.equal(deep.totals.rows, data.totals.rows);
 });
 
 test('session cleanup removes old conversations and keeps shared blobs', async (t) => {

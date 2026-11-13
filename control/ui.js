@@ -157,6 +157,7 @@
     const unavailable = cleaning || dbLoading || !!busy || !dbData?.exists;
     for (const button of document.querySelectorAll('[data-clean]')) button.disabled = unavailable;
     if ($('dbRefresh')) $('dbRefresh').disabled = cleaning || dbLoading;
+    if ($('dbDeep')) $('dbDeep').disabled = cleaning || dbLoading;
     if ($('cleanDays')) $('cleanDays').disabled = cleaning;
     if ($('dbVacuum')) $('dbVacuum').disabled = cleaning;
     if ($('dbConfirmType')) $('dbConfirmType').disabled = cleaning;
@@ -350,12 +351,16 @@
       return;
     }
     const overhead = Math.max(0, data.file.db - data.totals.bytes);
-    $('dbHint').textContent = `统计完成 · 表内数据按内容字节计算，索引与空闲页计入「索引与空闲」`;
+    $('dbHint').textContent = data.deep
+      ? '精确统计完成 · 表内数据按内容字节计算，索引与空闲页计入「索引与空闲」'
+      : '快速统计完成 · 内容块体积未计入（点「精确统计」补齐），索引与空闲页计入「索引与空闲」';
     $('dbSummary').replaceChildren(
       item('数据库文件', bytes(data.file.db), {mono: true, title: data.path}),
       item('WAL / SHM', `${bytes(data.file.wal)} / ${bytes(data.file.shm)}`, {mono: true}),
       item('表内数据', bytes(data.totals.bytes), {mono: true}),
-      item('索引与空闲', `约 ${bytes(overhead)}`, {mono: true}),
+      // Without the blob body sizes the remainder is not index/free space:
+      // most of it is content the fast pass deliberately skipped.
+      item('索引与空闲', data.deep ? `约 ${bytes(overhead)}` : '— · 需精确统计', {mono: true}),
       item('总行数', numberText(data.totals.rows), {mono: true}),
       item('空闲页', numberText(data.page?.freelistCount), {mono: true}),
       item('页大小', data.page?.pageSize ? `${numberText(data.page.pageSize)} B` : '—', {mono: true}),
@@ -423,14 +428,20 @@
     updateDbControls();
   }
 
-  async function loadDatabase({force = false, quiet = false} = {}) {
+  async function loadDatabase({force = false, quiet = false, deep = false} = {}) {
     if (dbLoading) return;
     dbLoading = true;
-    $('dbState').textContent = '统计中…';
-    if (!quiet) $('dbHint').textContent = '正在统计数据库内容（数据库越大耗时越久）…';
+    $('dbState').textContent = deep ? '精确统计中…' : '统计中…';
+    if (!quiet) $('dbHint').textContent = deep
+      ? '正在扫描全部内容块体积（数据库越大耗时越久）…'
+      : '正在快速统计（内容块体积未计入）…';
     updateDbControls();
     try {
-      const data = await api(`/api/database${force ? '?refresh=1' : ''}`);
+      const params = new URLSearchParams();
+      if (force) params.set('refresh', '1');
+      if (deep) params.set('deep', '1');
+      const query = params.toString();
+      const data = await api(`/api/database${query ? `?${query}` : ''}`);
       renderDatabase(data.database);
     } catch (error) {
       $('dbState').textContent = '统计失败';
@@ -540,6 +551,7 @@
       tellSize();
     });
     $('dbRefresh').addEventListener('click', () => loadDatabase({force: true}));
+    $('dbDeep').addEventListener('click', () => loadDatabase({force: true, deep: true}));
     for (const button of document.querySelectorAll('[data-clean]')) {
       button.addEventListener('click', () => showCleanupConfirm(button.dataset.clean));
     }
@@ -585,10 +597,14 @@
   }
 
   function startPolling() {
-    clearInterval(pollTimer);
-    pollTimer = setInterval(() => {
-      if (document.visibilityState === 'visible' && !busy) loadStatus({quiet: true});
-    }, 5000);
+    clearTimeout(pollTimer);
+    const tick = async () => {
+      if (document.visibilityState === 'visible' && !busy) await loadStatus({quiet: true});
+      // A hidden panel or an idle bridge does not need five-second polling.
+      const delay = document.visibilityState === 'visible' ? 5000 : 30000;
+      pollTimer = setTimeout(tick, delay);
+    };
+    pollTimer = setTimeout(tick, 5000);
   }
 
   applyTheme();

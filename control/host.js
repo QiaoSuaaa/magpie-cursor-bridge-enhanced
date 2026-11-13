@@ -22,15 +22,24 @@ function sourceRoot() {
 }
 const repoRoot = sourceRoot();
 
+// The port poll runs every two seconds; re-parsing plugins.json each time is
+// wasted work, so cache the resolved entry until the file identity changes.
+let pluginEntryCache = {signature: '', value: null};
 function pluginEntry() {
   try {
     const file = path.join(platform.current.magpieConfigDir(), 'plugins.json');
+    const info = fs.statSync(file);
+    const signature = `${info.mtimeMs}:${info.size}:${info.ino}`;
+    if (pluginEntryCache.signature === signature) return pluginEntryCache.value;
     const list = JSON.parse(fs.readFileSync(file, 'utf8')).plugins || [];
-    return list.find((entry) => {
+    const value = list.find((entry) => {
       const spec = String(entry?.spec || '');
       return spec && path.resolve(spec) === pluginRoot;
     }) || list.find((entry) => String(entry?.spec || '').includes(manifest.name)) || null;
+    pluginEntryCache = {signature, value};
+    return value;
   } catch {
+    pluginEntryCache = {signature: '', value: null};
     return null;
   }
 }
