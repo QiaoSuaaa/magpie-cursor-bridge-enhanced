@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.17（Windows 连接修复）
+
+- 修复 Windows 下「启动」后原生引擎始终未运行：Magpie 的 Agent 沙箱不暴露 `process`，`agent-platform.js` 因拿不到平台信息回退到 macOS 布局，`connection.json` 实际写入 `%USERPROFILE%\.config\magpie-cursor-bridge\`；而 supervisor 只轮询 `%APPDATA%\magpie-cursor-bridge\`，永远处于 `disconnected`，因此不会拉起引擎。现在 `lib/platform.js` 新增 `connectionFilesFor()`，supervisor 与控制台按顺序读取两个候选位置（`%APPDATA%` 优先，`~\.config` 兜底），macOS/Linux 仍只有原路径。
+- 控制台概览的 `connection` 与 supervisor 使用同一组候选路径，连接状态不再误报「未连接」。
+- 版本号升至 0.2.17；原生引擎未改动，仍由 `integrity.json` 的 `engineVersion` 固定为 0.2.15 并按 SHA-256 校验。
+
 ## 0.2.16（Windows 适配修复）
 
 - 修复 Windows「启动」失败（控制台提示「命令退出码 1」）：`schtasks /SC ONLOGON` 需要管理员权限，普通账户只会得到「拒绝访问」。Windows 改为在用户启动文件夹写入隐藏窗口的 `.vbs` 启动器，并立即以分离进程启动 supervisor，安装与登录自启均无需提权；0.2.15 预览版留下的计划任务会在安装/卸载时自动删除。

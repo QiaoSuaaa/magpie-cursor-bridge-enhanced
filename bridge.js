@@ -17,6 +17,15 @@ const file=name=>path.join(root,name);
 let lastStatus='';
 const status=(state,extra={})=>{const signature=JSON.stringify({version,state,...extra});if(signature!==lastStatus){atomic(file('status.json'),JSON.stringify({version,state,...extra,updated:new Date().toISOString()},null,2));lastStatus=signature;}};
 const read=name=>JSON.parse(fs.readFileSync(file(name),'utf8'));
+// On Windows Magpie's agent sandbox writes connection.json to its own
+// fallback path (see connectionFilesFor); accept the first file that exists.
+const connectionFiles=platform.current.connectionFiles();
+function connectionText() {
+  for(const candidate of connectionFiles) {
+    try {return fs.readFileSync(candidate,'utf8');} catch { /* try the next candidate */ }
+  }
+  return '{}';
+}
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 // Native diagnostics stay local: 0600 file next to the other bridge state,
 // rotated at the size the control panel configured (default 4 MiB). Writes go
@@ -130,7 +139,7 @@ if(command==='status') {
       const cfg=readBridgeSettings(root);
       activeMode=cfg.runMode;
       try {
-        const raw=fs.existsSync(file('connection.json'))?fs.readFileSync(file('connection.json'),'utf8'):'{}';
+        const raw=connectionText();
         const c=validate(JSON.parse(raw));
         if(!c) {await stop();update('disconnected');paused=false;lastConfig='';}
         else if(paused && raw===lastConfig) {update('paused',{reason:'Cursor 代理设置由其他程序改动；请在 Magpie 中断开后重新连接。'});}

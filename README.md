@@ -2,11 +2,11 @@
 
 让普通版 Cursor 使用 **Magpie** 中配置的模型与路由组：模型菜单只列出 Magpie 目录，隐藏 Cursor Auto 入口，保留 Cursor 原有登录与 Tab 补全。
 
-- **当前版本**：`0.2.16`（本地增强版）
+- **当前版本**：`0.2.17`（本地增强版）
 - **适配范围**：Cursor 3.28.x ～ 3.30.8（已实测）
 - **平台支持**：macOS（Apple Silicon，LaunchAgent 守护）与 Windows x64（启动文件夹守护，`bin/win32-x64/cursor-magpie-bridge.exe`，无需管理员权限即可常驻；首次信任证书需一次管理员确认）；Linux 可运行控制台，原生引擎与服务守护尚未提供。Intel Mac 需自行构建 x64 版本
 - **与上游的关系**：基于 [nodlles/magpie-agent-cursor-bridge](https://github.com/nodlles/magpie-agent-cursor-bridge) `v0.2.2` 与本机 fork 增补，原生核心来自 [leookun/cursor-byok v1.0.1](https://github.com/leookun/cursor-byok/tree/v1.0.1)
-- **本仓库定位**：公开增强版，GitHub topic 已标记 `magpie-plugin`；可从 Magpie 插件页安装 `github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.16`，也支持本机源码安装
+- **本仓库定位**：公开增强版，GitHub topic 已标记 `magpie-plugin`；可从 Magpie 插件页安装 `github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.17`，也支持本机源码安装
 - **变更记录**：[CHANGELOG.md](CHANGELOG.md)
 
 ---
@@ -202,7 +202,7 @@ Cursor 请求里的 `requested_model.model_id` 是桥接生成的 `model_hash`�
 从 Magpie 插件页安装（推荐）——在 **Magpie → Plugins** 添加固定版本地址：
 
 ```text
-github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.16
+github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.17
 ```
 
 安装后在终端运行一次包内初始化：
@@ -222,7 +222,7 @@ bash setup.command
 
 1. 校验二进制摘要与版本配对（`integrity.json` 分别固定插件版本 `version` 与随包引擎版本 `engineVersion`）；
 2. 复用已有证书，或在首次安装时生成本机 CA 并请求 macOS 信任；
-3. 把完整版本目录 stage 到 `releases/0.2.16-xxxxxx`；
+3. 把完整版本目录 stage 到 `releases/0.2.17-xxxxxx`；
 4. 把 `~/.local/share/magpie-cursor-bridge` 注册为本地 Magpie 插件；
 5. 停止旧后台、切换 LaunchAgent、启动新后台。
 
@@ -234,6 +234,7 @@ Windows x64 不必使用终端：在 Magpie 的 **Cursor · Magpie Bridge** 行�
 2. 登录自启写入 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\local.magpie.cursor-bridge.vbs`（通过 WScript 隐藏窗口启动），不使用计划任务，普通用户即可安装与卸载。
 3. 安装目录为 `%LOCALAPPDATA%\magpie-cursor-bridge`，`releases\` 下只保留当前版本，旧版本在每次「启动」后自动清理。
 4. 若 Magpie 插件列表里同时登记了本仓库路径和 `%LOCALAPPDATA%\magpie-cursor-bridge` 两份，请移除其中一份；重复登记会让两个控制服务争用同一端口。安装器检测到重复时会给出提示，但不会擅自删除登记。
+5. Magpie 的 Agent 沙箱在 Windows 下拿不到进程环境，`connection.json` 实际由 Magpie 展开 `~` 写入 `%USERPROFILE%\.config\magpie-cursor-bridge\`；后台会同时读取该位置与 `%APPDATA%\magpie-cursor-bridge\`，无需手动复制。后台状态、数据库与 release 仍在 `%APPDATA%` / `%LOCALAPPDATA%`。
 
 > 若同时装有上游 GitHub 插件，请先移除，避免两个同名 agent 争用连接：
 >
@@ -289,7 +290,7 @@ bash setup.command status    # 输出 status.json 原文
 
 ```json
 {
-  "version": "0.2.16",
+  "version": "0.2.17",
   "state": "connected",
   "mode": "lite",
   "engineMode": "lite",
@@ -474,7 +475,7 @@ node test/manual-lifecycle.mjs
 
 ### 5.1 差异总览
 
-| 项目 | 上游 0.2.2 | 增强版 0.2.16 | 机制 |
+| 项目 | 上游 0.2.2 | 增强版 0.2.17 | 机制 |
 |---|---|---|---|
 | Cursor 3.29+ / 3.30.8 | ❌ 30 秒后 “Connection stalled” | ✅ 正常对话 | 上行编码从 hex 文本改为原始 protobuf 字节 |
 | `BidiAppend` 载荷 | 只接受 `data`（tag 1，hex） | `data_binary`（tag 4）优先，`data` 兜底 | 同一消息的两种编码，共用一个解码器 |
@@ -483,7 +484,7 @@ node test/manual-lifecycle.mjs
 | Cursor 3.27 / 3.28.x | ✅ | ✅ | 公共路径未改动 |
 | 运行模式 | 仅文件库 | 默认 + 轻量（内存库） | 轻量模式不写 `bridge.db`，适合磁盘敏感或只做转发的场景 |
 | Multitask 后台子代理 | 完成后不接管，子代理停在 Stopped | 完成即唤醒父代理，状态回写 Success | 完成通知进入运行时，不再当作 unsupported action 丢弃 |
-| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.16 | 避免与上游 release 目录、摘要互相覆盖 |
+| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.17 | 避免与上游 release 目录、摘要互相覆盖 |
 
 ### 5.2 0.2.7：Multitask 后台子代理完成后的接管
 

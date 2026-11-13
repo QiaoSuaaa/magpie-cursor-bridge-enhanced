@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   pathsFor,
   magpieConfigDirFor,
+  connectionFilesFor,
   cursorSettingsFor,
   cursorDirFor,
   sqlite3For,
@@ -60,6 +61,23 @@ test('windows autostart uses the per-user Startup folder', () => {
   assert.equal(
     pathsFor('/Users/u', 'darwin', {}).autostart,
     path.posix.join('/Users/u', 'Library', 'LaunchAgents', 'local.magpie.cursor-bridge.plist')
+  );
+});
+
+test('windows connection lookup also reads the agent sandbox fallback', () => {
+  const home = win.join('C:', 'Users', 'u');
+  const environment = {APPDATA: win.join('C:', 'Users', 'u', 'AppData', 'Roaming')};
+  assert.deepEqual(connectionFilesFor(home, 'win32', environment), [
+    win.join(environment.APPDATA, 'magpie-cursor-bridge', 'connection.json'),
+    win.join(home, '.config', 'magpie-cursor-bridge', 'connection.json')
+  ]);
+  assert.deepEqual(
+    connectionFilesFor('/Users/u', 'darwin', {}),
+    [path.posix.join('/Users/u', '.config', 'magpie-cursor-bridge', 'connection.json')]
+  );
+  assert.deepEqual(
+    connectionFilesFor('/home/u', 'linux', {XDG_CONFIG_HOME: '/xdg/c'}),
+    ['/xdg/c/magpie-cursor-bridge/connection.json']
   );
 });
 

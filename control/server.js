@@ -31,6 +31,9 @@ export function paths(repoRoot) {
   const layout = platform.pathsFor(home);
   const root = layout.config;
   const share = layout.share;
+  // Magpie may write the agent connection to a different file on Windows;
+  // `connections` lists the same candidates the supervisor reads.
+  const connections = platform.current.connectionFiles(home);
   return {
     home,
     root,
@@ -43,7 +46,8 @@ export function paths(repoRoot) {
     autostart: layout.autostart || null,
     status: path.join(root, 'status.json'),
     installation: path.join(root, 'installation.json'),
-    connection: path.join(root, 'connection.json'),
+    connection: connections[0],
+    connections,
     supervisorPid: path.join(root, 'supervisor.lock/pid'),
     engineLog: path.join(root, 'engine.log'),
     supervisorLog: path.join(root, 'supervisor.log'),
@@ -139,7 +143,12 @@ async function launchAgentState(repoRoot) {
 }
 
 function safeConnection(repoRoot) {
-  const data = readJson(paths(repoRoot).connection);
+  let data = null;
+  for (const candidate of paths(repoRoot).connections) {
+    if (!fs.existsSync(candidate)) continue;
+    data = readJson(candidate);
+    break;
+  }
   if (!data || typeof data !== 'object') return {exists: false};
   return {
     exists: true,

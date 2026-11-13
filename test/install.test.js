@@ -43,7 +43,7 @@ test('fresh machines generate distinct CAs without a BYOK install, database or t
  assert.deepEqual(fs.readdirSync(one),['ca']);
  fs.unlinkSync(path.join(one,'ca/ca.crt'));assert.notEqual(init(one).status,0);assert.equal(hash(path.join(one,'ca/ca.key')),before);
 });
-test('package and native engine have the same pinned version and digest',()=>{assert.equal(verifyPackage(source).version,'0.2.16');});
+test('package and native engine have the same pinned version and digest',()=>{assert.equal(verifyPackage(source).version,'0.2.17');});
 test('certificate trust uses SSL policy and argument arrays, and refuses failed authorization',{skip:IS_WIN},t=>{
  const p=fakePaths(t),calls=[];let trusted=false;
  const exec=(cmd,args,options)=>{calls.push({cmd,args,options});if(args[0]==='--init-ca')return {status:0,stdout:'{"ca":"untrusted"}'};if(args[0]==='add-trusted-cert'){trusted=true;return {status:0};}return {status:trusted?0:1};};
@@ -89,7 +89,7 @@ test('service plist escapes paths and uses an installed runtime, independent of 
 });
 test('complete staging never overwrites an existing running release',t=>{
  const p=fakePaths(t);const fakeRuntime=path.join(p.home,'runtime');fs.writeFileSync(fakeRuntime,'test');
- const one=stage(source,p,'0.2.16',fakeRuntime),two=stage(source,p,'0.2.16',fakeRuntime);
+ const one=stage(source,p,'0.2.17',fakeRuntime),two=stage(source,p,'0.2.17',fakeRuntime);
  assert.notEqual(one,two);assert.equal(hash(path.join(one,stagedEngine)),hash(engine));
  assert.ok(fs.existsSync(path.join(two,'vendor/jsonc-parser/package.json')));
  if(!IS_WIN) assert.equal(fs.statSync(path.join(two,'bin',runtimeName)).mode&0o777,0o755);
@@ -132,8 +132,8 @@ test('GitHub installation stages the vendored JSONC parser without npm install',
    if(['node_modules','.git'].includes(name)) continue;
    fs.cpSync(path.join(source,name),path.join(plugin,name),{recursive:true});
  }
- assert.equal(verifyPackage(plugin).version,'0.2.16');
+ assert.equal(verifyPackage(plugin).version,'0.2.17');
  const runtime=path.join(home,'runtime');fs.writeFileSync(runtime,'test');
- const release=stage(plugin,p,'0.2.16',runtime);
+ const release=stage(plugin,p,'0.2.17',runtime);
  assert.ok(fs.existsSync(path.join(release,'vendor/jsonc-parser/lib/umd/main.js')));
 });
