@@ -18,6 +18,10 @@
   let settingsFilled = false;
   let pollTimer = null;
   let lastOverview = null;
+  let dbData = null;
+  let dbLoading = false;
+  let pendingClean = null;
+  let cleaning = false;
 
   function applyTheme() {
     const params = new URLSearchParams(location.search);
@@ -75,6 +79,57 @@
   function setBusy(value) {
     for (const id of ['start', 'status', 'restart']) $(id).disabled = value;
     $('busy').hidden = !value;
+    updateDbControls();
+  }
+
+  function numberText(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n.toLocaleString('zh-CN') : '—';
+  }
+
+  function dbTable(headers, rows) {
+    const table = document.createElement('table');
+    table.className = 'db-table';
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    for (const text of headers) {
+      const th = document.createElement('th');
+      th.textContent = text;
+      headRow.append(th);
+    }
+    head.append(headRow);
+    const body = document.createElement('tbody');
+    for (const cells of rows) {
+      const row = document.createElement('tr');
+      for (const cell of cells) {
+        const td = document.createElement('td');
+        if (cell && typeof cell === 'object') {
+          td.textContent = String(cell.text ?? '');
+          if (cell.mono) td.className = 'mono';
+          if (cell.title) td.title = cell.title;
+        } else {
+          td.textContent = String(cell ?? '');
+        }
+        row.append(td);
+      }
+      body.append(row);
+    }
+    table.append(head, body);
+    return table;
+  }
+
+  function updateDbControls() {
+    const unavailable = cleaning || dbLoading || !!busy || !dbData?.exists;
+    for (const button of document.querySelectorAll('[data-clean]')) button.disabled = unavailable;
+    if ($('dbRefresh')) $('dbRefresh').disabled = cleaning || dbLoading;
+    if ($('cleanDays')) $('cleanDays').disabled = cleaning;
+    if ($('dbVacuum')) $('dbVacuum').disabled = cleaning;
+    if ($('dbConfirmType')) $('dbConfirmType').disabled = cleaning;
+    if ($('dbConfirmGo')) {
+      $('dbConfirmGo').disabled = cleaning || !pendingClean
+        || (pendingClean.scope === 'all' && $('dbConfirmType').value.trim() !== '清空全部');
+    }
+    if ($('dbConfirmCancel')) $('dbConfirmCancel').disabled = cleaning;
   }
 
   function notice(message, kind = 'ok') {
@@ -233,11 +288,222 @@
     }
   }
 
+  function renderDatabase(data) {
+    dbData = data;
+    $('dbState').textContent = data.exists ? bytes(data.file.db) : '未创建';
+    if (!data.exists) {
+      $('dbHint').textContent = '数据库尚未创建；轻量模式下引擎不写 bridge.db，因此没有可清理的内容。';
+      $('dbSummary').hidden = true;
+      $('dbCategories').replaceChildren();
+      $('dbConversations').hidden = true;
+      $('dbDaysBox').hidden = true;
+      $('cleanCallsHint').textContent = '暂无数据库文件';
+      updateDbControls();
+      return;
+    }
+    const overhead = Math.max(0, data.file.db - data.totals.bytes);
+    $('dbHint').textContent = `统计完成 · 表内数据按内容字节计算，索引与空闲页计入「索引与空闲」`;
+    $('dbSummary').replaceChildren(
+      item('数据库文件', bytes(data.file.db), {mono: true, title: data.path}),
+      item('WAL / SHM', `${bytes(data.file.wal)} / ${bytes(data.file.shm)}`, {mono: true}),
+      item('表内数据', bytes(data.totals.bytes), {mono: true}),
+      item('索引与空闲', `约 ${bytes(overhead)}`, {mono: true}),
+      item('总行数', numberText(data.totals.rows), {mono: true}),
+      item('空闲页', numberText(data.page?.freelistCount), {mono: true}),
+      item('页大小', data.page?.pageSize ? `${numberText(data.page.pageSize)} B` : '—', {mono: true}),
+      item('最近写入', timeText(data.file.updated))
+    );
+    $('dbSummary').hidden = false;
+
+    const categories = document.createElement('div');
+    categories.className = 'db-categories';
+    for (const category of data.categories || []) {
+      if (!category.tables.length) continue;
+      const box = document.createElement('div');
+      box.className = 'db-cat';
+      const head = document.createElement('div');
+      head.className = 'db-cat-head';
+      const title = document.createElement('div');
+      const name = document.createElement('strong');
+      name.textContent = category.label;
+      const hint = document.createElement('span');
+      hint.className = 'hint';
+      hint.textContent = category.hint;
+      title.append(name, hint);
+      const total = document.createElement('span');
+      total.className = 'db-cat-total';
+      total.textContent = `${category.measured ? bytes(category.bytes) : '—'} · ${numberText(category.rows)} 行`;
+      head.append(title, total);
+      box.append(head, dbTable(['表', '行数', '数据体积'], category.tables.map((table) => [
+        {text: table.label, title: table.name},
+        numberText(table.rows),
+        table.measured ? bytes(table.bytes) : '—'
+      ])));
+      categories.append(box);
+    }
+    $('dbCategories').replaceChildren(categories);
+
+    const conversations = data.conversations || [];
+    $('dbConversations').hidden = !conversations.length;
+    if (conversations.length) {
+      $('dbConvHint').textContent = `最近 ${conversations.length} 个会话，按更新时间排序`;
+      $('dbConvBody').replaceChildren(dbTable(['会话', '更新时间', '消息', '数据体积'], conversations.map((conversation) => [
+        {text: conversation.id.slice(0, 8), title: conversation.id, mono: true},
+        timeText(conversation.updated),
+        numberText(conversation.messages),
+        bytes(conversation.bytes)
+      ])));
+    }
+
+    const days = data.days || [];
+    $('dbDaysBox').hidden = !days.length;
+    if (days.length) {
+      $('dbDaysBody').replaceChildren(dbTable(['日期', '消息数', '数据体积'], days.map((day) => [
+        {text: day.day, mono: true},
+        numberText(day.count),
+        bytes(day.bytes)
+      ])));
+    }
+
+    const rows = new Map();
+    for (const category of data.categories || []) {
+      for (const table of category.tables) rows.set(table.name, table);
+    }
+    const calls = rows.get('llm_calls')?.rows || 0;
+    const traces = rows.get('cursor_run_traces')?.rows || 0;
+    $('cleanCallsHint').textContent = `模型调用 ${numberText(calls)} 条 · 请求追踪 ${numberText(traces)} 条`;
+    updateDbControls();
+  }
+
+  async function loadDatabase({force = false, quiet = false} = {}) {
+    if (dbLoading) return;
+    dbLoading = true;
+    $('dbState').textContent = '统计中…';
+    if (!quiet) $('dbHint').textContent = '正在统计数据库内容（数据库越大耗时越久）…';
+    updateDbControls();
+    try {
+      const data = await api(`/api/database${force ? '?refresh=1' : ''}`);
+      renderDatabase(data.database);
+    } catch (error) {
+      $('dbState').textContent = '统计失败';
+      $('dbHint').textContent = `统计失败：${error.message}`;
+      if (!quiet) notice(`数据库统计失败：${error.message}`, 'error');
+    } finally {
+      dbLoading = false;
+      updateDbControls();
+    }
+  }
+
+  function cleanupPlan(scope) {
+    const days = Number($('cleanDays').value) || 3;
+    const vacuum = scope === 'vacuum' || $('dbVacuum').checked;
+    const rows = new Map();
+    for (const category of dbData?.categories || []) {
+      for (const table of category.tables) rows.set(table.name, table);
+    }
+    const calls = rows.get('llm_calls')?.rows || 0;
+    const traces = rows.get('cursor_run_traces')?.rows || 0;
+    const conversations = rows.get('conversations')?.rows || 0;
+    let text = '';
+    if (scope === 'traces') {
+      text = `将删除 ${numberText(calls)} 条模型调用日志与 ${numberText(traces)} 条请求追踪记录。`;
+    } else if (scope === 'sessions') {
+      text = `将删除 ${days} 天前未更新的会话及其消息、检查点、运行和工具调用记录；blob 内容会保留。`;
+    } else if (scope === 'vacuum') {
+      text = '不删除数据，仅执行 VACUUM 压缩数据库并回收空闲页。';
+    } else {
+      text = `将删除 ${numberText(conversations)} 个会话及其全部消息、检查点、运行记录、调用日志与 blob 内容。模型配置与服务设置保留，此操作不可撤销。`;
+    }
+    const running = lastOverview?.engine?.alive || lastOverview?.supervisor?.alive;
+    if (running) text += ' 清理前会短暂暂停桥接，完成后自动重启，当前对话可能中断一次。';
+    if (vacuum) {
+      text += ' 将执行 VACUUM 回收磁盘空间。';
+    } else {
+      text += ' 未勾选压缩：删除后的空间会被后续写入复用，文件不会立即缩小。';
+    }
+    return {scope, days, vacuum, text};
+  }
+
+  function refreshCleanupPlan() {
+    if (!pendingClean || cleaning) return;
+    const scope = pendingClean.scope;
+    const typed = $('dbConfirmType').value;
+    pendingClean = cleanupPlan(scope);
+    $('dbConfirmText').textContent = pendingClean.text;
+    $('dbConfirmType').value = typed;
+    updateDbControls();
+  }
+
+  function showCleanupConfirm(scope) {
+    if (!dbData?.exists || cleaning) return;
+    pendingClean = cleanupPlan(scope);
+    $('dbConfirmText').textContent = pendingClean.text;
+    $('dbConfirmTypeWrap').hidden = scope !== 'all';
+    $('dbConfirmType').value = '';
+    $('dbConfirmHint').textContent = '';
+    $('dbConfirm').hidden = false;
+    updateDbControls();
+  }
+
+  async function executeCleanup() {
+    const plan = pendingClean;
+    if (!plan || cleaning) return;
+    if (plan.scope === 'all' && $('dbConfirmType').value.trim() !== '清空全部') return;
+    cleaning = true;
+    busy = '数据库清理';
+    setBusy(true);
+    $('dbConfirmHint').textContent = plan.vacuum ? '正在清理并压缩，桥接会短暂重启…' : '正在清理…';
+    notice('');
+    try {
+      const result = await api('/api/database/cleanup', {
+        method: 'POST',
+        body: {scope: plan.scope, olderThanDays: plan.days, vacuum: plan.vacuum}
+      });
+      const cleanup = result.cleanup;
+      const released = cleanup.reclaimed > 0 ? `，释放 ${bytes(cleanup.reclaimed)}` : '';
+      if (result.restart && !result.restart.ok) {
+        notice(`数据库已清理（${bytes(cleanup.before.total)} → ${bytes(cleanup.after.total)}${released}），但桥接重启失败：${result.restart.error || '未知错误'}`, 'error');
+      } else {
+        const restarted = result.restart?.ok ? '，桥接已重启' : '';
+        notice(`清理完成：${bytes(cleanup.before.total)} → ${bytes(cleanup.after.total)}${released}${restarted}。`, 'ok');
+      }
+      pendingClean = null;
+      $('dbConfirm').hidden = true;
+      loadStatus({quiet: true});
+      loadDatabase({force: true, quiet: true});
+    } catch (error) {
+      $('dbConfirmHint').textContent = `清理失败：${error.message}`;
+      notice(`清理失败：${error.message}`, 'error');
+    } finally {
+      cleaning = false;
+      busy = null;
+      setBusy(false);
+    }
+  }
+
   function wire() {
     for (const [id, action] of [['start', 'start'], ['status', 'status'], ['restart', 'restart']]) {
       $(id).addEventListener('click', () => runAction(action));
     }
     $('refresh').addEventListener('click', () => loadStatus());
+    $('dbCard').addEventListener('toggle', () => {
+      if ($('dbCard').open && !dbData && !cleaning) loadDatabase();
+      tellSize();
+    });
+    $('dbRefresh').addEventListener('click', () => loadDatabase({force: true}));
+    for (const button of document.querySelectorAll('[data-clean]')) {
+      button.addEventListener('click', () => showCleanupConfirm(button.dataset.clean));
+    }
+    $('cleanDays').addEventListener('change', refreshCleanupPlan);
+    $('dbVacuum').addEventListener('change', refreshCleanupPlan);
+    $('dbConfirmType').addEventListener('input', updateDbControls);
+    $('dbConfirmGo').addEventListener('click', executeCleanup);
+    $('dbConfirmCancel').addEventListener('click', () => {
+      pendingClean = null;
+      $('dbConfirm').hidden = true;
+      $('dbConfirmHint').textContent = '';
+      updateDbControls();
+    });
     $('settingsForm').addEventListener('submit', saveSettings);
     $('resetSettings').addEventListener('click', () => {
       const defaults = lastOverview?.settings?.defaults || {runMode: 'default', subagentMode: 'async', refreshSeconds: 15, gatewayGraceSeconds: 60, logLimitMB: 4};

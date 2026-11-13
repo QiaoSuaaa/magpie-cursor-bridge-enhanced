@@ -6,6 +6,7 @@ import {execFile, spawn} from 'node:child_process';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, settingsFile} from '../lib/bridge-settings.js';
+import {readDatabase, cleanDatabase} from './database.js';
 
 // The control console is served from the Magpie plugin host. It runs the
 // same setup.command the user would type in a terminal, so the panel and
@@ -32,6 +33,10 @@ export function paths(repoRoot) {
     home,
     root,
     share,
+    data: path.join(root, 'data'),
+    database: path.join(root, 'data/bridge.db'),
+    databaseWal: path.join(root, 'data/bridge.db-wal'),
+    databaseShm: path.join(root, 'data/bridge.db-shm'),
     plist: path.join(home, 'Library/LaunchAgents', `${LABEL}.plist`),
     status: path.join(root, 'status.json'),
     installation: path.join(root, 'installation.json'),
@@ -164,7 +169,7 @@ async function overview(repoRoot, port) {
     },
     launchAgent: agent,
     connection: safeConnection(repoRoot),
-    database: stat(path.join(p.root, 'data/bridge.db')),
+    database: stat(p.database),
     settings: {
       values: readBridgeSettings(p.root),
       defaults: bridgeDefaults,
@@ -326,6 +331,12 @@ export function createControlServer({repoRoot, port, log = console.log}) {
   };
   let busy = null;
   let ownPort = port;
+  // Content-byte statistics scan the whole database (seconds on a multi-GB
+  // file), so concurrent panels share one read and a short-lived cache.
+  let databaseCache = {at: 0, data: null};
+  let databasePending = null;
+  let databaseEpoch = 0;
+  const DATABASE_CACHE_MS = 20000;
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -400,6 +411,86 @@ export function createControlServer({repoRoot, port, log = console.log}) {
         }
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/database') {
+        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
+        const p = paths(repoRoot);
+        const fresh = url.searchParams.get('refresh') === '1';
+        if (!fresh && databaseCache.data && Date.now() - databaseCache.at < DATABASE_CACHE_MS) {
+          return sendJson(res, 200, {ok: true, database: databaseCache.data, cached: true});
+        }
+        try {
+          if (!databasePending) {
+            const epoch = databaseEpoch;
+            databasePending = readDatabase(p.database)
+              .then((data) => {
+                if (epoch === databaseEpoch) databaseCache = {at: Date.now(), data};
+                return data;
+              })
+              .finally(() => { databasePending = null; });
+          }
+          const data = await databasePending;
+          return sendJson(res, 200, {ok: true, database: data});
+        } catch (error) {
+          return sendJson(res, 500, {ok: false, error: `读取数据库失败：${error.message}`});
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/database/cleanup') {
+        const body = await readBody(req);
+        const scope = String(body.scope || '');
+        if (!['traces', 'sessions', 'all', 'vacuum'].includes(scope)) {
+          return sendJson(res, 400, {ok: false, error: `未知的清理范围：${scope || '空'}`});
+        }
+        const olderThanDays = body.olderThanDays === undefined ? 3 : Number(body.olderThanDays);
+        if (scope === 'sessions' && (!Number.isInteger(olderThanDays) || olderThanDays < 1 || olderThanDays > 3650)) {
+          return sendJson(res, 400, {ok: false, error: '保留天数需为 1–3650 的整数'});
+        }
+        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
+        const vacuum = scope === 'vacuum' || body.vacuum !== false;
+        busy = '数据库清理';
+        log(`database cleanup: ${scope}${scope === 'sessions' ? ` (>${olderThanDays}d)` : ''} vacuum=${vacuum}`);
+        try {
+          const p = paths(repoRoot);
+          const runtime = readJson(p.status);
+          const enginePid = Number(runtime?.pid) || null;
+          const supervisorPid = readPid(p.supervisorPid);
+          const wasRunning = (!!enginePid && alive(enginePid)) || (!!supervisorPid && alive(supervisorPid));
+          let cleanup = null;
+          let restart = null;
+          let failure = '';
+          try {
+            // Let an in-flight statistics read close its read transaction
+            // before VACUUM asks for an exclusive lock.
+            if (databasePending) {
+              try { await databasePending; } catch { /* the cache is dropped below */ }
+            }
+            // The engine keeps the database open in WAL mode; stop it so
+            // deletes and VACUUM cannot race a live writer.
+            if (wasRunning) await stopBridge(repoRoot);
+            cleanup = await cleanDatabase(p.database, {scope, olderThanDays, vacuum});
+          } catch (error) {
+            failure = String(error?.message || error);
+          } finally {
+            if (wasRunning) {
+              try {
+                restart = await runSetup(repoRoot);
+              } catch (error) {
+                restart = {ok: false, code: null, stdout: '', stderr: '', error: String(error?.message || error)};
+              }
+            }
+            databaseEpoch += 1;
+            databaseCache = {at: 0, data: null};
+            databasePending = null;
+          }
+          if (failure) {
+            return sendJson(res, 500, {ok: false, error: `清理失败：${failure}`, restart});
+          }
+          return sendJson(res, 200, {ok: true, cleanup, restart});
+        } finally {
+          busy = null;
+        }
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/action') {
         const body = await readBody(req);
         const action = String(body.action || '');
@@ -432,6 +523,7 @@ export function createControlServer({repoRoot, port, log = console.log}) {
         const p = paths(repoRoot);
         const targets = {
           config: p.root,
+          data: p.data,
           'engine-log': p.engineLog,
           'supervisor-log': p.supervisorLog,
           'supervisor-error-log': p.supervisorError,

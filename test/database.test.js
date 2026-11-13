@@ -1,0 +1,208 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {readDatabase, cleanDatabase} from '../control/database.js';
+import {createControlServer} from '../control/server.js';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const SQLITE = '/usr/bin/sqlite3';
+
+const BLOB_A = '00'.repeat(31) + '01';
+const BLOB_B = '00'.repeat(31) + '02';
+
+function sql(dbPath, statement) {
+  return execFileSync(SQLITE, [dbPath], {input: statement, encoding: 'utf8'});
+}
+
+function query(dbPath, statement) {
+  return execFileSync(SQLITE, ['-json', '-readonly', dbPath, statement], {encoding: 'utf8'});
+}
+
+function fakeDatabase(t) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-bridge-db-'));
+  t.after(() => fs.rmSync(home, {recursive: true, force: true}));
+  const dataDir = path.join(home, '.config/magpie-cursor-bridge/data');
+  fs.mkdirSync(dataDir, {recursive: true});
+  const dbPath = path.join(dataDir, 'bridge.db');
+  const now = Date.now();
+  const old = now - 10 * 86400000;
+  sql(dbPath, `
+PRAGMA foreign_keys=ON;
+CREATE TABLE conversations(conversation_id TEXT PRIMARY KEY, current_checkpoint_id INTEGER, active_run_id TEXT, updated_at_ms INTEGER NOT NULL);
+CREATE TABLE messages(conversation_id TEXT NOT NULL, message_id TEXT NOT NULL, role TEXT NOT NULL, origin TEXT NOT NULL, payload_json TEXT NOT NULL, runtime_event_id TEXT, created_at_ms INTEGER NOT NULL, PRIMARY KEY(conversation_id, message_id), FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id));
+CREATE TABLE conversation_checkpoints(checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, parent_checkpoint_id INTEGER, state_digest BLOB NOT NULL, created_at_ms INTEGER NOT NULL, UNIQUE(conversation_id, state_digest), FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id), FOREIGN KEY(parent_checkpoint_id) REFERENCES conversation_checkpoints(checkpoint_id));
+CREATE TABLE checkpoint_messages(checkpoint_id INTEGER NOT NULL, ordinal INTEGER NOT NULL, conversation_id TEXT NOT NULL, message_id TEXT NOT NULL, PRIMARY KEY(checkpoint_id, ordinal), UNIQUE(checkpoint_id, message_id), FOREIGN KEY(checkpoint_id) REFERENCES conversation_checkpoints(checkpoint_id), FOREIGN KEY(conversation_id, message_id) REFERENCES messages(conversation_id, message_id));
+CREATE TABLE runs(run_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, base_checkpoint_id INTEGER NOT NULL, head_checkpoint_id INTEGER NOT NULL, parent_run_id TEXT, subagent_kind TEXT, status TEXT NOT NULL, turn_usage_json TEXT NOT NULL DEFAULT 'null', failure_category TEXT, failure_summary TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, cursor_request_id TEXT, FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id), FOREIGN KEY(base_checkpoint_id) REFERENCES conversation_checkpoints(checkpoint_id), FOREIGN KEY(head_checkpoint_id) REFERENCES conversation_checkpoints(checkpoint_id));
+CREATE TABLE tool_rounds(round_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, base_checkpoint_id INTEGER NOT NULL, assistant_json TEXT NOT NULL, status TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, FOREIGN KEY(run_id) REFERENCES runs(run_id), FOREIGN KEY(base_checkpoint_id) REFERENCES conversation_checkpoints(checkpoint_id));
+CREATE TABLE tool_round_calls(round_id TEXT NOT NULL, call_index INTEGER NOT NULL, call_id TEXT NOT NULL, model_call_id TEXT NOT NULL, arguments_json TEXT NOT NULL, status TEXT NOT NULL, result_content TEXT, result_is_error INTEGER, committed_checkpoint_id INTEGER, completed_at_ms INTEGER, argument_error TEXT, PRIMARY KEY(round_id, call_index), UNIQUE(round_id, call_id), FOREIGN KEY(round_id) REFERENCES tool_rounds(round_id), FOREIGN KEY(committed_checkpoint_id) REFERENCES conversation_checkpoints(checkpoint_id));
+CREATE TABLE blobs(blob_id BLOB PRIMARY KEY, data BLOB NOT NULL, created_at_ms INTEGER NOT NULL);
+CREATE TABLE blob_edges(parent_blob_id BLOB NOT NULL, child_blob_id BLOB NOT NULL, field_name TEXT NOT NULL, PRIMARY KEY(parent_blob_id, child_blob_id, field_name), FOREIGN KEY(parent_blob_id) REFERENCES blobs(blob_id), FOREIGN KEY(child_blob_id) REFERENCES blobs(blob_id));
+CREATE TABLE llm_calls(call_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, conversation_id TEXT NOT NULL, status TEXT NOT NULL, finish_reason TEXT, usage_json TEXT, error_message TEXT, created_at_ms INTEGER NOT NULL);
+CREATE TABLE llm_call_requests(call_id TEXT PRIMARY KEY, headers_json TEXT NOT NULL, body_json TEXT NOT NULL, byte_count INTEGER NOT NULL, FOREIGN KEY(call_id) REFERENCES llm_calls(call_id) ON DELETE CASCADE);
+CREATE TABLE cursor_run_traces(request_id TEXT PRIMARY KEY, status TEXT NOT NULL, received_at_ms INTEGER NOT NULL);
+CREATE TABLE cursor_run_trace_artifacts(request_id TEXT NOT NULL, seq INTEGER NOT NULL, artifact_type TEXT NOT NULL, source TEXT NOT NULL, blob_id BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', created_at_ms INTEGER NOT NULL, PRIMARY KEY(request_id, seq), FOREIGN KEY(request_id) REFERENCES cursor_run_traces(request_id) ON DELETE CASCADE, FOREIGN KEY(blob_id) REFERENCES blobs(blob_id));
+CREATE TABLE model_configs(model_hash TEXT PRIMARY KEY, api_key TEXT NOT NULL);
+CREATE TABLE service_settings(setting_key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
+
+INSERT INTO conversations VALUES ('conv-old', 1, 'run-old', ${old});
+INSERT INTO conversations VALUES ('conv-new', 2, 'run-new', ${now});
+INSERT INTO messages VALUES ('conv-old', 'msg-old-1', 'user', 'prompt', '{"text":"old one"}', NULL, ${old});
+INSERT INTO messages VALUES ('conv-old', 'msg-old-2', 'assistant', 'assistant', '{"text":"old two"}', NULL, ${old});
+INSERT INTO messages VALUES ('conv-new', 'msg-new-1', 'user', 'prompt', '{"text":"new"}', NULL, ${now});
+INSERT INTO conversation_checkpoints(conversation_id, parent_checkpoint_id, state_digest, created_at_ms) VALUES ('conv-old', NULL, randomblob(32), ${old});
+INSERT INTO conversation_checkpoints(conversation_id, parent_checkpoint_id, state_digest, created_at_ms) VALUES ('conv-new', NULL, randomblob(32), ${now});
+INSERT INTO checkpoint_messages VALUES (1, 0, 'conv-old', 'msg-old-1');
+INSERT INTO checkpoint_messages VALUES (1, 1, 'conv-old', 'msg-old-2');
+INSERT INTO checkpoint_messages VALUES (2, 0, 'conv-new', 'msg-new-1');
+INSERT INTO runs(run_id, conversation_id, base_checkpoint_id, head_checkpoint_id, status, created_at_ms, updated_at_ms) VALUES ('run-old', 'conv-old', 1, 1, 'completed', ${old}, ${old});
+INSERT INTO runs(run_id, conversation_id, base_checkpoint_id, head_checkpoint_id, status, created_at_ms, updated_at_ms) VALUES ('run-new', 'conv-new', 2, 2, 'completed', ${now}, ${now});
+UPDATE runs SET turn_usage_json = '{"total":10}' WHERE run_id = 'run-old';
+INSERT INTO tool_rounds VALUES ('round-old', 'run-old', 1, '{"text":"round"}', 'settled', ${old}, ${old});
+INSERT INTO tool_rounds VALUES ('round-new', 'run-new', 2, '{"text":"round"}', 'settled', ${now}, ${now});
+INSERT INTO tool_round_calls(round_id, call_index, call_id, model_call_id, arguments_json, status, result_content, committed_checkpoint_id) VALUES ('round-old', 0, 'call-old', 'model-old', '{}', 'completed', 'result-old', 1);
+INSERT INTO tool_round_calls(round_id, call_index, call_id, model_call_id, arguments_json, status, result_content, committed_checkpoint_id) VALUES ('round-new', 0, 'call-new', 'model-new', '{}', 'completed', 'result-new', 2);
+INSERT INTO blobs VALUES (X'${BLOB_A}', 'shared content', ${old});
+INSERT INTO blobs VALUES (X'${BLOB_B}', 'child content', ${now});
+INSERT INTO blob_edges VALUES (X'${BLOB_A}', X'${BLOB_B}', 'root.child');
+INSERT INTO llm_calls(call_id, run_id, conversation_id, status, usage_json, created_at_ms) VALUES ('call-old', 'run-old', 'conv-old', 'completed', '{"total":10}', ${old});
+INSERT INTO llm_calls(call_id, run_id, conversation_id, status, usage_json, created_at_ms) VALUES ('call-new', 'run-new', 'conv-new', 'completed', '{"total":20}', ${now});
+INSERT INTO llm_call_requests VALUES ('call-old', '{}', '{}', 128);
+INSERT INTO cursor_run_traces VALUES ('trace-1', 'completed', ${now});
+INSERT INTO cursor_run_trace_artifacts VALUES ('trace-1', 0, 'request', 'cursor_client', X'${BLOB_B}', '{}', ${now});
+INSERT INTO model_configs VALUES ('model', 'secret-api-key');
+INSERT INTO service_settings VALUES ('setting', '{"value":1}');
+`);
+  return {home, dbPath};
+}
+
+test('database overview groups tables and reports content sizes', async (t) => {
+  const {dbPath} = fakeDatabase(t);
+  const data = await readDatabase(dbPath);
+  assert.equal(data.exists, true);
+  assert.equal(data.page.pageSize, 4096);
+  const categories = Object.fromEntries(data.categories.map((entry) => [entry.id, entry]));
+  assert.equal(categories.sessions.tables.find((table) => table.name === 'conversations').rows, 2);
+  assert.equal(categories.sessions.tables.find((table) => table.name === 'messages').rows, 3);
+  assert.equal(categories.content.tables.find((table) => table.name === 'blobs').rows, 2);
+  assert.equal(categories.content.measured, true);
+  assert.equal(categories.config.measured, false);
+  assert.equal(data.conversations[0].id, 'conv-new');
+  assert.equal(data.conversations.length, 2);
+  assert.equal(data.totals.rows, 26);
+  assert.equal(data.days.length, 2);
+  assert.doesNotMatch(JSON.stringify(data), /secret-api-key/);
+});
+
+test('session cleanup removes old conversations and keeps shared blobs', async (t) => {
+  const {dbPath} = fakeDatabase(t);
+  const result = await cleanDatabase(dbPath, {scope: 'sessions', olderThanDays: 5, vacuum: false});
+  assert.equal(result.vacuumed, false);
+  assert.equal(result.counts.conversations, 1);
+  assert.equal(result.counts.messages, 2);
+  assert.equal(result.counts.runs, 1);
+  assert.equal(result.counts.tool_rounds, 1);
+  assert.equal(result.counts.tool_round_calls, 1);
+  assert.equal(result.counts.conversation_checkpoints, 1);
+  const remaining = JSON.parse(query(dbPath, 'SELECT conversation_id FROM conversations;'));
+  assert.deepEqual(remaining, [{conversation_id: 'conv-new'}]);
+  assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM blobs;'))[0].n), 2);
+  assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM llm_calls;'))[0].n), 2);
+  assert.equal(query(dbPath, 'PRAGMA foreign_key_check;').trim(), '');
+});
+
+test('trace cleanup removes call logs but keeps conversations', async (t) => {
+  const {dbPath} = fakeDatabase(t);
+  const result = await cleanDatabase(dbPath, {scope: 'traces', vacuum: false});
+  assert.equal(result.counts.llm_calls, 2);
+  assert.equal(result.counts.llm_call_requests, 1);
+  assert.equal(result.counts.cursor_run_traces, 1);
+  assert.equal(result.counts.cursor_run_trace_artifacts, 1);
+  assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM llm_calls;'))[0].n), 0);
+  assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM cursor_run_traces;'))[0].n), 0);
+  assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM conversations;'))[0].n), 2);
+  assert.equal(query(dbPath, 'PRAGMA foreign_key_check;').trim(), '');
+});
+
+test('full cleanup clears runtime data, keeps configuration, then vacuums', async (t) => {
+  const {dbPath} = fakeDatabase(t);
+  const result = await cleanDatabase(dbPath, {scope: 'all', vacuum: true});
+  assert.equal(result.vacuumed, true);
+  assert.equal(result.counts.conversations, 2);
+  assert.equal(result.counts.blobs, 2);
+  for (const table of ['conversations', 'messages', 'conversation_checkpoints', 'checkpoint_messages', 'runs', 'tool_rounds', 'tool_round_calls', 'blobs', 'blob_edges', 'llm_calls', 'cursor_run_traces', 'cursor_run_trace_artifacts']) {
+    const row = JSON.parse(query(dbPath, `SELECT COUNT(*) AS n FROM ${table};`))[0];
+    assert.equal(Number(row.n), 0, `${table} should be empty`);
+  }
+  assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM model_configs;'))[0].n), 1);
+  assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM service_settings;'))[0].n), 1);
+  assert.equal(query(dbPath, 'PRAGMA foreign_key_check;').trim(), '');
+  assert.ok(fs.existsSync(dbPath));
+});
+
+test('cleanup validates its scope and retention window', async (t) => {
+  const {dbPath} = fakeDatabase(t);
+  await assert.rejects(cleanDatabase(dbPath, {scope: 'everything'}), /未知的清理范围/);
+  await assert.rejects(cleanDatabase(dbPath, {scope: 'sessions', olderThanDays: 0}), /1–3650/);
+  await assert.rejects(cleanDatabase(path.join(path.dirname(dbPath), 'missing.db'), {scope: 'traces'}), /尚未创建/);
+});
+
+test('control console exposes database stats and cleanup routes', async (t) => {
+  const {home, dbPath} = fakeDatabase(t);
+  const root = path.join(home, '.config/magpie-cursor-bridge');
+  fs.writeFileSync(path.join(root, 'status.json'), JSON.stringify({
+    version: '9.9.9', state: 'connected', updated: '2026-01-01T00:00:01.000Z'
+  }));
+  const previous = process.env.CURSOR_BRIDGE_HOME;
+  process.env.CURSOR_BRIDGE_HOME = home;
+  t.after(() => {
+    if (previous === undefined) delete process.env.CURSOR_BRIDGE_HOME;
+    else process.env.CURSOR_BRIDGE_HOME = previous;
+  });
+  const {server, port} = await createControlServer({repoRoot, port: 0, log: () => {}});
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const page = await new Promise((resolve, reject) => {
+    http.get({host: '127.0.0.1', port, path: '/'}, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve(body));
+    }).on('error', reject);
+  });
+  const token = page.match(/__BRIDGE_TOKEN__="([0-9a-f]{64})"/)[1];
+  const headers = {'x-magpiebridge-token': token, 'content-type': 'application/json'};
+  const call = (method, pathname, body) => new Promise((resolve, reject) => {
+    const req = http.request({host: '127.0.0.1', port, path: pathname, method, headers}, (res) => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => resolve({status: res.statusCode, body: data}));
+    });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+
+  const stats = await call('GET', '/api/database');
+  assert.equal(stats.status, 200);
+  const database = JSON.parse(stats.body).database;
+  assert.equal(database.exists, true);
+  assert.ok(database.categories.some((entry) => entry.id === 'sessions'));
+  assert.ok(database.file.db > 0);
+  assert.ok(fs.existsSync(dbPath));
+
+  const bad = await call('POST', '/api/database/cleanup', JSON.stringify({scope: 'nope'}));
+  assert.equal(bad.status, 400);
+
+  const cleaned = await call('POST', '/api/database/cleanup', JSON.stringify({scope: 'traces', vacuum: false}));
+  assert.equal(cleaned.status, 200);
+  const result = JSON.parse(cleaned.body);
+  assert.equal(result.ok, true);
+  assert.equal(result.cleanup.counts.llm_calls, 2);
+  assert.equal(result.restart, null);
+});

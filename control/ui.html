@@ -59,10 +59,87 @@
     </form>
   </section>
 
+  <details id="dbCard" class="card db-card">
+    <summary>
+      <span class="db-title"><h2>数据库管理</h2><span class="hint">bridge.db · 分类查看与清理</span></span>
+      <span class="hint db-state" id="dbState">展开时统计</span>
+    </summary>
+    <div class="db-body">
+      <div class="db-toolbar">
+        <span class="hint" id="dbHint">展开后统计数据库内容；数据库越大耗时越久，统计只读，不影响桥接。</span>
+        <button id="dbRefresh" class="ghost" type="button">重新统计</button>
+      </div>
+      <div id="dbSummary" class="grid db-grid" aria-live="polite" hidden></div>
+      <div id="dbCategories" class="db-categories"></div>
+      <details id="dbConversations" class="db-sub" hidden>
+        <summary>最近会话<span class="hint" id="dbConvHint"></span></summary>
+        <div id="dbConvBody"></div>
+      </details>
+      <details id="dbDaysBox" class="db-sub" hidden>
+        <summary>近 7 天消息增长</summary>
+        <div id="dbDaysBody"></div>
+      </details>
+
+      <div class="cleanup">
+        <div class="cleanup-head">
+          <h3>清理</h3>
+          <span class="hint">清理会写入数据库；勾选压缩时会暂停桥接，完成后自动重启。</span>
+        </div>
+        <div class="cleanup-row">
+          <div class="cleanup-copy">
+            <strong>请求调用日志</strong>
+            <span class="hint" id="cleanCallsHint">模型调用与 Cursor 请求追踪</span>
+          </div>
+          <button type="button" data-clean="traces">清理调用日志</button>
+        </div>
+        <div class="cleanup-row">
+          <div class="cleanup-copy">
+            <strong>历史会话</strong>
+            <span class="hint">删除超过指定天数未更新的会话、消息与检查点；blob 内容会保留</span>
+          </div>
+          <div class="cleanup-controls">
+            <select id="cleanDays">
+              <option value="1">1 天前</option>
+              <option value="3" selected>3 天前</option>
+              <option value="7">7 天前</option>
+              <option value="30">30 天前</option>
+            </select>
+            <button type="button" data-clean="sessions">清理历史会话</button>
+          </div>
+        </div>
+        <div class="cleanup-row">
+          <div class="cleanup-copy">
+            <strong>仅压缩数据库</strong>
+            <span class="hint">不删除数据，回收已释放页占用的磁盘空间；需要暂停桥接</span>
+          </div>
+          <button type="button" data-clean="vacuum">压缩</button>
+        </div>
+        <div class="cleanup-row danger-zone">
+          <div class="cleanup-copy">
+            <strong>清空全部运行数据</strong>
+            <span class="hint">删除全部会话、消息、检查点、运行记录、调用日志与 blob 内容；模型配置保留</span>
+          </div>
+          <button class="danger" type="button" data-clean="all">清空…</button>
+        </div>
+        <label class="vacuum-check"><input id="dbVacuum" type="checkbox" checked> 清理后压缩数据库（VACUUM，回收磁盘空间）</label>
+        <div id="dbConfirm" class="confirm" hidden>
+          <p id="dbConfirmText"></p>
+          <label id="dbConfirmTypeWrap" class="confirm-type" hidden>输入「<code>清空全部</code>」以确认 <input id="dbConfirmType" type="text" autocomplete="off" spellcheck="false"></label>
+          <div class="confirm-actions">
+            <button id="dbConfirmGo" class="danger" type="button">确认执行</button>
+            <button id="dbConfirmCancel" class="ghost" type="button">取消</button>
+            <span id="dbConfirmHint" class="hint"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </details>
+
   <section class="card">
     <div class="card-head"><h2>快捷入口</h2><span class="hint">在本机打开</span></div>
     <div class="links">
       <button type="button" data-target="config">配置目录</button>
+      <button type="button" data-target="data">数据目录</button>
       <button type="button" data-target="engine-log">engine.log</button>
       <button type="button" data-target="supervisor-log">supervisor.log</button>
       <button type="button" data-target="supervisor-error-log">supervisor-error.log</button>
