@@ -40,6 +40,26 @@
     } catch { /* keep the built-in palette */ }
   }
 
+  // The token is minted once per control-service process (see
+  // control/server.js) and inlined into the HTML only. When Magpie restarts
+  // the plugin host, rebinds the port, or the plugin is reloaded, a console
+  // page that is already open keeps the old token and every /api call is
+  // refused with 403 「控制口令无效」. Reloading the page fetches the HTML —
+  // and with it the current token — again. A short cooldown keeps a second
+  // 403 (e.g. a proxy in between) from looping reloads forever.
+  const RELOAD_MARK = 'bridge-token-reload-at';
+  const RELOAD_COOLDOWN = 15000;
+
+  function reloadForStaleToken() {
+    const now = Date.now();
+    let last = 0;
+    try { last = Number(sessionStorage.getItem(RELOAD_MARK)) || 0; } catch { /* storage is optional */ }
+    if (now - last < RELOAD_COOLDOWN) return false;
+    try { sessionStorage.setItem(RELOAD_MARK, String(now)); } catch { /* storage is optional */ }
+    location.reload();
+    return true;
+  }
+
   async function api(pathname, {method = 'GET', body} = {}) {
     const response = await fetch(pathname, {
       method,
@@ -50,7 +70,17 @@
     let data = null;
     try { data = await response.json(); } catch {}
     if (!response.ok || !data || data.ok === false) {
-      throw new Error(data?.error || `HTTP ${response.status}`);
+      const stale = response.status === 403 && data?.error === '控制口令无效';
+      if (stale && reloadForStaleToken()) {
+        // The page is about to be replaced; hold the caller instead of
+        // flashing a failure the user cannot act on.
+        return new Promise(() => {});
+      }
+      const error = new Error(stale
+        ? '控制口令已过期：请点击「刷新页面」重新加载控制台'
+        : (data?.error || `HTTP ${response.status}`));
+      error.stale = stale;
+      throw error;
     }
     return data;
   }
@@ -223,7 +253,9 @@
     } catch (error) {
       if (!quiet) notice(`读取状态失败：${error.message}`, 'error');
       $('dot').dataset.state = 'error';
-      $('stateText').textContent = '控制服务不可达';
+      // A refused token is not an unreachable service: the page itself is
+      // stale and only a reload can fix it.
+      $('stateText').textContent = error.stale ? '控制口令已过期，请刷新页面' : '控制服务不可达';
     }
   }
 
@@ -486,6 +518,7 @@
       $(id).addEventListener('click', () => runAction(action));
     }
     $('refresh').addEventListener('click', () => loadStatus());
+    $('reload').addEventListener('click', () => location.reload());
     $('dbCard').addEventListener('toggle', () => {
       if ($('dbCard').open && !dbData && !cleaning) loadDatabase();
       tellSize();
