@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.15（本地增强版）
+
+- 新增 Windows x64 原生引擎：`bin/win32-x64/cursor-magpie-bridge.exe`，交叉编译产物为自包含 PE（仅依赖 Windows 系统 DLL），并纳入 `integrity.json` 的分平台摘要。
+- `bridge.js` 按平台选择引擎（Windows 为 exe），Windows 下跳过 Unix `umask`。
+- 安装器支持 Windows：证书信任改用 `certutil -addstore -user Root`，后台通过计划任务 `local.magpie.cursor-bridge`（登录自启 + 立即运行）守护，卸载时删除任务；`stage` 只携带当前平台的引擎与运行时。
+- 控制台在 Windows 上启用「启动 / 重启」：通过宿主运行时执行 `install.js`，停止时结束计划任务并终止 supervisor/engine；状态查询走 `schtasks` + `supervisor.lock`。
+- 修复 `source.patch` 中 `tokio::signal::unix` 缺少 `#[cfg(unix)]` 保护导致 Windows 编译失败的问题，改用跨平台的 termination future。
+- 新增 `scripts/build-native-windows.sh`，在 macOS 上用 mingw-w64 交叉编译 Windows 产物并更新分平台摘要。
+- 版本号升至 0.2.15，macOS 与 Windows 原生桥接按新版本号重建。
+
 ## 0.2.14（本地增强版）
 
 - 修复 0.2.12 引入的插件加载回归：Magpie 的 agent 沙箱只解析 `agent.js` 同目录模块并拒绝 `node:` 内置模块，之前 `agent.js` 直接导入 `node:os` / `node:path` / `lib/platform.js`，导致插件清单加载失败、侧栏与 Agent 行异常。

@@ -68,7 +68,7 @@ if(command==='status') {
   console.log(JSON.stringify({preservedExternalChanges:restoreProxy(file('settings-journal.json'))}));
 } else if(command==='supervise') {
   fs.mkdirSync(root,{recursive:true,mode:0o700});
-  process.umask(0o077);
+  if(!platform.IS_WIN) process.umask(0o077);
   const lock=file('supervisor.lock');
   try {fs.mkdirSync(lock);} catch(error) {
     let live=false;
@@ -106,7 +106,7 @@ if(command==='status') {
     const serialized=JSON.stringify(c);
     atomic(file('effective.json'),serialized);
     lastEffective=serialized;
-    const engine=spawn(path.join(packageDir,'bin/cursor-magpie-bridge'),[file('effective.json')],{
+    const engine=spawn(platform.enginePathFor(packageDir),[file('effective.json')],{
       env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(preferredProxyPort?{CURSOR_BRIDGE_PROXY_PORT:preferredProxyPort}:{})},stdio:['pipe','pipe','pipe']
     });
     runningMode=mode;runningSubagentMode=subagentMode;

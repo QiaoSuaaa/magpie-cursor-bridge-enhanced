@@ -19,5 +19,10 @@ python3 - "$bridge_package" <<'PY'
 import hashlib,json,pathlib,subprocess,sys
 p=pathlib.Path(sys.argv[1]);v=json.loads((p/'package.json').read_text())['version'];b=p/'bin/cursor-magpie-bridge'
 assert subprocess.check_output([str(b),'--version'],text=True).strip()==v
-(p/'integrity.json').write_text(json.dumps({'version':v,'engine':hashlib.sha256(b.read_bytes()).hexdigest()},indent=2)+'\n')
+digest=hashlib.sha256(b.read_bytes()).hexdigest()
+data=json.loads((p/'integrity.json').read_text()) if (p/'integrity.json').exists() else {}
+data['version']=v
+data['engine']=digest
+data.setdefault('platforms',{})['darwin-arm64']=digest
+(p/'integrity.json').write_text(json.dumps(data,indent=2)+'\n')
 PY

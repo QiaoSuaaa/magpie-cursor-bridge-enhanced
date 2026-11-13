@@ -111,8 +111,19 @@ async function stopProcess(pid, marker, graceMs) {
   return !alive(pid);
 }
 
-async function launchAgentState() {
+async function launchAgentState(repoRoot) {
   if (!platform.serviceSupported) return {registered: false, state: null, pid: null, supported: false};
+  if (platform.IS_WIN) {
+    const p = paths(repoRoot);
+    const task = await run('schtasks', ['/Query', '/TN', platform.serviceName], {timeout: 10000});
+    const pid = readPid(p.supervisorPid);
+    return {
+      registered: task.ok,
+      state: pid ? (alive(pid) ? 'running' : 'stopped') : (task.ok ? 'ready' : null),
+      pid,
+      supported: true
+    };
+  }
   const domain = `gui/${process.getuid()}`;
   const result = await run('/bin/launchctl', ['print', `${domain}/${LABEL}`], {timeout: 10000});
   if (!result.ok) return {registered: false, state: null, pid: null, supported: true};
@@ -141,7 +152,7 @@ async function overview(repoRoot, port) {
   const supervisorCommand = supervisorPid ? await commandOf(supervisorPid) : '';
   const enginePid = Number(runtime?.pid) || null;
   const engineCommand = enginePid ? await commandOf(enginePid) : '';
-  const agent = await launchAgentState();
+  const agent = await launchAgentState(repoRoot);
   return {
     now: new Date().toISOString(),
     version: typeof installation?.version === 'string' ? installation.version : null,
@@ -226,16 +237,26 @@ function capture(child, resolve) {
   }, ACTION_TIMEOUT);
 }
 
-function runSetup(repoRoot) {
+function installerCommand(repoRoot, action) {
   const p = paths(repoRoot);
-  if (!platform.serviceSupported) {
-    return Promise.resolve({ok: false, code: null, stdout: '', stderr: '', error: `当前平台（${platform.platform}）暂不支持自动安装后台服务（仅 macOS）`});
+  if (platform.IS_DARWIN) {
+    const bash = platform.current.bash() || '/bin/bash';
+    return {command: bash, args: [p.setup, action]};
   }
-  if (!fs.existsSync(p.setup)) {
-    return Promise.resolve({ok: false, code: null, stdout: '', stderr: '', error: `找不到 ${p.setup}`});
+  // Windows/Linux run the installer with the host runtime instead of bash.
+  return {command: process.execPath, args: [path.join(repoRoot, 'install.js'), action]};
+}
+
+function runSetup(repoRoot) {
+  if (!platform.serviceSupported) {
+    return Promise.resolve({ok: false, code: null, stdout: '', stderr: '', error: `当前平台（${platform.platform}）暂不支持自动安装后台服务`});
+  }
+  const {command, args} = installerCommand(repoRoot, 'setup');
+  if (!fs.existsSync(args[0])) {
+    return Promise.resolve({ok: false, code: null, stdout: '', stderr: '', error: `找不到 ${args[0]}`});
   }
   return new Promise((resolve) => {
-    const child = spawn(platform.current.bash() || '/bin/bash', [p.setup, 'setup'], {
+    const child = spawn(command, args, {
       cwd: repoRoot,
       env: {...process.env, TERM: 'dumb'},
       stdio: ['ignore', 'pipe', 'pipe']
@@ -252,11 +273,12 @@ function runStatus(repoRoot) {
     const text = fs.existsSync(p.status) ? fs.readFileSync(p.status, 'utf8') : '未安装或尚未运行';
     return Promise.resolve({ok: true, code: 0, stdout: text, stderr: '', error: ''});
   }
-  if (!fs.existsSync(p.setup)) {
-    return Promise.resolve({ok: false, code: null, stdout: '', stderr: '', error: `找不到 ${p.setup}`});
+  const {command, args} = installerCommand(repoRoot, 'status');
+  if (!fs.existsSync(args[0])) {
+    return Promise.resolve({ok: false, code: null, stdout: '', stderr: '', error: `找不到 ${args[0]}`});
   }
   return new Promise((resolve) => {
-    const child = spawn(platform.current.bash() || '/bin/bash', [p.setup, 'status'], {
+    const child = spawn(command, args, {
       cwd: repoRoot,
       env: {...process.env, TERM: 'dumb'},
       stdio: ['ignore', 'pipe', 'pipe']
@@ -284,7 +306,9 @@ function runStatus(repoRoot) {
 
 async function stopBridge(repoRoot) {
   const p = paths(repoRoot);
-  if (platform.serviceSupported) {
+  if (platform.IS_WIN) {
+    await run('schtasks', ['/End', '/TN', platform.serviceName], {timeout: 15000});
+  } else if (platform.serviceSupported) {
     await run('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`], {timeout: 15000});
   }
   const supervisorPid = readPid(p.supervisorPid);

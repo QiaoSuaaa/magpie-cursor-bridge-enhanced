@@ -17,25 +17,28 @@ try {
     console.log(fs.existsSync(path.join(p.root,'status.json'))?fs.readFileSync(path.join(p.root,'status.json'),'utf8'):'未安装或尚未运行');
   } else {
     if(!['setup','uninstall'].includes(command)) throw new Error('未知命令；使用 --help 查看用法');
-    if(!platform.IS_DARWIN) throw new Error(`当前平台（${platform.platform}）暂不支持自动安装后台服务（仅 macOS）；控制台可在源码目录直接使用，原生引擎需要对应平台的构建产物`);
-    if(process.arch!=='arm64') throw new Error('当前发布物仅包含 Apple Silicon(arm64) 原生引擎；Intel Mac 需另行构建 x64 版本后再安装');
-    const domain=`gui/${process.getuid()}`;
+    if(!platform.IS_DARWIN&&!platform.IS_WIN) throw new Error(`当前平台（${platform.platform}）暂不支持自动安装后台服务；控制台可在源码目录直接使用，原生引擎需要对应平台的构建产物`);
+    if(platform.IS_DARWIN&&process.arch!=='arm64') throw new Error('Apple Silicon 发布物仅包含 arm64 原生引擎；Intel Mac 需另行构建 x64 版本后再安装');
+    if(platform.IS_WIN&&!['x64','arm64'].includes(process.arch)) throw new Error(`当前发布物仅包含 Windows x64 原生引擎，无法在 ${process.arch} 上运行`);
+    const domain=platform.IS_DARWIN?`gui/${process.getuid()}`:'';
     const magpie=platform.current.magpieExecutable();
-    if(!magpie||!fs.existsSync(magpie)) throw new Error('请先将 Magpie 安装到 /Applications');
+    const magpieReady=!!magpie&&fs.existsSync(magpie);
+    if(platform.IS_DARWIN&&!magpieReady) throw new Error('请先将 Magpie 安装到 /Applications');
     fs.mkdirSync(p.root,{recursive:true,mode:0o700});fs.chmodSync(p.root,0o700);
     // One installer owns both certificate initialization and service activation.
     const lock=path.join(p.root,'installer.lock');
     try {fs.mkdirSync(lock);} catch {throw new Error('另一个安装程序正在运行；若上次被强制终止，请检查后移除 installer.lock 再重试');}
     try {
       if(command==='uninstall') {
-        run(magpie,['cursor-bridge','default'],{optional:true});
+        if(magpieReady) run(magpie,['cursor-bridge','default'],{optional:true});
         await stopJob(p,domain);restoreProxy(path.join(p.root,'settings-journal.json'));
-        run(magpie,['plugin','rm',p.target],{optional:true});
-        if(fs.existsSync(p.plist)) fs.unlinkSync(p.plist);
+        if(platform.IS_WIN) run('schtasks',['/Delete','/TN',platform.serviceName,'/F'],{optional:true});
+        if(magpieReady) run(magpie,['plugin','rm',p.target],{optional:true});
+        if(p.plist&&fs.existsSync(p.plist)) fs.unlinkSync(p.plist);
         console.log('后台已卸载，Cursor 代理已还原。若从 Magpie 插件页安装，请同时移除该插件。证书、数据及恢复记录保留。');
       } else {
         verifyPackage(source);
-        initializeCertificate(path.join(source,'bin/cursor-magpie-bridge'),p);
+        initializeCertificate(platform.enginePathFor(source),p);
         // Copy the runtime locally so Magpie cache cleanup cannot break the LaunchAgent.
         const release=stage(source,p,manifest.version,process.execPath);
         // A package installed by Magpie is already registered; ZIP installs register a stable local descriptor.
@@ -58,17 +61,15 @@ try {
           // it alone: `magpie plugin rm` matches by plugin name, so removing
           // the stable copy would also drop this very registration.
         } else {
-          // The registered descriptor needs the agent, the Agents-page panel and
-          // the control host. setup.command itself stays in the package this was
-          // installed from; control/host.js reads the location file below.
-          // The registered descriptor needs the panel, the control host and the
-          // shared platform/settings modules those files import.
+          // The registered descriptor needs the agent, the Agents-page panel,
+          // the control host and the shared modules those files import.
           for(const name of ['control','ui','lib','vendor']) fs.cpSync(path.join(source,name),path.join(p.target,name),{recursive:true,force:true});
           atomic(path.join(p.target,'agent.js'),fs.readFileSync(path.join(source,'agent.js'),'utf8'));
           atomic(path.join(p.target,'agent-platform.js'),fs.readFileSync(path.join(source,'agent-platform.js'),'utf8'));
           atomic(path.join(p.target,'package.json'),JSON.stringify({name:manifest.name,version:manifest.version,type:'module',main:manifest.main,magpie:manifest.magpie},null,2));
           atomic(path.join(p.target,'control-location.json'),JSON.stringify({source},null,2));
-          run(magpie,['plugin','add',p.target]);
+          if(magpieReady) run(magpie,['plugin','add',p.target]);
+          else console.log(`未找到 Magpie 可执行文件，请从 Magpie 插件页手动添加：${p.target}`);
         }
         await activate(p,release,domain);
         atomic(path.join(p.root,'installation.json'),JSON.stringify({version:manifest.version,release,source,installed:new Date().toISOString()},null,2));

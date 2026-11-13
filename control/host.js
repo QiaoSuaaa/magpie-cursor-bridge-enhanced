@@ -16,7 +16,12 @@ const manifest = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'package.json'
 function sourceRoot() {
   try {
     const location = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'control-location.json'), 'utf8'));
-    if (location?.source && fs.existsSync(path.join(location.source, 'setup.command'))) return location.source;
+    const candidate = location?.source;
+    // macOS runs setup.command; Windows runs install.js through the host
+    // runtime, so either entry points at the package this came from.
+    if (candidate && (fs.existsSync(path.join(candidate, 'setup.command')) || fs.existsSync(path.join(candidate, 'install.js')))) {
+      return candidate;
+    }
   } catch { /* registered from the package itself */ }
   return pluginRoot;
 }

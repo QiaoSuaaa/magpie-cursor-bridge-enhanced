@@ -209,7 +209,7 @@
     serviceSupported = overview.serviceSupported !== false;
     for (const id of ['start', 'restart']) {
       $(id).disabled = !!busy || !serviceSupported;
-      $(id).title = serviceSupported ? '' : '当前平台暂不支持自动安装后台服务（仅 macOS）';
+      $(id).title = serviceSupported ? '' : '当前平台暂不支持自动安装后台服务';
     }
 
     const configuredMode = runtime?.mode || overview.settings?.values?.runMode || 'default';
@@ -282,15 +282,18 @@
   async function runAction(action) {
     if (busy) return;
     if (action !== 'status' && !serviceSupported) {
-      notice('当前平台暂不支持自动安装后台服务（仅 macOS）；可在源码目录直接使用控制台', 'warning');
+      notice('当前平台暂不支持自动安装后台服务；可在源码目录直接使用控制台', 'warning');
       return;
     }
     busy = action;
     setBusy(true);
     const label = {start: '启动', status: '状态', restart: '重启'}[action];
+    const win = lastOverview?.platform === 'win32';
     const command = action === 'status'
-      ? 'bash setup.command status'
-      : (action === 'restart' ? 'launchctl bootout + 杀掉后台进程 + bash setup.command' : 'bash setup.command');
+      ? (win ? 'install.js status' : 'bash setup.command status')
+      : (action === 'restart'
+        ? (win ? '结束计划任务 + install.js setup' : 'launchctl bootout + 杀掉后台进程 + bash setup.command')
+        : (win ? 'install.js setup' : 'bash setup.command'));
     output(`$ ${command}\n执行中…`);
     notice('');
     try {
