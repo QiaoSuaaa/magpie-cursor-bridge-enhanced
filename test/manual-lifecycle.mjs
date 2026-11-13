@@ -1,9 +1,10 @@
 // Explicit live integration test: requires the installed Magpie connection and trusted CA.
 import {fileURLToPath} from 'node:url';
-import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {spawn} from 'node:child_process';import assert from 'node:assert/strict';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {spawn} from 'node:child_process';import assert from 'node:assert/strict';import platform from '../lib/platform.js';
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'cursor-bridge-lifecycle-'));const settings=path.join(root,'settings.json');const original='{\n // unchanged settings\n "editor.fontSize":17, "http.proxy":"http://localhost:8888"\n}\n';
-fs.writeFileSync(settings,original);fs.mkdirSync(path.join(root,'data/ca'),{recursive:true});for(const n of ['ca.key','ca.crt'])fs.copyFileSync(path.join(os.homedir(),'.config/magpie-cursor-bridge/data/ca',n),path.join(root,'data/ca',n));
-const c=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.config/magpie-cursor-bridge/connection.json')));
+const home=os.homedir();
+fs.writeFileSync(settings,original);fs.mkdirSync(path.join(root,'data/ca'),{recursive:true});for(const n of ['ca.key','ca.crt'])fs.copyFileSync(path.join(platform.current.paths(home).config,'data/ca',n),path.join(root,'data/ca',n));
+const c=JSON.parse(fs.readFileSync(path.join(platform.current.paths(home).config,'connection.json')));
 const config=path.join(root,'connection.json');const write=c=>fs.writeFileSync(config,JSON.stringify(c),{mode:0o600});write({});
 const delay=ms=>new Promise(r=>setTimeout(r,ms));let child;
 const start=()=>{child=spawn(process.execPath,[fileURLToPath(new URL('../bridge.js',import.meta.url)),'supervise'],{env:{...process.env,CURSOR_BRIDGE_ROOT:root,CURSOR_BRIDGE_SETTINGS:settings},stdio:['ignore','ignore','pipe']});child.stderr.on('data',d=>process.stderr.write(d));};

@@ -1,8 +1,8 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createControlServer} from './server.js';
+import platform from '../lib/platform.js';
 
 // Magpie loads this Bun module as the plugin's server side and keeps it for
 // the life of the app. That makes it the one place that can still answer when
@@ -24,7 +24,7 @@ const repoRoot = sourceRoot();
 
 function pluginEntry() {
   try {
-    const file = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'magpie', 'plugins.json');
+    const file = path.join(platform.current.magpieConfigDir(), 'plugins.json');
     const list = JSON.parse(fs.readFileSync(file, 'utf8')).plugins || [];
     return list.find((entry) => {
       const spec = String(entry?.spec || '');

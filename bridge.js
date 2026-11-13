@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn,execFileSync} from 'node:child_process';
@@ -8,11 +7,12 @@ import {createInterface} from 'node:readline';
 import {atomic,applyProxy,restoreProxy} from './lib/settings.js';
 import {validate,gatewayModels} from './lib/config.js';
 import {read as readBridgeSettings} from './lib/bridge-settings.js';
+import platform from './lib/platform.js';
 
 const packageDir=path.dirname(fileURLToPath(import.meta.url));
 const version=JSON.parse(fs.readFileSync(path.join(packageDir,'package.json'),'utf8')).version;
-const root=process.env.CURSOR_BRIDGE_ROOT||path.join(os.homedir(),'.config/magpie-cursor-bridge');
-const settings=process.env.CURSOR_BRIDGE_SETTINGS||path.join(os.homedir(),'Library/Application Support/Cursor/User/settings.json');
+const root=process.env.CURSOR_BRIDGE_ROOT||platform.current.paths().config;
+const settings=process.env.CURSOR_BRIDGE_SETTINGS||platform.current.cursorSettings();
 const file=name=>path.join(root,name);
 let lastStatus='';
 const status=(state,extra={})=>{const signature=JSON.stringify({version,state,...extra});if(signature!==lastStatus){atomic(file('status.json'),JSON.stringify({version,state,...extra,updated:new Date().toISOString()},null,2));lastStatus=signature;}};
@@ -35,7 +35,9 @@ function isLiveSupervisor(pid) {
   if(!Number.isInteger(pid)||pid<=0||pid===process.pid) return false;
   try {process.kill(pid,0);} catch {return false;}
   try {
-    const line=execFileSync('/bin/ps',['-p',String(pid),'-o','command='],{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();
+    const probe=platform.current.processCommand(pid);
+    if(!probe) return false;
+    const line=execFileSync(probe.command,probe.args,{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();
     return line.includes('bridge.js')&&line.includes('supervise');
   } catch {return false;}
 }
@@ -95,7 +97,7 @@ if(command==='status') {
       const timer=setTimeout(()=>reject(new Error('bridge startup timed out')),30000);
       const lines=createInterface({input:engine.stdout});
       lines.on('line',line=>{try{const msg=JSON.parse(line);if(msg.event==='ready'){clearTimeout(timer);resolve(msg);}}catch{}});
-      engine.once('error',()=>{clearTimeout(timer);reject(new Error('cannot start bridge engine'));});
+      engine.once('error',(error)=>{clearTimeout(timer);reject(new Error(`cannot start bridge engine (${error.code||error.message}); this build ships a ${process.platform} engine only when its binary matches the platform`));});
       engine.once('exit',(code,signal)=>{clearTimeout(timer);reject(new Error(`bridge engine stopped (${signal||code}); check certificate trust`));});
     });
     try {const url=new URL(ready.proxy);if(url.port) preferredProxyPort=url.port;} catch {}

@@ -7,6 +7,7 @@ import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, settingsFile} from '../lib/bridge-settings.js';
 import {readDatabase, cleanDatabase} from './database.js';
+import platform from '../lib/platform.js';
 
 // The control console is served from the Magpie plugin host. It runs the
 // same setup.command the user would type in a terminal, so the panel and
@@ -27,8 +28,9 @@ export function paths(repoRoot) {
   // CURSOR_BRIDGE_HOME keeps tests (and a portable copy) away from the real
   // ~/.config; the normal path is always the user's home.
   const home = process.env.CURSOR_BRIDGE_HOME || os.homedir();
-  const root = path.join(home, '.config/magpie-cursor-bridge');
-  const share = path.join(home, '.local/share/magpie-cursor-bridge');
+  const layout = platform.pathsFor(home);
+  const root = layout.config;
+  const share = layout.share;
   return {
     home,
     root,
@@ -37,7 +39,7 @@ export function paths(repoRoot) {
     database: path.join(root, 'data/bridge.db'),
     databaseWal: path.join(root, 'data/bridge.db-wal'),
     databaseShm: path.join(root, 'data/bridge.db-shm'),
-    plist: path.join(home, 'Library/LaunchAgents', `${LABEL}.plist`),
+    plist: layout.plist,
     status: path.join(root, 'status.json'),
     installation: path.join(root, 'installation.json'),
     connection: path.join(root, 'connection.json'),
@@ -88,7 +90,9 @@ function run(command, args, {timeout = 15000} = {}) {
 
 async function commandOf(pid) {
   if (!alive(pid)) return '';
-  const result = await run('/bin/ps', ['-p', String(pid), '-o', 'command='], {timeout: 5000});
+  const probe = platform.current.processCommand(pid);
+  if (!probe) return '';
+  const result = await run(probe.command, probe.args, {timeout: 5000});
   return result.ok ? result.stdout.trim() : '';
 }
 
@@ -108,12 +112,13 @@ async function stopProcess(pid, marker, graceMs) {
 }
 
 async function launchAgentState() {
+  if (!platform.serviceSupported) return {registered: false, state: null, pid: null, supported: false};
   const domain = `gui/${process.getuid()}`;
   const result = await run('/bin/launchctl', ['print', `${domain}/${LABEL}`], {timeout: 10000});
-  if (!result.ok) return {registered: false, state: null, pid: null};
+  if (!result.ok) return {registered: false, state: null, pid: null, supported: true};
   const state = /state = ([^\n]+)/.exec(result.stdout)?.[1]?.trim() || null;
   const pid = Number(/pid = (\d+)/.exec(result.stdout)?.[1] || 0) || null;
-  return {registered: true, state, pid};
+  return {registered: true, state, pid, supported: true};
 }
 
 function safeConnection(repoRoot) {
@@ -168,6 +173,8 @@ async function overview(repoRoot, port) {
       expected: engineCommand.includes('cursor-magpie-bridge')
     },
     launchAgent: agent,
+    platform: platform.platform,
+    serviceSupported: platform.serviceSupported,
     connection: safeConnection(repoRoot),
     database: stat(p.database),
     settings: {
@@ -221,11 +228,14 @@ function capture(child, resolve) {
 
 function runSetup(repoRoot) {
   const p = paths(repoRoot);
+  if (!platform.serviceSupported) {
+    return Promise.resolve({ok: false, code: null, stdout: '', stderr: '', error: `当前平台（${platform.platform}）暂不支持自动安装后台服务（仅 macOS）`});
+  }
   if (!fs.existsSync(p.setup)) {
     return Promise.resolve({ok: false, code: null, stdout: '', stderr: '', error: `找不到 ${p.setup}`});
   }
   return new Promise((resolve) => {
-    const child = spawn('/bin/bash', [p.setup, 'setup'], {
+    const child = spawn(platform.current.bash() || '/bin/bash', [p.setup, 'setup'], {
       cwd: repoRoot,
       env: {...process.env, TERM: 'dumb'},
       stdio: ['ignore', 'pipe', 'pipe']
@@ -236,11 +246,17 @@ function runSetup(repoRoot) {
 
 function runStatus(repoRoot) {
   const p = paths(repoRoot);
+  if (!platform.serviceSupported) {
+    // No service manager on this platform, but status.json is still the
+    // source of truth a manually started bridge writes.
+    const text = fs.existsSync(p.status) ? fs.readFileSync(p.status, 'utf8') : '未安装或尚未运行';
+    return Promise.resolve({ok: true, code: 0, stdout: text, stderr: '', error: ''});
+  }
   if (!fs.existsSync(p.setup)) {
     return Promise.resolve({ok: false, code: null, stdout: '', stderr: '', error: `找不到 ${p.setup}`});
   }
   return new Promise((resolve) => {
-    const child = spawn('/bin/bash', [p.setup, 'status'], {
+    const child = spawn(platform.current.bash() || '/bin/bash', [p.setup, 'status'], {
       cwd: repoRoot,
       env: {...process.env, TERM: 'dumb'},
       stdio: ['ignore', 'pipe', 'pipe']
@@ -268,7 +284,9 @@ function runStatus(repoRoot) {
 
 async function stopBridge(repoRoot) {
   const p = paths(repoRoot);
-  await run('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`], {timeout: 15000});
+  if (platform.serviceSupported) {
+    await run('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`], {timeout: 15000});
+  }
   const supervisorPid = readPid(p.supervisorPid);
   if (supervisorPid) await stopProcess(supervisorPid, 'bridge.js', 10000);
   const runtime = readJson(p.status);
@@ -529,13 +547,17 @@ export function createControlServer({repoRoot, port, log = console.log}) {
           'supervisor-error-log': p.supervisorError,
           install: p.share,
           repo: p.repo,
-          plist: p.plist
+          plist: p.plist || ''
         };
         const target = targets[String(body.target || '')];
         if (!target) return sendJson(res, 400, {ok: false, error: '未知的打开目标'});
+        const opener = platform.current.openCommand(target);
+        if (!opener) return sendJson(res, 400, {ok: false, error: `当前平台（${platform.platform}）没有可用的打开命令`});
         if (!fs.existsSync(target)) return sendJson(res, 404, {ok: false, error: `路径不存在：${target}`});
-        const result = await run('/usr/bin/open', [target], {timeout: 10000});
-        return sendJson(res, result.ok ? 200 : 500, result.ok ? {ok: true} : {ok: false, error: result.error || '打开失败'});
+        const result = await run(opener.command, opener.args, {timeout: 10000});
+        // explorer.exe exits 1 even when it opened the folder.
+        const opened = result.ok || (platform.IS_WIN && result.code === 1);
+        return sendJson(res, opened ? 200 : 500, opened ? {ok: true} : {ok: false, error: result.error || '打开失败'});
       }
 
       res.writeHead(404, {'content-type': 'text/plain; charset=utf-8'});

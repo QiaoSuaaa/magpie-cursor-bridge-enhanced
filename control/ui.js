@@ -15,6 +15,7 @@
   const MODES = {default: '默认模式', lite: '轻量模式'};
 
   let busy = null;
+  let serviceSupported = true;
   let settingsFilled = false;
   let pollTimer = null;
   let lastOverview = null;
@@ -108,6 +109,10 @@
 
   function setBusy(value) {
     for (const id of ['start', 'status', 'restart']) $(id).disabled = value;
+    if (!serviceSupported) {
+      $('start').disabled = true;
+      $('restart').disabled = true;
+    }
     $('busy').hidden = !value;
     updateDbControls();
   }
@@ -200,6 +205,12 @@
     if (warning) notice(warning, runtime?.state === 'error' ? 'error' : 'warning');
     else if (!quiet || $('notice').dataset.kind === 'warning') notice('');
 
+    serviceSupported = overview.serviceSupported !== false;
+    for (const id of ['start', 'restart']) {
+      $(id).disabled = !!busy || !serviceSupported;
+      $(id).title = serviceSupported ? '' : '当前平台暂不支持自动安装后台服务（仅 macOS）';
+    }
+
     const configuredMode = runtime?.mode || overview.settings?.values?.runMode || 'default';
     const engineMode = runtime?.engineMode || null;
     const switching = engineMode && engineMode !== configuredMode;
@@ -216,9 +227,10 @@
       item('后台监视器', overview.supervisor.alive
         ? `运行中 · PID ${overview.supervisor.pid}`
         : '未运行', {tone: overview.supervisor.alive ? 'ok' : 'warn'}),
-      item('LaunchAgent', overview.launchAgent.registered
-        ? (overview.launchAgent.state || '已加载')
-        : '未加载', {tone: overview.launchAgent.registered ? 'ok' : 'warn'}),
+      item('后台服务', overview.serviceSupported === false
+        ? `当前平台（${overview.platform || '未知'}）不支持`
+        : (overview.launchAgent?.registered ? (overview.launchAgent.state || '已加载') : '未加载'),
+        {tone: overview.serviceSupported === false || !overview.launchAgent?.registered ? 'warn' : 'ok'}),
       item('原生引擎', overview.engine.alive
         ? `运行中 · PID ${overview.engine.pid}`
         : '未运行', {tone: overview.engine.alive ? 'ok' : 'warn'}),
@@ -268,6 +280,10 @@
 
   async function runAction(action) {
     if (busy) return;
+    if (action !== 'status' && !serviceSupported) {
+      notice('当前平台暂不支持自动安装后台服务（仅 macOS）；可在源码目录直接使用控制台', 'warning');
+      return;
+    }
     busy = action;
     setBusy(true);
     const label = {start: '启动', status: '状态', restart: '重启'}[action];

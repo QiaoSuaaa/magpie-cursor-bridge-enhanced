@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.12（本地增强版）
+
+- 新增 `lib/platform.js` 跨平台抽象层：配置/数据目录、Cursor 配置与安装目录、Magpie 配置目录、进程命令行探测、打开路径、`sqlite3` 与 `bash` 探测全部按平台解析；macOS 的路径与行为保持不变。
+- Windows：配置与数据目录改用 `%APPDATA%` / `%LOCALAPPDATA%`，存在旧 `~/.config` 数据时自动沿用；进程探测改用 PowerShell；打开路径改用 `explorer`；`renameSync` 在目标文件被占用时短暂重试。
+- Linux：配置与数据目录遵循 XDG，打开路径改用 `xdg-open`。
+- 非 macOS 平台：安装器、证书信任与服务守护明确提示「仅 macOS」；控制台禁用「启动/重启」并显示原因，「状态」仍可读取 `status.json`。
+- `package.json` 移除 `os: darwin` 与 `cpu: arm64` 的硬限制（原生引擎仍需对应平台构建产物）；`agent.js` 的 Cursor 目录与连接文件路径改为按平台计算。
+- 新增 `test/platform.test.js` 覆盖 macOS / Linux / Windows 三套路径布局。
+- 版本号升至 0.2.12，原生桥接按新版本号重建并重算 `integrity.json` 摘要。
+
 ## 0.2.11（本地增强版）
 
 - 修复控制台在插件重载、端口切换或升级后提示「控制口令无效」的问题：收到 403 且错误为「控制口令无效」时自动重新加载页面以获取当前令牌；15 秒冷却避免异常环境下的重载循环，冷却期内改为明确提示手动刷新，不再误报「控制服务不可达」。

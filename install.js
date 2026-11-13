@@ -5,21 +5,23 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {atomic,restoreProxy} from './lib/settings.js';
 import {paths,run,verifyPackage,initializeCertificate,stage,activate,stopJob} from './lib/install.js';
+import platform from './lib/platform.js';
 const source=path.dirname(fileURLToPath(import.meta.url));
 const manifest=JSON.parse(fs.readFileSync(path.join(source,'package.json'),'utf8'));
 const command=process.argv[2]||'setup';
 const p=paths(os.homedir());
 try {
-  if(command==='--help'||command==='-h') console.log('Usage: bash setup.command [setup|status|uninstall|--version]\nsetup: install/update the paired plugin and service; macOS may prompt for certificate trust.');
+  if(command==='--help'||command==='-h') console.log(`Usage: bash setup.command [setup|status|uninstall|--version]\nsetup: install/update the paired plugin and service.\nAutomatic service installation and certificate trust currently require macOS; ${platform.platform} can run the control console from the source directory.`);
   else if(command==='--version') console.log(manifest.version);
   else if(command==='status') {
     console.log(fs.existsSync(path.join(p.root,'status.json'))?fs.readFileSync(path.join(p.root,'status.json'),'utf8'):'未安装或尚未运行');
   } else {
     if(!['setup','uninstall'].includes(command)) throw new Error('未知命令；使用 --help 查看用法');
-    if(process.platform!=='darwin'||process.arch!=='arm64') throw new Error('此版本仅支持 Apple Silicon macOS');
+    if(!platform.IS_DARWIN) throw new Error(`当前平台（${platform.platform}）暂不支持自动安装后台服务（仅 macOS）；控制台可在源码目录直接使用，原生引擎需要对应平台的构建产物`);
+    if(process.arch!=='arm64') throw new Error('当前发布物仅包含 Apple Silicon(arm64) 原生引擎；Intel Mac 需另行构建 x64 版本后再安装');
     const domain=`gui/${process.getuid()}`;
-    const magpie='/Applications/magpie.app/Contents/MacOS/magpie';
-    if(!fs.existsSync(magpie)) throw new Error('请先将 Magpie 安装到 /Applications');
+    const magpie=platform.current.magpieExecutable();
+    if(!magpie||!fs.existsSync(magpie)) throw new Error('请先将 Magpie 安装到 /Applications');
     fs.mkdirSync(p.root,{recursive:true,mode:0o700});fs.chmodSync(p.root,0o700);
     // One installer owns both certificate initialization and service activation.
     const lock=path.join(p.root,'installer.lock');
@@ -37,7 +39,7 @@ try {
         // Copy the runtime locally so Magpie cache cleanup cannot break the LaunchAgent.
         const release=stage(source,p,manifest.version,process.execPath);
         // A package installed by Magpie is already registered; ZIP installs register a stable local descriptor.
-        const configHome=process.env.XDG_CONFIG_HOME||path.join(p.home,'.config');
+        const configHome=platform.current.magpieConfigDir(p.home);
         const packagePath=path.join(configHome,'magpie/plugins/node_modules',manifest.name);
         // Magpie also registers a plugin by its local path (this repository), so
         // a missing npm-style copy does not mean the descriptor is unregistered.

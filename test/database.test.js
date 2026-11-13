@@ -4,13 +4,14 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import platform from '../lib/platform.js';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {readDatabase, cleanDatabase} from '../control/database.js';
 import {createControlServer} from '../control/server.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SQLITE = '/usr/bin/sqlite3';
+const SQLITE = platform.current.sqlite3();
 
 const BLOB_A = '00'.repeat(31) + '01';
 const BLOB_B = '00'.repeat(31) + '02';

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import {execFile} from 'node:child_process';
+import platform from '../lib/platform.js';
 
 // bridge.db belongs to the native engine. The control console only reads it
 // through the system sqlite3 binary: no npm dependency, no long-lived handle in
@@ -9,7 +10,6 @@ import {execFile} from 'node:child_process';
 // A full dbstat walk costs ~45s on a multi-GB database and would freeze the
 // panel; "file size minus content bytes" is reported separately as index and
 // free-page overhead.
-const SQLITE = '/usr/bin/sqlite3';
 const QUERY_TIMEOUT = 60000;
 const CLEANUP_TIMEOUT = 300000;
 const VACUUM_TIMEOUT = 900000;
@@ -154,8 +154,10 @@ function sqlite(dbPath, sql, {readonly = false, json = false, timeout = QUERY_TI
   // JSON array of its own and break the single-result convention below.
   if (busyTimeout) args.push('-cmd', `.timeout ${busyTimeout}`);
   args.push('-batch', dbPath, sql);
+  const binary = platform.current.sqlite3();
+  if (!binary) return Promise.reject(new Error('未找到 sqlite3 可执行文件；请安装 sqlite3 后重试'));
   return new Promise((resolve, reject) => {
-    execFile(SQLITE, args, {encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024}, (error, stdout, stderr) => {
+    execFile(binary, args, {encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024}, (error, stdout, stderr) => {
       if (error) {
         const detail = String(stderr || '').trim();
         reject(new Error(detail || String(error.message || error)));
