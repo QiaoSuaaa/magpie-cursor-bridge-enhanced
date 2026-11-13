@@ -4,14 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {atomic,restoreProxy} from './lib/settings.js';
-import {paths,run,verifyPackage,initializeCertificate,stage,activate,stopJob} from './lib/install.js';
+import {paths,run,verifyPackage,initializeCertificate,stage,activate,stopJob,pruneReleases} from './lib/install.js';
 import platform from './lib/platform.js';
 const source=path.dirname(fileURLToPath(import.meta.url));
 const manifest=JSON.parse(fs.readFileSync(path.join(source,'package.json'),'utf8'));
 const command=process.argv[2]||'setup';
 const p=paths(os.homedir());
 try {
-  if(command==='--help'||command==='-h') console.log(`Usage: bash setup.command [setup|status|uninstall|--version]\nsetup: install/update the paired plugin and service.\nAutomatic service installation and certificate trust currently require macOS; ${platform.platform} can run the control console from the source directory.`);
+  if(command==='--help'||command==='-h') console.log(`Usage: bash setup.command [setup|status|uninstall|--version]\nsetup: install/update the paired plugin and service.\nmacOS uses a LaunchAgent; Windows uses a Startup-folder launcher (no administrator rights needed); ${platform.platform === 'linux' ? 'Linux can run the control console only' : platform.platform + ' is supported'}.`);
   else if(command==='--version') console.log(manifest.version);
   else if(command==='status') {
     console.log(fs.existsSync(path.join(p.root,'status.json'))?fs.readFileSync(path.join(p.root,'status.json'),'utf8'):'未安装或尚未运行');
@@ -32,7 +32,10 @@ try {
       if(command==='uninstall') {
         if(magpieReady) run(magpie,['cursor-bridge','default'],{optional:true});
         await stopJob(p,domain);restoreProxy(path.join(p.root,'settings-journal.json'));
-        if(platform.IS_WIN) run('schtasks',['/Delete','/TN',platform.serviceName,'/F'],{optional:true});
+        if(platform.IS_WIN) {
+          const autostart=p.autostart||platform.current.autostartEntry(p.home);
+          if(autostart&&fs.existsSync(autostart)) fs.unlinkSync(autostart);
+        }
         if(magpieReady) run(magpie,['plugin','rm',p.target],{optional:true});
         if(p.plist&&fs.existsSync(p.plist)) fs.unlinkSync(p.plist);
         console.log('后台已卸载，Cursor 代理已还原。若从 Magpie 插件页安装，请同时移除该插件。证书、数据及恢复记录保留。');
@@ -49,13 +52,20 @@ try {
         // Magpie also registers a plugin by its local path (this repository), so
         // a missing npm-style copy does not mean the descriptor is unregistered.
         let registered=fs.existsSync(packagePath)&&fs.realpathSync(packagePath)===fs.realpathSync(source);
-        if(!registered) try {
+        let duplicates=[];
+        try {
           const list=JSON.parse(fs.readFileSync(path.join(configHome,'magpie/plugins.json'),'utf8')).plugins||[];
-          registered=list.some(entry=>{
+          const ours=list.filter(entry=>{
             const spec=String(entry?.spec||'');
-            try {return !!spec && path.resolve(spec)===path.resolve(source);} catch {return false;}
+            try {return !!spec && [source,p.target].some(target=>path.resolve(spec)===path.resolve(target));} catch {return false;}
           });
+          duplicates=ours;
+          registered=registered||ours.some(entry=>path.resolve(String(entry.spec))===path.resolve(source));
         } catch { /* no plugins.json yet */ }
+        // A leftover registration of the stable copy beside a live source
+        // registration loads the plugin twice: both control hosts fight over
+        // the same port and Magpie logs an agent-id conflict every reload.
+        if(duplicates.length>1) console.log(`注意：Magpie 中登记了 ${duplicates.length} 份本插件（${duplicates.map(entry=>entry.spec).join('、')}）。请保留一份并移除其余条目，否则两个控制服务会争用同一端口。`);
         if(registered) {
           // Already registered (normally the source directory itself). Leave
           // it alone: `magpie plugin rm` matches by plugin name, so removing
@@ -72,6 +82,10 @@ try {
           else console.log(`未找到 Magpie 可执行文件，请从 Magpie 插件页手动添加：${p.target}`);
         }
         await activate(p,release,domain);
+        // Windows stages the host runtime (~100 MB) on every start; keeping
+        // only the active release stops a handful of clicks from filling the
+        // disk. Other platforms keep their historical layout.
+        if(platform.IS_WIN) pruneReleases(p,release);
         atomic(path.join(p.root,'installation.json'),JSON.stringify({version:manifest.version,release,source,installed:new Date().toISOString()},null,2));
         console.log(`已安装 v${manifest.version}。在 Magpie → Agents 选择 Cursor · Magpie Bridge 和模型；首次连接后重启 Cursor。`);
       }

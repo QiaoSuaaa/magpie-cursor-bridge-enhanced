@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.16（Windows 适配修复）
+
+- 修复 Windows「启动」失败（控制台提示「命令退出码 1」）：`schtasks /SC ONLOGON` 需要管理员权限，普通账户只会得到「拒绝访问」。Windows 改为在用户启动文件夹写入隐藏窗口的 `.vbs` 启动器，并立即以分离进程启动 supervisor，安装与登录自启均无需提权；0.2.15 预览版留下的计划任务会在安装/卸载时自动删除。
+- 修复证书信任：随包引擎只把 LocalMachine Root 中的证书视为受信任，之前的 `certutil -addstore -user Root` 永远无法通过引擎的 `requires an already trusted CA` 检查（引擎以退出码 1 结束）。现在先读取本机 Root，必要时通过一次 UAC 提权安装并回读验证；之后启动不再询问。取消授权时会给出明确提示。
+- Windows 停止后台时同时终止 supervisor 与其派生的原生引擎：TerminateProcess 不会触发 Node/Bun 的退出清理，只杀 supervisor 会把引擎留成孤儿；终止前校验命令行，避免进程号被无关程序复用时误杀。
+- Windows 下探测进程命令行、运行安装器与数据库 CLI 时统一隐藏窗口（`windowsHide`），避免状态轮询与「启动」操作闪出控制台窗口；该参数在 macOS/Linux 上无效果。
+- `magpieConfigDirFor()` 在 Windows 改用 Magpie 实际使用的 `%USERPROFILE%\.config\magpie`（`magpie data` 报告的位置）。之前指向 `%APPDATA%\magpie`，安装器读不到 `plugins.json`，会重复登记插件，导致两个控制服务争用 3580 端口并反复输出 `EADDRINUSE`。检测到重复登记时会提示但不擅自删除。
+- Windows 每次 setup 后清理旧 release（每份约 100–190 MB），只保留当前版本。
+- 控制台在 Windows 改为读取启动文件夹与 `supervisor.lock` 判断后台状态，不再查询计划任务；「重启」提示与页脚同步更新。
+- 数据库面板在缺少 `sqlite3` 可执行文件时自动改用 Magpie 内置 Bun 的 `bun:sqlite`（Windows 默认没有 sqlite3）；macOS 仍优先使用系统 sqlite3，行为不变。
+- 测试适配 Windows：路径断言进入临时沙箱、跳过 Unix 文件权限断言、证书与激活用例按平台分支，数据库用例在无 sqlite3 时跳过。
+- 版本号升至 0.2.16。原生桥接源码未改动，沿用已发布的 0.2.15 引擎构建；`integrity.json` 新增 `engineVersion` 单独固定随包引擎版本，插件版本与引擎版本分别校验（旧包缺少该字段时仍要求两者完全一致，macOS 行为不变）。
+
 ## 0.2.15（本地增强版）
 
 - 新增 Windows x64 原生引擎：`bin/win32-x64/cursor-magpie-bridge.exe`，交叉编译产物为自包含 PE（仅依赖 Windows 系统 DLL），并纳入 `integrity.json` 的分平台摘要。

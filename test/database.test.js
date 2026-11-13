@@ -12,6 +12,10 @@ import {createControlServer} from '../control/server.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SQLITE = platform.current.sqlite3();
+// These tests seed and inspect the fixture through the sqlite3 CLI. Windows
+// without sqlite3 falls back to bun:sqlite inside Magpie, which the Node test
+// runner cannot reach, so the suite skips instead of failing.
+const SKIP = SQLITE ? false : '需要 sqlite3 可执行文件';
 
 const BLOB_A = '00'.repeat(31) + '01';
 const BLOB_B = '00'.repeat(31) + '02';
@@ -27,7 +31,25 @@ function query(dbPath, statement) {
 function fakeDatabase(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-bridge-db-'));
   t.after(() => fs.rmSync(home, {recursive: true, force: true}));
-  const dataDir = path.join(home, '.config/magpie-cursor-bridge/data');
+  // Keep the platform layout inside the temporary home: on Windows pathsFor()
+  // reads %APPDATA%, not the home directory itself.
+  const env = {};
+  for (const key of ['APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']) env[key] = process.env[key];
+  if (process.platform === 'win32') {
+    process.env.APPDATA = path.join(home, 'AppData', 'Roaming');
+    process.env.LOCALAPPDATA = path.join(home, 'AppData', 'Local');
+  } else {
+    process.env.XDG_CONFIG_HOME = path.join(home, 'xdg-config');
+    process.env.XDG_DATA_HOME = path.join(home, 'xdg-data');
+  }
+  t.after(() => {
+    for (const key of Object.keys(env)) {
+      if (env[key] === undefined) delete process.env[key];
+      else process.env[key] = env[key];
+    }
+  });
+  const root = platform.pathsFor(home).config;
+  const dataDir = path.join(root, 'data');
   fs.mkdirSync(dataDir, {recursive: true});
   const dbPath = path.join(dataDir, 'bridge.db');
   const now = Date.now();
@@ -81,7 +103,7 @@ INSERT INTO service_settings VALUES ('setting', '{"value":1}');
   return {home, dbPath};
 }
 
-test('database overview groups tables and reports content sizes', async (t) => {
+test('database overview groups tables and reports content sizes', {skip: SKIP}, async (t) => {
   const {dbPath} = fakeDatabase(t);
   const data = await readDatabase(dbPath);
   assert.equal(data.exists, true);
@@ -107,7 +129,7 @@ test('database overview groups tables and reports content sizes', async (t) => {
   assert.equal(deep.totals.rows, data.totals.rows);
 });
 
-test('session cleanup removes old conversations and keeps shared blobs', async (t) => {
+test('session cleanup removes old conversations and keeps shared blobs', {skip: SKIP}, async (t) => {
   const {dbPath} = fakeDatabase(t);
   const result = await cleanDatabase(dbPath, {scope: 'sessions', olderThanDays: 5, vacuum: false});
   assert.equal(result.vacuumed, false);
@@ -124,7 +146,7 @@ test('session cleanup removes old conversations and keeps shared blobs', async (
   assert.equal(query(dbPath, 'PRAGMA foreign_key_check;').trim(), '');
 });
 
-test('trace cleanup removes call logs but keeps conversations', async (t) => {
+test('trace cleanup removes call logs but keeps conversations', {skip: SKIP}, async (t) => {
   const {dbPath} = fakeDatabase(t);
   const result = await cleanDatabase(dbPath, {scope: 'traces', vacuum: false});
   assert.equal(result.counts.llm_calls, 2);
@@ -137,7 +159,7 @@ test('trace cleanup removes call logs but keeps conversations', async (t) => {
   assert.equal(query(dbPath, 'PRAGMA foreign_key_check;').trim(), '');
 });
 
-test('full cleanup clears runtime data, keeps configuration, then vacuums', async (t) => {
+test('full cleanup clears runtime data, keeps configuration, then vacuums', {skip: SKIP}, async (t) => {
   const {dbPath} = fakeDatabase(t);
   const result = await cleanDatabase(dbPath, {scope: 'all', vacuum: true});
   assert.equal(result.vacuumed, true);
@@ -153,16 +175,16 @@ test('full cleanup clears runtime data, keeps configuration, then vacuums', asyn
   assert.ok(fs.existsSync(dbPath));
 });
 
-test('cleanup validates its scope and retention window', async (t) => {
+test('cleanup validates its scope and retention window', {skip: SKIP}, async (t) => {
   const {dbPath} = fakeDatabase(t);
   await assert.rejects(cleanDatabase(dbPath, {scope: 'everything'}), /未知的清理范围/);
   await assert.rejects(cleanDatabase(dbPath, {scope: 'sessions', olderThanDays: 0}), /1–3650/);
   await assert.rejects(cleanDatabase(path.join(path.dirname(dbPath), 'missing.db'), {scope: 'traces'}), /尚未创建/);
 });
 
-test('control console exposes database stats and cleanup routes', async (t) => {
+test('control console exposes database stats and cleanup routes', {skip: SKIP}, async (t) => {
   const {home, dbPath} = fakeDatabase(t);
-  const root = path.join(home, '.config/magpie-cursor-bridge');
+  const root = platform.pathsFor(home).config;
   fs.writeFileSync(path.join(root, 'status.json'), JSON.stringify({
     version: '9.9.9', state: 'connected', updated: '2026-01-01T00:00:01.000Z'
   }));

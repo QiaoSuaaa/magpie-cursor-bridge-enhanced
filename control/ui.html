@@ -150,7 +150,7 @@
     </div>
   </section>
 
-  <p class="foot">控制台只监听 127.0.0.1；「启动」与「重启」直接调用 <code>bash setup.command</code>，「状态」调用 <code>bash setup.command status</code>。</p>
+  <p class="foot">控制台只监听 127.0.0.1；macOS 的「启动」「重启」「状态」调用 <code>bash setup.command</code>，Windows 通过宿主运行时调用 <code>install.js</code>（登录自启写入启动文件夹，无需管理员权限；首次安装证书会弹出一次管理员确认）。</p>
 </main>
 <script>window.__BRIDGE_TOKEN__="__CONTROL_TOKEN__";window.__BRIDGE_PORT__=__CONTROL_PORT__;</script>
 <script src="ui.js"></script>

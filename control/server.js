@@ -40,6 +40,7 @@ export function paths(repoRoot) {
     databaseWal: path.join(root, 'data/bridge.db-wal'),
     databaseShm: path.join(root, 'data/bridge.db-shm'),
     plist: layout.plist,
+    autostart: layout.autostart || null,
     status: path.join(root, 'status.json'),
     installation: path.join(root, 'installation.json'),
     connection: path.join(root, 'connection.json'),
@@ -76,7 +77,9 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function run(command, args, {timeout = 15000} = {}) {
   return new Promise((resolve) => {
-    execFile(command, args, {encoding: 'utf8', timeout, maxBuffer: 2 * 1024 * 1024}, (error, stdout, stderr) => {
+    // windowsHide is a no-op off Windows; there it keeps the PowerShell pid
+    // probe from flashing a console window on every status poll.
+    execFile(command, args, {encoding: 'utf8', timeout, maxBuffer: 2 * 1024 * 1024, windowsHide: true}, (error, stdout, stderr) => {
       resolve({
         ok: !error,
         code: typeof error?.code === 'number' ? error.code : (error ? null : 0),
@@ -114,12 +117,15 @@ async function stopProcess(pid, marker, graceMs) {
 async function launchAgentState(repoRoot) {
   if (!platform.serviceSupported) return {registered: false, state: null, pid: null, supported: false};
   if (platform.IS_WIN) {
+    // Windows autostart is a launcher script in the user's Startup folder,
+    // not a scheduled task: creating an ONLOGON task needs elevation the
+    // console cannot request.
     const p = paths(repoRoot);
-    const task = await run('schtasks', ['/Query', '/TN', platform.serviceName], {timeout: 10000});
     const pid = readPid(p.supervisorPid);
+    const registered = !!p.autostart && fs.existsSync(p.autostart);
     return {
-      registered: task.ok,
-      state: pid ? (alive(pid) ? 'running' : 'stopped') : (task.ok ? 'ready' : null),
+      registered,
+      state: pid ? (alive(pid) ? 'running' : 'stopped') : (registered ? 'ready' : null),
       pid,
       supported: true
     };
@@ -259,7 +265,8 @@ function runSetup(repoRoot) {
     const child = spawn(command, args, {
       cwd: repoRoot,
       env: {...process.env, TERM: 'dumb'},
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true
     });
     capture(child, resolve);
   });
@@ -281,7 +288,8 @@ function runStatus(repoRoot) {
     const child = spawn(command, args, {
       cwd: repoRoot,
       env: {...process.env, TERM: 'dumb'},
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true
     });
     const timer = setTimeout(() => {
       try { child.kill('SIGTERM'); } catch {}

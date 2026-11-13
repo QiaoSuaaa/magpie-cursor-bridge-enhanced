@@ -57,7 +57,7 @@ function isLiveSupervisor(pid) {
   try {
     const probe=platform.current.processCommand(pid);
     if(!probe) return false;
-    const line=execFileSync(probe.command,probe.args,{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();
+    const line=execFileSync(probe.command,probe.args,{encoding:'utf8',stdio:['ignore','pipe','ignore'],windowsHide:true}).trim();
     return line.includes('bridge.js')&&line.includes('supervise');
   } catch {return false;}
 }
@@ -107,7 +107,7 @@ if(command==='status') {
     atomic(file('effective.json'),serialized);
     lastEffective=serialized;
     const engine=spawn(platform.enginePathFor(packageDir),[file('effective.json')],{
-      env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(preferredProxyPort?{CURSOR_BRIDGE_PROXY_PORT:preferredProxyPort}:{})},stdio:['pipe','pipe','pipe']
+      env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(preferredProxyPort?{CURSOR_BRIDGE_PROXY_PORT:preferredProxyPort}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
     });
     runningMode=mode;runningSubagentMode=subagentMode;
     child=engine;

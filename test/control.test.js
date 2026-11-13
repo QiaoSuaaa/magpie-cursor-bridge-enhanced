@@ -6,13 +6,31 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createControlServer, paths} from '../control/server.js';
+import platformModule from '../lib/platform.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function fakeHome(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-bridge-control-'));
   t.after(() => fs.rmSync(home, {recursive: true, force: true}));
-  const root = path.join(home, '.config/magpie-cursor-bridge');
+  // pathsFor() reads %APPDATA% on Windows, so point the environment at the
+  // temporary home as well; CURSOR_BRIDGE_HOME alone is not enough there.
+  const env = {};
+  for (const key of ['APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']) env[key] = process.env[key];
+  if (process.platform === 'win32') {
+    process.env.APPDATA = path.join(home, 'AppData', 'Roaming');
+    process.env.LOCALAPPDATA = path.join(home, 'AppData', 'Local');
+  } else {
+    process.env.XDG_CONFIG_HOME = path.join(home, 'xdg-config');
+    process.env.XDG_DATA_HOME = path.join(home, 'xdg-data');
+  }
+  t.after(() => {
+    for (const key of Object.keys(env)) {
+      if (env[key] === undefined) delete process.env[key];
+      else process.env[key] = env[key];
+    }
+  });
+  const root = platformModule.pathsFor(home).config;
   fs.mkdirSync(root, {recursive: true});
   fs.writeFileSync(path.join(root, 'installation.json'), JSON.stringify({
     version: '9.9.9', release: '/tmp/bridge-release', installed: '2026-01-01T00:00:00.000Z'
@@ -114,5 +132,5 @@ test('control settings validate and are written to the bridge root', async (t) =
   assert.deepEqual(JSON.parse(good.body).settings, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6});
   const file = paths(repoRoot).settings;
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6});
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 });

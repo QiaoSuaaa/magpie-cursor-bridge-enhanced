@@ -38,14 +38,28 @@ test('paths follow APPDATA on windows', () => {
   assert.equal(layout.config, win.join(environment.APPDATA, 'magpie-cursor-bridge'));
   assert.equal(layout.share, win.join(environment.LOCALAPPDATA, 'magpie-cursor-bridge'));
   assert.equal(layout.plist, null);
+  assert.equal(
+    layout.autostart,
+    win.join(environment.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'local.magpie.cursor-bridge.vbs')
+  );
 });
 
 test('magpie config directory follows each platform', () => {
   assert.equal(magpieConfigDirFor('/Users/u', 'darwin', {}), path.posix.join('/Users/u', '.config', 'magpie'));
   assert.equal(magpieConfigDirFor('/home/u', 'linux', {XDG_CONFIG_HOME: '/xdg/c'}), '/xdg/c/magpie');
+  // Magpie reports `~/.config/magpie` through `magpie data` on Windows too;
+  // %APPDATA%\magpie is only honored when that directory already exists.
   assert.equal(
     magpieConfigDirFor(win.join('C:', 'Users', 'u'), 'win32', {APPDATA: win.join('C:', 'AppData', 'Roaming')}),
-    win.join('C:', 'AppData', 'Roaming', 'magpie')
+    win.join('C:', 'Users', 'u', '.config', 'magpie')
+  );
+});
+
+test('windows autostart uses the per-user Startup folder', () => {
+  assert.equal(pathsFor('/home/u', 'linux', {}).autostart, null);
+  assert.equal(
+    pathsFor('/Users/u', 'darwin', {}).autostart,
+    path.posix.join('/Users/u', 'Library', 'LaunchAgents', 'local.magpie.cursor-bridge.plist')
   );
 });
 

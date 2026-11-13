@@ -46,6 +46,6 @@ test('writes validate strictly, round-trip and keep the file private', (t) => {
   const saved = write(root, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8});
   assert.deepEqual(saved, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8});
   assert.deepEqual(read(root), saved);
-  assert.equal(fs.statSync(settingsFile(root)).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(settingsFile(root)).mode & 0o777, 0o600);
   assert.deepEqual(normalize({}), defaults);
 });

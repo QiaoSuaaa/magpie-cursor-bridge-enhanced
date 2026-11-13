@@ -153,7 +153,38 @@ function quoteText(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
+// Windows usually has no sqlite3 on PATH. Magpie runs this module inside its
+// own Bun, which carries SQLite in-process, so the panel keeps working without
+// asking the user to install anything. macOS keeps the CLI path byte-for-byte.
+async function bunSqlite(dbPath, sql, {readonly = false, json = false, busyTimeout = 0} = {}) {
+  const {Database} = await import('bun:sqlite');
+  const database = new Database(dbPath, {readonly, create: !readonly});
+  try {
+    if (busyTimeout) database.exec(`PRAGMA busy_timeout = ${Math.max(0, Number(busyTimeout) || 0)}`);
+    // Generated scripts never embed ';' in a literal: split them and collect
+    // the rows of the report SELECT that closes a cleanup script.
+    const statements = String(sql).split(';').map((part) => part.trim()).filter(Boolean);
+    let rows = [];
+    for (const statement of statements) {
+      if (/^(SELECT|WITH|PRAGMA)\b/i.test(statement)) {
+        const result = database.query(statement).all();
+        if (/^(SELECT|WITH)\b/i.test(statement)) rows = result;
+      } else {
+        database.exec(statement);
+      }
+    }
+    return json ? JSON.stringify(rows) : '';
+  } finally {
+    try { database.close(); } catch { /* already closed */ }
+  }
+}
+
 function sqlite(dbPath, sql, {readonly = false, json = false, timeout = QUERY_TIMEOUT, busyTimeout = 0} = {}) {
+  const binary = platform.current.sqlite3();
+  if (!binary) {
+    if (process.versions.bun) return bunSqlite(dbPath, sql, {readonly, json, busyTimeout});
+    return Promise.reject(new Error('未找到 sqlite3 可执行文件；请安装 sqlite3 后重试（Magpie 内置运行时下会自动使用内置 SQLite）'));
+  }
   const args = [];
   if (readonly) args.push('-readonly');
   if (json) args.push('-json');
@@ -161,10 +192,8 @@ function sqlite(dbPath, sql, {readonly = false, json = false, timeout = QUERY_TI
   // JSON array of its own and break the single-result convention below.
   if (busyTimeout) args.push('-cmd', `.timeout ${busyTimeout}`);
   args.push('-batch', dbPath, sql);
-  const binary = platform.current.sqlite3();
-  if (!binary) return Promise.reject(new Error('未找到 sqlite3 可执行文件；请安装 sqlite3 后重试'));
   return new Promise((resolve, reject) => {
-    execFile(binary, args, {encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024}, (error, stdout, stderr) => {
+    execFile(binary, args, {encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024, windowsHide: true}, (error, stdout, stderr) => {
       if (error) {
         const detail = String(stderr || '').trim();
         reject(new Error(detail || String(error.message || error)));
