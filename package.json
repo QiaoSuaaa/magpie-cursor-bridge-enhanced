@@ -1,6 +1,6 @@
 {
   "name": "magpie-agent-cursor-bridge",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "type": "module",
   "description": "Cursor protocol bridge backed by Magpie",
   "license": "MIT",
@@ -49,6 +49,7 @@
   ],
   "files": [
     "agent.js",
+    "agent-platform.js",
     "bridge.js",
     "install.js",
     "setup.command",

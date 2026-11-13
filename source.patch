@@ -207,7 +207,7 @@ index 0000000..1f4da30
 +            "group_name":"Magpie", "type":"openai", "base_url": c.gateway.trim_end_matches('/'),
 +            "api_key":c.key, "tooltip_data":format!("Magpie / {}",m.id), "model_id":m.id,
 +            "context_window_tokens":m.context.filter(|v| *v > 0),
-+            "custom_headers_enabled":true, "custom_headers":{"User-Agent":"cursor-magpie-bridge/0.2.13"}
++            "custom_headers_enabled":true, "custom_headers":{"User-Agent":"cursor-magpie-bridge/0.2.14"}
 +        }))?)
 +    }).collect()
 +}
@@ -238,11 +238,11 @@ index 0000000..1f4da30
 +    );
 +    let argument = std::env::args().nth(1);
 +    if argument.as_deref() == Some("--version") {
-+        println!("0.2.13");
++        println!("0.2.14");
 +        return Ok(());
 +    }
 +    if argument.as_deref() == Some("--help") || argument.is_none() {
-+        println!("cursor-magpie-bridge 0.2.13\nUsage: cursor-magpie-bridge --init-ca | CONNECTION.json\nRequires CURSOR_BYOK_DATA_DIR (absolute path). --init-ca never modifies certificate trust.");
++        println!("cursor-magpie-bridge 0.2.14\nUsage: cursor-magpie-bridge --init-ca | CONNECTION.json\nRequires CURSOR_BYOK_DATA_DIR (absolute path). --init-ca never modifies certificate trust.");
 +        return Ok(());
 +    }
 +    // A dedicated directory is mandatory: never open the desktop BYOK database.

@@ -39,7 +39,9 @@ try {
         // Copy the runtime locally so Magpie cache cleanup cannot break the LaunchAgent.
         const release=stage(source,p,manifest.version,process.execPath);
         // A package installed by Magpie is already registered; ZIP installs register a stable local descriptor.
-        const configHome=platform.current.magpieConfigDir(p.home);
+        // magpieConfigDir() already ends in /magpie; the plugin registry lives
+        // beside it as <config-home>/magpie/plugins.json.
+        const configHome=path.dirname(platform.current.magpieConfigDir(p.home));
         const packagePath=path.join(configHome,'magpie/plugins/node_modules',manifest.name);
         // Magpie also registers a plugin by its local path (this repository), so
         // a missing npm-style copy does not mean the descriptor is unregistered.
@@ -52,13 +54,18 @@ try {
           });
         } catch { /* no plugins.json yet */ }
         if(registered) {
-          run(magpie,['plugin','rm',p.target],{optional:true});
+          // Already registered (normally the source directory itself). Leave
+          // it alone: `magpie plugin rm` matches by plugin name, so removing
+          // the stable copy would also drop this very registration.
         } else {
           // The registered descriptor needs the agent, the Agents-page panel and
           // the control host. setup.command itself stays in the package this was
           // installed from; control/host.js reads the location file below.
-          for(const name of ['control','ui']) fs.cpSync(path.join(source,name),path.join(p.target,name),{recursive:true,force:true});
+          // The registered descriptor needs the panel, the control host and the
+          // shared platform/settings modules those files import.
+          for(const name of ['control','ui','lib','vendor']) fs.cpSync(path.join(source,name),path.join(p.target,name),{recursive:true,force:true});
           atomic(path.join(p.target,'agent.js'),fs.readFileSync(path.join(source,'agent.js'),'utf8'));
+          atomic(path.join(p.target,'agent-platform.js'),fs.readFileSync(path.join(source,'agent-platform.js'),'utf8'));
           atomic(path.join(p.target,'package.json'),JSON.stringify({name:manifest.name,version:manifest.version,type:'module',main:manifest.main,magpie:manifest.magpie},null,2));
           atomic(path.join(p.target,'control-location.json'),JSON.stringify({source},null,2));
           run(magpie,['plugin','add',p.target]);

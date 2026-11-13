@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.14（本地增强版）
+
+- 修复 0.2.12 引入的插件加载回归：Magpie 的 agent 沙箱只解析 `agent.js` 同目录模块并拒绝 `node:` 内置模块，之前 `agent.js` 直接导入 `node:os` / `node:path` / `lib/platform.js`，导致插件清单加载失败、侧栏与 Agent 行异常。
+- 平台路径计算移入无导入的 `agent-platform.js`（仅使用 `globalThis.process`，缺失时回退 macOS 默认值），`agent.js` 改为导入同目录模块。
+- 修复 0.2.12 引入的稳定副本缺依赖问题：`setup.command` 注册的 `~/.local/share/magpie-cursor-bridge` 只复制了 `control`/`ui`，而 `control/host.js` 已依赖 `../lib/platform.js`；现在同时复制 `lib`、`vendor` 与 `agent-platform.js`。
+- `lib/install.js` 的 payload 与 `package.json` 的 `files` 加入 `agent-platform.js`，确保发布包与 release 目录包含该文件。
+- 版本号升至 0.2.14，原生桥接按新版本号重建并重算 `integrity.json` 摘要。
+
 ## 0.2.13（本地增强版）
 
 - 数据库统计从三次全表扫描降为一次：`messages` 的行数、按天增长与会话分布共用一次 `GROUP BY`；实测 2.6GB 库从 3.0 秒降至 2.3 秒。
