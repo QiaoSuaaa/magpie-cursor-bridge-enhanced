@@ -21,6 +21,7 @@
   let lastOverview = null;
   let dbData = null;
   let dbLoading = false;
+  let agentModels = {at: 0, models: null};
   let pendingClean = null;
   let cleaning = false;
 
@@ -108,7 +109,9 @@
   }
 
   function setBusy(value) {
-    for (const id of ['start', 'status', 'restart']) $(id).disabled = value;
+    for (const id of ['start', 'status', 'restart', 'agentConnect']) {
+      if ($(id)) $(id).disabled = value;
+    }
     if (!serviceSupported) {
       $('start').disabled = true;
       $('restart').disabled = true;
@@ -176,6 +179,52 @@
     box.textContent = message;
   }
 
+  async function loadAgentModels({force = false} = {}) {
+    if (!force && agentModels.models && Date.now() - agentModels.at < 30000) return;
+    $('agentHint').textContent = '正在读取 Magpie 模型目录…';
+    try {
+      const data = await api('/api/agent/models');
+      const select = $('agentModel');
+      const previous = select.value;
+      select.replaceChildren(...data.models.map((model) => new Option(model.name || model.id, model.id)));
+      if (data.current) select.value = data.current;
+      else if (previous) select.value = previous;
+      agentModels = {at: Date.now(), models: data.models};
+      $('agentHint').textContent = data.models.length
+        ? '连接后原生引擎自动启动'
+        : 'Magpie 里还没有可用的模型，请先在 Magpie 中添加供应商或模型';
+    } catch (error) {
+      agentModels = {at: 0, models: null};
+      $('agentHint').textContent = `读取模型失败：${error.message}`;
+    }
+  }
+
+  async function connectAgent() {
+    if (busy) return;
+    const model = $('agentModel').value;
+    if (!model) {
+      notice('请先选择一个模型', 'warning');
+      return;
+    }
+    busy = '连接模型';
+    setBusy(true);
+    $('agentHint').textContent = '正在通过 Magpie 连接并启动引擎…';
+    try {
+      const result = await api('/api/agent/connect', {method: 'POST', body: {model}});
+      if (result.overview) render(result.overview);
+      notice('已连接模型，原生引擎会自动启动；重启 Cursor 后代理设置生效。', 'ok');
+      $('agentHint').textContent = '';
+      agentModels = {at: 0, models: null};
+    } catch (error) {
+      $('agentHint').textContent = `连接失败：${error.message}`;
+      notice(`连接失败：${error.message}`, 'error');
+    } finally {
+      busy = null;
+      setBusy(false);
+      loadStatus({quiet: true});
+    }
+  }
+
   function item(label, value, {mono = false, tone = '', title = ''} = {}) {
     const wrap = document.createElement('div');
     wrap.className = 'item';
@@ -201,6 +250,13 @@
     $('stateText').textContent = runtime
       ? `${state.label}${model ? ` · ${model}` : ''}${models ? ` · ${models} 个模型` : ''}`
       : (overview.connection?.exists ? '后台未运行' : '尚未连接');
+
+    // A missing connection is the normal state right after install: the engine
+    // stays stopped until a model is chosen. Offer that choice right here so a
+    // fresh install never looks broken.
+    const needsModel = overview.serviceSupported !== false && (!overview.connection?.exists || !overview.connection?.enabled);
+    $('agentCard').hidden = !needsModel;
+    if (needsModel) loadAgentModels();
 
     const warning = runtime?.warning || runtime?.reason || '';
     if (warning) notice(warning, runtime?.state === 'error' ? 'error' : 'warning');
@@ -234,7 +290,14 @@
         {tone: overview.serviceSupported === false || !overview.launchAgent?.registered ? 'warn' : 'ok'}),
       item('原生引擎', overview.engine.alive
         ? `运行中 · PID ${overview.engine.pid}`
-        : '未运行', {tone: overview.engine.alive ? 'ok' : 'warn'}),
+        : (runtime?.state === 'error'
+          ? '启动失败'
+          : (runtime?.state === 'connected'
+            ? '启动中…'
+            : (overview.supervisor?.alive ? '等待连接' : '未运行'))), {
+        tone: overview.engine.alive ? 'ok' : (runtime?.state === 'error' || runtime?.state === 'connected' ? 'warn' : ''),
+        title: !overview.engine.alive && !overview.connection?.exists ? '在下方选择模型后，引擎会自动启动' : ''
+      }),
       item('代理端口', runtime?.proxy || '—', {mono: true}),
       item('后端端口', runtime?.backend || '—', {mono: true}),
       item('当前模型', model || '—'),
@@ -547,6 +610,7 @@
     for (const [id, action] of [['start', 'start'], ['status', 'status'], ['restart', 'restart']]) {
       $(id).addEventListener('click', () => runAction(action));
     }
+    $('agentConnect').addEventListener('click', connectAgent);
     $('refresh').addEventListener('click', () => loadStatus());
     $('reload').addEventListener('click', () => location.reload());
     $('dbCard').addEventListener('toggle', () => {

@@ -34,6 +34,21 @@
   <div id="notice" class="notice" hidden></div>
   <pre id="output" class="output" hidden></pre>
 
+  <section id="agentCard" class="card agent-card" hidden>
+    <div class="card-head">
+      <h2>连接模型</h2>
+      <span class="hint">选择后原生引擎自动启动；也可在 Magpie → Agents 中修改</span>
+    </div>
+    <div class="settings">
+      <label><span class="label">Magpie 模型</span><span class="field select"><select id="agentModel"></select></span></label>
+      <div class="form-actions">
+        <button id="agentConnect" class="primary" type="button">连接并启动</button>
+        <span id="agentHint" class="hint"></span>
+      </div>
+    </div>
+    <p class="hint mode-hint">尚未为 Cursor 选择模型时，原生引擎处于待机状态（控制台显示「等待连接」），这不是故障。连接后 supervisor 会自动拉起引擎；重启 Cursor 使代理设置生效。</p>
+  </section>
+
   <section class="grid" id="overview" aria-live="polite"></section>
 
   <section class="card">

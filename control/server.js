@@ -159,6 +159,56 @@ function safeConnection(repoRoot) {
   };
 }
 
+// The console can offer the Magpie catalogue before the agent is connected,
+// so a fresh install never looks like a broken one: pick a model here and the
+// supervisor starts the engine on its own. Magpie publishes its local gateway
+// address in gateway.json and serves /v1/models without auth on loopback.
+function gatewayBase(home) {
+  const info = readJson(path.join(platform.current.magpieConfigDir(home), 'gateway.json'));
+  const addr = typeof info?.addr === 'string' ? info.addr.trim() : '';
+  const port = /:(\d+)$/.exec(addr)?.[1];
+  return port ? `http://127.0.0.1:${port}` : null;
+}
+
+export async function magpieCatalogue(home) {
+  const base = gatewayBase(home);
+  if (!base) throw new Error('Magpie 网关未运行，请先打开 Magpie');
+  let response;
+  try {
+    response = await fetch(`${base}/v1/models`, {signal: AbortSignal.timeout(5000), redirect: 'error'});
+  } catch (error) {
+    throw new Error(`无法访问 Magpie 网关（${base}）：${String(error?.message || error)}`);
+  }
+  if (!response.ok) throw new Error(`Magpie 网关返回 HTTP ${response.status}`);
+  const body = await response.json().catch(() => null);
+  if (!Array.isArray(body?.data)) throw new Error('Magpie 模型目录格式无效');
+  return body.data
+    .filter((entry) => entry && typeof entry.id === 'string' && entry.id)
+    .map((entry) => ({
+      id: entry.id,
+      name: typeof entry.magpie_label === 'string' && entry.magpie_label
+        ? entry.magpie_label
+        : (typeof entry.display_name === 'string' && entry.display_name ? entry.display_name : entry.id)
+    }));
+}
+
+// Connecting through Magpie's own CLI keeps `magpie ls`, its Agents page and
+// the connection file in sync; writing the file ourselves would leave the
+// app believing no model was chosen.
+async function runMagpieConnect(model) {
+  const magpie = platform.current.magpieExecutable();
+  if (!magpie) throw new Error('找不到 Magpie 可执行文件；请在 Magpie → Agents 中选择模型');
+  const result = await run(magpie, ['cursor-bridge', model], {timeout: 30000});
+  if (!result.ok) {
+    const detail = String(result.stderr || result.stdout || result.error || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !/^20\d\d[/-]/.test(line) && !line.includes('EADDRINUSE'))
+      .slice(-1)[0];
+    throw new Error(detail || 'Magpie 未能连接该模型');
+  }
+}
+
 async function overview(repoRoot, port) {
   const p = paths(repoRoot);
   const installation = readJson(p.installation);
@@ -380,7 +430,7 @@ function readBody(req) {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-export function createControlServer({repoRoot, port, log = console.log}) {
+export function createControlServer({repoRoot, port, log = console.log, connectAgent = runMagpieConnect}) {
   const token = randomBytes(32).toString('hex');
   const htmlFile = path.join(here, 'ui.html');
   const readAsset = (name, type) => {
@@ -617,6 +667,69 @@ export function createControlServer({repoRoot, port, log = console.log}) {
           result.overview = await overview(repoRoot, ownPort);
           overviewCache = {at: Date.now(), data: result.overview, pending: null};
           return sendJson(res, 200, result);
+        } finally {
+          busy = null;
+        }
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/agent/models') {
+        const p = paths(repoRoot);
+        try {
+          const models = await magpieCatalogue(p.home);
+          let current = null;
+          for (const candidate of p.connections) {
+            const data = readJson(candidate);
+            if (data?.model) { current = data.model; break; }
+          }
+          return sendJson(res, 200, {ok: true, models, current});
+        } catch (error) {
+          return sendJson(res, 200, {ok: false, error: String(error.message || error)});
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/agent/connect') {
+        const body = await readBody(req);
+        const model = String(body.model || '').trim();
+        if (!model) return sendJson(res, 400, {ok: false, error: '请选择一个模型'});
+        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
+        busy = 'connect';
+        try {
+          const p = paths(repoRoot);
+          const models = await magpieCatalogue(p.home);
+          if (!models.some((entry) => entry.id === model)) {
+            return sendJson(res, 400, {ok: false, error: '该模型已不在 Magpie 目录中，请刷新后重试'});
+          }
+          // One click must also work on a fresh install: start the background
+          // service first when the user has not pressed 启动 yet.
+          const pid = readPid(p.supervisorPid);
+          if (!pid || !alive(pid)) {
+            const setup = await runSetup(repoRoot);
+            if (!setup.ok) {
+              return sendJson(res, 500, {ok: false, error: setup.error || '后台服务启动失败', stdout: setup.stdout, stderr: setup.stderr});
+            }
+          }
+          await connectAgent(model);
+          // The supervisor polls every two seconds; give it time to start the
+          // engine so the console can report a final state instead of "启动中".
+          const until = Date.now() + 20000;
+          while (Date.now() < until) {
+            const runtime = readJson(p.status);
+            if ((runtime?.state === 'connected' && runtime.engineMode) || runtime?.state === 'error') break;
+            await wait(500);
+          }
+          let connection = null;
+          for (const candidate of p.connections) {
+            const data = readJson(candidate);
+            if (data?.model) { connection = data; break; }
+          }
+          if (!connection || connection.model !== model) {
+            return sendJson(res, 500, {ok: false, error: '模型没有写入连接配置；请确认 Magpie 中该 agent 可用'});
+          }
+          const fresh = await overview(repoRoot, ownPort);
+          overviewCache = {at: Date.now(), data: fresh, pending: null};
+          return sendJson(res, 200, {ok: true, overview: fresh});
+        } catch (error) {
+          return sendJson(res, 500, {ok: false, error: String(error.message || error)});
         } finally {
           busy = null;
         }

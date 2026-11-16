@@ -101,6 +101,72 @@ test('control console serves a tokenised page and guards /api', async (t) => {
   assert.match(preflight.headers['access-control-allow-headers'], /x-magpiebridge-token/);
 });
 
+test('console lists Magpie models and connects the agent in one click', async (t) => {
+  const home = fakeHome(t);
+  const previous = process.env.CURSOR_BRIDGE_HOME;
+  process.env.CURSOR_BRIDGE_HOME = home;
+  t.after(() => {
+    if (previous === undefined) delete process.env.CURSOR_BRIDGE_HOME;
+    else process.env.CURSOR_BRIDGE_HOME = previous;
+  });
+  // Magpie publishes its loopback gateway in gateway.json; the console reads
+  // the catalogue from there so the model picker works before connecting.
+  const magpieDir = platformModule.magpieConfigDirFor(home);
+  fs.mkdirSync(magpieDir, {recursive: true});
+  const gateway = http.createServer((req, res) => {
+    res.writeHead(200, {'content-type': 'application/json'});
+    res.end(JSON.stringify({data: [
+      {id: 'group/opus', magpie_label: 'Opus · Group', display_name: 'Opus'},
+      {id: 'group/sonnet', display_name: 'Sonnet'}
+    ]}));
+  });
+  await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => gateway.close(resolve)));
+  fs.writeFileSync(path.join(magpieDir, 'gateway.json'), JSON.stringify({addr: `127.0.0.1:${gateway.address().port}`}));
+
+  const p = paths(repoRoot);
+  fs.mkdirSync(path.dirname(p.supervisorPid), {recursive: true});
+  fs.writeFileSync(p.supervisorPid, String(process.pid));
+
+  const connectAgent = async (model) => {
+    fs.writeFileSync(p.connections[0], JSON.stringify({
+      enabled: true, gateway: 'http://127.0.0.1:3425/v1', key: 'secret',
+      model, models: [{id: model}]
+    }));
+    fs.writeFileSync(p.status, JSON.stringify({
+      version: '9.9.9', state: 'connected', mode: 'default', engineMode: 'default',
+      model, models: 1, pid: process.pid, updated: new Date().toISOString()
+    }));
+  };
+  const {server, port} = await createControlServer({repoRoot, port: 0, log: () => {}, connectAgent});
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const page = await request(port, {path: '/'});
+  const token = page.body.match(/__BRIDGE_TOKEN__="([0-9a-f]{64})"/)[1];
+  const headers = {'x-magpiebridge-token': token};
+
+  const catalogue = JSON.parse((await request(port, {path: '/api/agent/models', headers})).body);
+  assert.equal(catalogue.ok, true);
+  assert.deepEqual(catalogue.models, [
+    {id: 'group/opus', name: 'Opus · Group'},
+    {id: 'group/sonnet', name: 'Sonnet'}
+  ]);
+
+  const connected = JSON.parse((await request(port, {
+    method: 'POST', path: '/api/agent/connect', headers: {...headers, 'content-type': 'application/json'},
+    body: JSON.stringify({model: 'group/opus'})
+  })).body);
+  assert.equal(connected.ok, true);
+  assert.equal(connected.overview.connection.model, 'group/opus');
+  assert.equal(connected.overview.engine.alive, true);
+
+  const unknown = await request(port, {
+    method: 'POST', path: '/api/agent/connect', headers: {...headers, 'content-type': 'application/json'},
+    body: JSON.stringify({model: 'group/missing'})
+  });
+  assert.equal(unknown.status, 400);
+});
+
 test('control settings validate and are written to the bridge root', async (t) => {
   const home = fakeHome(t);
   const previous = process.env.CURSOR_BRIDGE_HOME;

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.18（易用性：控制台一键连接模型）
+
+- 控制台新增「连接模型」卡片：未连接时直接列出 Magpie 模型目录（读取 `~/.config/magpie/gateway.json` 中的本机网关地址并请求 `/v1/models`，只访问 `127.0.0.1`），选择一个模型点「连接并启动」即可。后台未运行时自动先执行一次 setup，因此首次安装也能一键完成「安装 → 选择模型 → 引擎运行」。
+- 连接通过 Magpie 自己的 CLI（`magpie cursor-bridge <model>`）完成，`magpie ls`、Magpie Agents 页面与 `connection.json` 保持一致；连接后控制台最多等待 20 秒，直接显示引擎是否已启动。
+- 原生引擎状态区分「等待连接 / 启动中… / 启动失败 / 未运行」：未选择模型时显示「等待连接」而不是令人误解的「未运行」，并在提示中说明这是正常待机状态。
+- 新增 `GET /api/agent/models` 与 `POST /api/agent/connect`，均受控制口令与 Host/Origin 校验保护；`createControlServer` 支持注入连接实现以便测试。
+- README 补充「未连接 = 待机」说明与一键连接方式；版本号升至 0.2.18，原生引擎不变（仍固定为 0.2.15）。
+
 ## 0.2.17（Windows 连接修复）
 
 - 修复 Windows 下「启动」后原生引擎始终未运行：Magpie 的 Agent 沙箱不暴露 `process`，`agent-platform.js` 因拿不到平台信息回退到 macOS 布局，`connection.json` 实际写入 `%USERPROFILE%\.config\magpie-cursor-bridge\`；而 supervisor 只轮询 `%APPDATA%\magpie-cursor-bridge\`，永远处于 `disconnected`，因此不会拉起引擎。现在 `lib/platform.js` 新增 `connectionFilesFor()`，supervisor 与控制台按顺序读取两个候选位置（`%APPDATA%` 优先，`~\.config` 兜底），macOS/Linux 仍只有原路径。

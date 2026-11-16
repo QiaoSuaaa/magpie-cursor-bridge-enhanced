@@ -98,6 +98,8 @@ input[type="number"]:focus, select:focus { outline: none; border-color: var(--ma
 .settings .form-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .settings .form-actions button { height: 30px; padding: 0 14px; }
 .mode-hint { flex-basis: 100%; margin: 2px 0 0; line-height: 1.6; }
+.agent-card .field.select select { min-width: 260px; max-width: min(520px, 70vw); }
+.agent-card { border-color: color-mix(in srgb, var(--magpie-accent, var(--accent)) 35%, var(--magpie-line, var(--line))); }
 
 .links { display: flex; gap: 8px; flex-wrap: wrap; }
 .links button { font-size: 12px; }
