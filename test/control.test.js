@@ -196,10 +196,15 @@ test('control settings validate and are written to the bridge root', async (t) =
   assert.equal(badSubagentMode.status, 400);
   assert.match(badSubagentMode.body, /async 或 sync/);
 
-  const good = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify({runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6})});
+  const badName = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify({modelNames: {'group/opus': 'x'.repeat(81)}})});
+  assert.equal(badName.status, 400);
+  assert.match(badName.body, /80 个字符/);
+
+  const expected = {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6, modelNames: {'group/opus': 'Opus 4.5'}};
+  const good = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify(expected)});
   assert.equal(good.status, 200);
-  assert.deepEqual(JSON.parse(good.body).settings, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6});
+  assert.deepEqual(JSON.parse(good.body).settings, expected);
   const file = paths(repoRoot).settings;
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6});
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), expected);
   if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 });

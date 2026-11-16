@@ -17,6 +17,10 @@
   let busy = null;
   let serviceSupported = true;
   let settingsFilled = false;
+  let modelNamesFilled = false;
+  let modelNamesLoading = false;
+  let modelNamesRetryAt = 0;
+  let modelNameModels = [];
   let pollTimer = null;
   let lastOverview = null;
   let dbData = null;
@@ -312,6 +316,7 @@
       fillSettings(overview.settings.values);
       settingsFilled = true;
     }
+    if (!modelNamesFilled) loadModelNames(overview);
   }
 
   function fillSettings(values) {
@@ -320,6 +325,77 @@
     for (const key of ['refreshSeconds', 'gatewayGraceSeconds', 'logLimitMB']) {
       if (values?.[key] !== undefined) $(key).value = values[key];
     }
+  }
+
+  // Display names are edited per model id. The catalogue comes from Magpie so
+  // a model that has not been connected yet can still be renamed; when the
+  // gateway is unreachable, fall back to the models recorded in connection.json.
+  async function loadModelNames(overview) {
+    if (modelNamesFilled || modelNamesLoading || Date.now() < modelNamesRetryAt) return;
+    modelNamesLoading = true;
+    try {
+      let models = agentModels.models?.length ? agentModels.models : null;
+      if (!models) {
+        try {
+          models = (await api('/api/agent/models')).models || [];
+        } catch {
+          models = [];
+        }
+      }
+      // `overview.connection.models` is a count; the catalogue itself lives in
+      // modelList (fallback for an offline Magpie gateway).
+      if (!models.length) models = overview.connection?.modelList || [];
+      if (!models.length) {
+        // Keep the section editable as soon as a catalogue appears, but do not
+        // hit the gateway on every two-second status poll while it is down.
+        renderModelNameRows([], {});
+        modelNamesRetryAt = Date.now() + 15000;
+        return;
+      }
+      modelNameModels = models;
+      renderModelNameRows(models, overview.settings?.values?.modelNames || {});
+      modelNamesFilled = true;
+    } catch {
+      // A malformed overview must not leave the section half-built and silent.
+      renderModelNameRows([], {});
+      modelNamesRetryAt = Date.now() + 15000;
+    } finally {
+      modelNamesLoading = false;
+    }
+  }
+
+  function renderModelNameRows(models, saved) {
+    const box = $('modelNameRows');
+    const seen = new Set();
+    const rows = [];
+    for (const model of models || []) {
+      if (!model?.id || seen.has(model.id)) continue;
+      seen.add(model.id);
+      const label = document.createElement('label');
+      const name = document.createElement('span');
+      name.className = 'label';
+      name.textContent = model.name || model.id;
+      name.title = model.id;
+      const field = document.createElement('span');
+      field.className = 'field';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.maxLength = 80;
+      input.placeholder = model.name || model.id;
+      input.dataset.modelId = model.id;
+      input.value = saved?.[model.id] || '';
+      field.append(input);
+      label.append(name, field);
+      rows.push(label);
+    }
+    box.replaceChildren(...rows);
+    $('modelNamesHint').textContent = rows.length
+      ? '仅影响 Cursor 模型菜单的显示名称，不改变模型 ID、路由与计费；留空使用 Magpie 原名。保存后数秒内生效，重新打开菜单或重启 Cursor 查看。'
+      : '当前没有可用的模型目录；连接模型或刷新页面后即可在这里自定义显示名。';
+  }
+
+  function namesSignature(values) {
+    return JSON.stringify(Object.entries(values || {}).sort(([a], [b]) => a.localeCompare(b)));
   }
 
   async function loadStatus({quiet = false} = {}) {
@@ -382,6 +458,7 @@
     event.preventDefault();
     const beforeMode = lastOverview?.settings?.values?.runMode;
     const beforeSubagentMode = lastOverview?.settings?.values?.subagentMode;
+    const beforeNames = lastOverview?.settings?.values?.modelNames || {};
     const body = {
       runMode: $('runMode').value,
       subagentMode: $('subagentMode').value,
@@ -389,17 +466,34 @@
       gatewayGraceSeconds: Number($('gatewayGraceSeconds').value),
       logLimitMB: Number($('logLimitMB').value)
     };
+    if (modelNamesFilled) {
+      // Merge instead of replace: the catalogue may not list every configured
+      // model (gateway offline), and those entries must survive a save.
+      const names = {...beforeNames};
+      for (const input of document.querySelectorAll('#modelNameRows input[data-model-id]')) {
+        const id = input.dataset.modelId;
+        const value = input.value.trim();
+        if (value) names[id] = value;
+        else delete names[id];
+      }
+      body.modelNames = names;
+    }
     try {
       const result = await api('/api/settings', {method: 'POST', body});
       fillSettings(result.settings);
       settingsFilled = true;
+      const namesChanged = modelNamesFilled && namesSignature(beforeNames) !== namesSignature(result.settings.modelNames);
+      for (const input of document.querySelectorAll('#modelNameRows input[data-model-id]')) {
+        input.value = result.settings.modelNames?.[input.dataset.modelId] || '';
+      }
       const modeHint = beforeMode && beforeMode !== result.settings.runMode
         ? '运行模式已变更，引擎将在数秒内自动重启，当前对话可能中断一次；'
         : '';
       const subagentHint = beforeSubagentMode && beforeSubagentMode !== result.settings.subagentMode
         ? '子代理模式已变更，引擎将在数秒内自动重启，下一次 Task 调用生效；'
         : '';
-      $('settingsHint').textContent = `已保存：${modeHint}${subagentHint}同步间隔与容错下一轮生效，日志上限下次后台启动生效`;
+      const namesHint = namesChanged ? '模型显示名已更新，Cursor 菜单将在数秒内刷新；' : '';
+      $('settingsHint').textContent = `已保存：${modeHint}${subagentHint}${namesHint}同步间隔与容错下一轮生效，日志上限下次后台启动生效`;
       loadStatus({quiet: true});
     } catch (error) {
       $('settingsHint').textContent = `保存失败：${error.message}`;

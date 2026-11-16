@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.21（模型显示名自定义）
+
+- 控制台「可编辑参数」新增「模型显示名」：模型列表中的每个模型都有一个显示名输入框，留空使用 Magpie 原名；只覆盖写入 `effective.json` 的 `name`，模型 ID 不变，因此路由、计费与连接语义完全不受影响。
+- 配置写入 `bridge-settings.json` 的 `modelNames`（模型 ID → 显示名），由 supervisor 在同步模型目录时应用。显示名变化会更新 `effective.json`，引擎热更新模型目录，**不需要重启引擎或中断当前对话**。
+- 保存采用增量合并：只修改当前列出的模型，未展示模型（网关离线或目录未加载）的配置会保留；清空输入表示清除该模型的覆盖。
+- 校验：显示名 trim 后最多 80 字符，最多 200 条；非法项在保存时返回 400 并指出具体模型；非严格读取时丢弃非法项并回退。
+- 控制台保存后提示「Cursor 菜单将在数秒内刷新」，README 与 Agent notice 同步说明；测试新增显示名校验、映射与 API 保存用例。
+- 版本号升至 0.2.21；原生引擎源码未改动，各平台引擎仍固定为 `engineVersion` 0.2.15。
+
 ## 0.2.20（macOS Intel x64 适配）
 
 - 新增 macOS Intel x64 原生引擎 `bin/darwin-x64/cursor-magpie-bridge`，并在 `integrity.json` 增加 `platforms.darwin-x64` 摘要；arm64 保持历史布局 `bin/cursor-magpie-bridge`，`enginePathFor()` 在 darwin 上按架构分流，旧包仍可读取。

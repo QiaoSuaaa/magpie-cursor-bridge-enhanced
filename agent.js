@@ -11,7 +11,7 @@ export const agent = {
   format: "json",
   model: "model",
   ua: ["cursor-magpie-bridge"],
-  notice: "v0.2.20（增强版）：支持 Cursor 3.29+ 的 BidiAppend 二进制编码（data_binary）；控制台新增「子代理模式」：默认异步后台（完成后桥接唤醒父代理），可切换为同步阻塞（强制 run_in_background=false）。安装或更新插件后，请运行包内 setup.command（Windows 请在控制台点「启动」）完成后台初始化。首次连接后重启 Cursor。后台桥接随连接启停；断开后还原代理。控制台新增「数据库管理」，可按会话、检查点、运行、调用日志、blob 与配置分类查看 bridge.db，并按范围清理或 VACUUM 压缩。控制台在插件重载或升级后自动刷新控制口令，也可点「刷新页面」手动恢复。Agent 行菜单「桥接控制台」可启动、查看状态与重启后台。后台服务自动安装支持 macOS（Apple Silicon 与 Intel x64）、Windows x64 与 Linux x64/arm64：Linux 使用 systemd 用户单元，证书写入 Cursor 的 argv.json 与用户 NSS 库，无需管理员权限；无 systemd 用户实例时自动回退为分离进程。请勿同时开启 Cursor BYOK 接管。"
+  notice: "v0.2.21（增强版）：支持 Cursor 3.29+ 的 BidiAppend 二进制编码（data_binary）；控制台新增「子代理模式」：默认异步后台（完成后桥接唤醒父代理），可切换为同步阻塞（强制 run_in_background=false）。安装或更新插件后，请运行包内 setup.command（Windows 请在控制台点「启动」）完成后台初始化。首次连接后重启 Cursor。后台桥接随连接启停；断开后还原代理。控制台新增「数据库管理」，可按会话、检查点、运行、调用日志、blob 与配置分类查看 bridge.db，并按范围清理或 VACUUM 压缩。控制台「可编辑参数 → 模型显示名」可为每个模型自定义 Cursor 菜单显示名称：只覆盖传给引擎的 name，模型 ID、路由与计费完全不变，保存后数秒内生效。控制台在插件重载或升级后自动刷新控制口令，也可点「刷新页面」手动恢复。Agent 行菜单「桥接控制台」可启动、查看状态与重启后台。后台服务自动安装支持 macOS（Apple Silicon 与 Intel x64）、Windows x64 与 Linux x64/arm64：Linux 使用 systemd 用户单元，证书写入 Cursor 的 argv.json 与用户 NSS 库，无需管理员权限；无 systemd 用户实例时自动回退为分离进程。请勿同时开启 Cursor BYOK 接管。"
 };
 export function connect({ gateway, model, models }) {
   return {

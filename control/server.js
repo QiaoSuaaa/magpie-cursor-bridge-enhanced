@@ -170,6 +170,13 @@ function safeConnection(repoRoot) {
     enabled: data.enabled === true,
     model: typeof data.model === 'string' ? data.model : null,
     models: Array.isArray(data.models) ? data.models.length : 0,
+    // `models` above is a count for the overview. The console also needs the
+    // catalogue itself to edit display names while the gateway is offline.
+    modelList: Array.isArray(data.models)
+      ? data.models
+        .filter((model) => model && typeof model.id === 'string' && model.id)
+        .map((model) => ({id: model.id, name: typeof model.name === 'string' && model.name ? model.name : model.id}))
+      : [],
     gateway: typeof data.gateway === 'string' ? data.gateway : null
   };
 }

@@ -6,7 +6,7 @@ import {spawn,execFileSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {atomic,applyProxy,restoreProxy} from './lib/settings.js';
 import {validate,gatewayModels} from './lib/config.js';
-import {read as readBridgeSettings} from './lib/bridge-settings.js';
+import {read as readBridgeSettings,applyModelNames} from './lib/bridge-settings.js';
 import platform from './lib/platform.js';
 
 const packageDir=path.dirname(fileURLToPath(import.meta.url));
@@ -19,7 +19,11 @@ const status=(state,extra={})=>{const signature=JSON.stringify({version,state,..
 const read=name=>JSON.parse(fs.readFileSync(file(name),'utf8'));
 // On Windows Magpie's agent sandbox writes connection.json to its own
 // fallback path (see connectionFilesFor); accept the first file that exists.
-const connectionFiles=platform.current.connectionFiles();
+// A rooted install (tests, portable copies) must not fall back to the real
+// profile, so its own connection.json is tried first.
+const connectionFiles=process.env.CURSOR_BRIDGE_ROOT
+  ?[file('connection.json'),...platform.current.connectionFiles()]
+  :platform.current.connectionFiles();
 function connectionText() {
   for(const candidate of connectionFiles) {
     try {return fs.readFileSync(candidate,'utf8');} catch { /* try the next candidate */ }
@@ -86,7 +90,7 @@ if(command==='status') {
     fs.rmSync(lock,{recursive:true,force:true}); fs.mkdirSync(lock);
   }
   fs.writeFileSync(path.join(lock,'pid'),String(process.pid));
-  let child=null,ready=null,ending=false,lastConfig='',nextRefresh=0,paused=false,catalogueDownSince=0,lastModelCount=0,lastEffective='',runningMode='default',activeMode='default',runningSubagentMode='async';
+  let child=null,ready=null,ending=false,lastConfig='',nextRefresh=0,paused=false,catalogueDownSince=0,lastModelCount=0,lastEffective='',lastModelNames='',runningMode='default',activeMode='default',runningSubagentMode='async';
   // Lite mode starts from an empty in-memory database, so the proxy port cannot
   // be read back from SQLite. Carry the last port across restarts: Cursor does
   // not re-read http.proxy until it restarts.
@@ -150,9 +154,19 @@ if(command==='status') {
           // supervisor never rewrites effective.json just for a mode switch.
           const modeChanged=engineAlive && runningMode!==cfg.runMode;
           const subagentModeChanged=engineAlive && runningSubagentMode!==cfg.subagentMode;
-          if(changed || Date.now()>=nextRefresh || !engineAlive || modeChanged || subagentModeChanged) {
+          // Display names live in bridge-settings.json: a change rewrites
+          // effective.json and the engine hot-swaps the catalogue, so neither
+          // Cursor nor the running conversation is restarted.
+          const modelNamesSignature=JSON.stringify(cfg.modelNames||{});
+          const modelNamesChanged=modelNamesSignature!==lastModelNames;
+          if(changed || Date.now()>=nextRefresh || !engineAlive || modeChanged || subagentModeChanged || modelNamesChanged) {
             let effective=null,failure=null;
-            try {effective=await gatewayModels(c);} catch(e) {failure=e;}
+            try {
+              // gatewayModels returns the whole connection object; only its
+              // models array takes the display-name overrides.
+              const catalogue=await gatewayModels(c);
+              effective={...catalogue,models:applyModelNames(catalogue.models,cfg.modelNames)};
+            } catch(e) {failure=e;}
             nextRefresh=Date.now()+cfg.refreshSeconds*1000;
             if(failure) {
               // A transient Magpie hiccup must not drop Cursor's proxy: keep the running
@@ -171,7 +185,7 @@ if(command==='status') {
               const serialized=JSON.stringify(effective);
               if(serialized!==lastEffective) {atomic(file('effective.json'),serialized);lastEffective=serialized;}
             }
-            lastConfig=raw;paused=false;lastModelCount=effective.models.length;
+            lastConfig=raw;paused=false;lastModelCount=effective.models.length;lastModelNames=modelNamesSignature;
             update('connected',{model:c.model,models:effective.models.length,proxy:ready.proxy,backend:ready.backend,pid:child.pid});
           }
           try {applyProxy(settings,file('settings-journal.json'),ready.proxy);} catch(e) {

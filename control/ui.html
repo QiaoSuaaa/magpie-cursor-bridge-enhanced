@@ -65,6 +65,11 @@
       <label><span class="label">模型目录同步间隔</span><span class="field"><input id="refreshSeconds" type="number" min="5" max="300" step="1" inputmode="numeric"><span class="unit">秒</span></span></label>
       <label><span class="label">网关断线容错</span><span class="field"><input id="gatewayGraceSeconds" type="number" min="10" max="600" step="1" inputmode="numeric"><span class="unit">秒</span></span></label>
       <label><span class="label">引擎日志上限</span><span class="field"><input id="logLimitMB" type="number" min="1" max="64" step="1" inputmode="numeric"><span class="unit">MB</span></span></label>
+      <div class="model-names">
+        <span class="label">模型显示名</span>
+        <span id="modelNamesHint" class="hint">仅影响 Cursor 模型菜单的显示名称，不改变模型 ID、路由与计费；留空使用 Magpie 原名。保存后数秒内生效，重新打开菜单或重启 Cursor 查看。</span>
+        <div id="modelNameRows" class="settings"></div>
+      </div>
       <div class="form-actions">
         <button id="saveSettings" class="primary" type="submit">保存</button>
         <button id="resetSettings" class="ghost" type="button">填入默认值</button>

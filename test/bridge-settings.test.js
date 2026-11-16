@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {defaults, normalize, read, settingsFile, write} from '../lib/bridge-settings.js';
+import {applyModelNames, defaults, normalize, read, settingsFile, write} from '../lib/bridge-settings.js';
 
 const setup = (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-bridge-settings-'));
@@ -21,7 +21,7 @@ test('missing or malformed bridge settings fall back to defaults', (t) => {
 test('out-of-range values fall back per key when read', (t) => {
   const root = setup(t);
   fs.writeFileSync(settingsFile(root), JSON.stringify({refreshSeconds: 30, gatewayGraceSeconds: 9999, logLimitMB: 8}));
-  assert.deepEqual(read(root), {runMode: 'default', subagentMode: 'async', refreshSeconds: 30, gatewayGraceSeconds: defaults.gatewayGraceSeconds, logLimitMB: 8});
+  assert.deepEqual(read(root), {runMode: 'default', subagentMode: 'async', refreshSeconds: 30, gatewayGraceSeconds: defaults.gatewayGraceSeconds, logLimitMB: 8, modelNames: {}});
 });
 
 test('run mode falls back when read and is rejected strictly', (t) => {
@@ -44,8 +44,32 @@ test('writes validate strictly, round-trip and keep the file private', (t) => {
   const root = setup(t);
   assert.throws(() => write(root, {refreshSeconds: 1}), /5–300/);
   const saved = write(root, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8});
-  assert.deepEqual(saved, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8});
+  assert.deepEqual(saved, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8, modelNames: {}});
   assert.deepEqual(read(root), saved);
   if (process.platform !== 'win32') assert.equal(fs.statSync(settingsFile(root)).mode & 0o777, 0o600);
   assert.deepEqual(normalize({}), defaults);
+});
+
+test('model display names trim, drop empty values and round-trip', (t) => {
+  const root = setup(t);
+  const saved = write(root, {modelNames: {' group/opus ': '  Opus 4.5  ', 'group/sonnet': '', 'group/gpt': 'GPT-5'}});
+  assert.deepEqual(saved.modelNames, {'group/opus': 'Opus 4.5', 'group/gpt': 'GPT-5'});
+  assert.deepEqual(read(root).modelNames, saved.modelNames);
+  assert.throws(() => write(root, {modelNames: {'group/opus': 'x'.repeat(81)}}), /80 个字符/);
+  assert.throws(() => write(root, {modelNames: {'': 'x'}}), /模型 ID 不能为空/);
+  assert.throws(() => write(root, {modelNames: {'group/opus': 42}}), /需为文本/);
+  assert.throws(() => write(root, {modelNames: []}), /模型 ID → 名称/);
+});
+
+test('model display names override only the catalogue name, never the id', () => {
+  const models = [
+    {id: 'group/opus', name: 'Opus · group/opus', context: 200000},
+    {id: 'group/gpt', name: 'GPT'}
+  ];
+  assert.deepEqual(applyModelNames(models, {'group/opus': 'Opus 4.5'}), [
+    {id: 'group/opus', name: 'Opus 4.5', context: 200000},
+    {id: 'group/gpt', name: 'GPT'}
+  ]);
+  assert.equal(applyModelNames(models, {})[0], models[0]);
+  assert.equal(applyModelNames(models, {unknown: 'X'})[0], models[0]);
 });
