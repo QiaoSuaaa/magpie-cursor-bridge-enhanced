@@ -76,10 +76,12 @@ test('autostart follows each platform service manager', () => {
   );
 });
 
-test('linux engine payload is per-architecture and other platforms keep their layout', () => {
+test('engine payload follows each platform architecture', () => {
   assert.equal(enginePathFor('/pkg', 'linux', 'x64'), '/pkg/bin/linux-x64/cursor-magpie-bridge');
   assert.equal(enginePathFor('/pkg', 'linux', 'arm64'), '/pkg/bin/linux-arm64/cursor-magpie-bridge');
-  assert.equal(enginePathFor('/pkg', 'darwin'), '/pkg/bin/cursor-magpie-bridge');
+  // macOS arm64 keeps the historical single-file path; Intel ships beside it.
+  assert.equal(enginePathFor('/pkg', 'darwin', 'arm64'), '/pkg/bin/cursor-magpie-bridge');
+  assert.equal(enginePathFor('/pkg', 'darwin', 'x64'), '/pkg/bin/darwin-x64/cursor-magpie-bridge');
   assert.equal(enginePathFor('/pkg', 'win32'), win.join('/pkg', 'bin', 'win32-x64', 'cursor-magpie-bridge.exe'));
   assert.equal(systemdUnitFor('/home/u', 'linux', {XDG_CONFIG_HOME: '/xdg/c'}), '/xdg/c/systemd/user/local.magpie.cursor-bridge.service');
   assert.equal(systemdUnitFor('/Users/u', 'darwin', {}), null);

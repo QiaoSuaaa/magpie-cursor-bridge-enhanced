@@ -18,7 +18,7 @@ try {
   } else {
     if(!['setup','uninstall'].includes(command)) throw new Error('未知命令；使用 --help 查看用法');
     if(!platform.IS_DARWIN&&!platform.IS_WIN&&!platform.IS_LINUX) throw new Error(`当前平台（${platform.platform}）暂不支持自动安装后台服务；控制台可在源码目录直接使用，原生引擎需要对应平台的构建产物`);
-    if(platform.IS_DARWIN&&process.arch!=='arm64') throw new Error('Apple Silicon 发布物仅包含 arm64 原生引擎；Intel Mac 需另行构建 x64 版本后再安装');
+    if(platform.IS_DARWIN&&!['arm64','x64'].includes(process.arch)) throw new Error(`macOS 发布物仅包含 arm64 与 x64 原生引擎，无法在 ${process.arch} 上运行`);
     if(platform.IS_WIN&&!['x64','arm64'].includes(process.arch)) throw new Error(`当前发布物仅包含 Windows x64 原生引擎，无法在 ${process.arch} 上运行`);
     if(platform.IS_LINUX&&!['x64','arm64'].includes(process.arch)) throw new Error(`Linux 发布物仅包含 x64/arm64 原生引擎，无法在 ${process.arch} 上运行`);
     const domain=platform.IS_DARWIN?`gui/${process.getuid()}`:'';

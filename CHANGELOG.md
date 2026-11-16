@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.20（macOS Intel x64 适配）
+
+- 新增 macOS Intel x64 原生引擎 `bin/darwin-x64/cursor-magpie-bridge`，并在 `integrity.json` 增加 `platforms.darwin-x64` 摘要；arm64 保持历史布局 `bin/cursor-magpie-bridge`，`enginePathFor()` 在 darwin 上按架构分流，旧包仍可读取。
+- 安装器解除 Intel Mac 限制：`darwin` 的 `arm64` 与 `x64` 均受支持，LaunchAgent、证书信任、控制台与卸载流程完全一致；不再要求 Intel Mac 自行构建。
+- 新增 `scripts/build-native-macos-x64.sh`：在 Apple Silicon 上安装 `x86_64-apple-darwin` target 并交叉编译（`CMAKE_OSX_ARCHITECTURES=x86_64`），产出 Intel 引擎并更新分平台摘要；Rosetta 可用时直接执行 `--version` 自检，否则用 `strings` 校验版本常量。
+- README 更新平台支持、前置条件、目录结构、构建流程与故障排查；测试新增 darwin x64 引擎路径断言。
+- 版本号升至 0.2.20；原生引擎源码未改动，macOS / Windows / Linux 引擎仍固定为 `engineVersion` 0.2.15。
+
 ## 0.2.19（Linux 适配）
 
 - 新增 Linux x64 / arm64 完整支持：随包原生引擎 `bin/linux-<arch>/cursor-magpie-bridge`、按架构分目录、纳入 `integrity.json` 的 `platforms.linux-x64|arm64` 摘要；`lib/platform.js` 的 `enginePathFor()` 与 `serviceSupported` 同步扩展。Linux 产物以 glibc 2.34（Debian 12 / Ubuntu 22.04）为基线，并以 vendored 方式静态链接 OpenSSL，不依赖目标系统的 `libssl` 版本；arm64 产物在 amd64 容器内交叉编译，无需拉取额外的 Docker 镜像。
