@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.26（数据库保留策略与日志诊断）
+
+- 新增自动保留策略：`bridge-settings.json` 增加 `tracesRetentionDays`（默认 7 天）与 `sessionsRetentionDays`（默认 0=关闭）；supervisor 每 6 小时在后台分批删除过期调用日志/历史会话，不中断对话、不执行 VACUUM，轻量模式下跳过。删除按批提交并启用 busy timeout，失败时 1 小时后重试，结果写入 `retention.json`。
+- 控制台「可编辑参数」新增两项保留天数；概览新增「自动清理」一栏，显示上次执行时间、删除的调用/会话数量或失败原因。
+- 新增日志与诊断：控制台折叠卡片可读取 `engine.log` / `supervisor.log` / `supervisor-error.log` 尾部（100–1000 行），按证书、端口、网关、协议、连接停滞、启动超时、代理改动归类并给出操作建议；「导出诊断包」把状态、设置、版本、平台、保留结果与脱敏日志写入 `data/diagnostics/diagnostics-<时间>.json` 并返回路径，避免 WebView 下载限制。
+- 日志脱敏统一覆盖 `Authorization: Bearer`、`sk-`、JSON/键值形式的 `key`/`token`/`secret`/`password`；诊断包不包含 Magpie 网关密钥。
+- 新增 `control/diagnostics.js`（尾部读取/脱敏/归类）、`GET /api/logs`、`GET /api/diagnostics`；控制台数据库管理仍保持手动清理、备份与 `quick_check` 不变。
+- 测试新增自动保留（在线分批、关闭范围、lite 跳过）、日志尾部与截断、脱敏、错误归类、日志 API 与诊断包凭据隔离；macOS 本机 76 项测试 71 通过、5 项按平台跳过。
+- 版本号升至 0.2.26；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.25（CI 修复：Linux 单元文件测试按平台跳过）
 
 - 修复 GitHub Actions Windows 作业失败：`linux service unit` 用例在 Windows 上仍会执行，`path.join` 生成反斜杠路径导致断言失败。该单元文件只在 Linux 安装路径生成，测试现与 `linux activation` 等用例一致，按 `IS_LINUX` 跳过；Linux CI 仍完整覆盖。

@@ -282,12 +282,19 @@
     const databaseText = engineMode === 'lite'
       ? '内存 · 不落盘'
       : (overview.database ? `${bytes(overview.database.size)} · bridge.db` : '未创建');
+    const retention = overview.retention;
+    const retentionText = !retention
+      ? '尚未运行'
+      : (retention.error
+        ? `上次失败 · ${shorten(retention.error)}`
+        : `上次 ${timeText(retention.at)} · 调用 ${numberText(retention.calls)} / 会话 ${numberText(retention.sessions)}`);
 
     const grid = $('overview');
     grid.replaceChildren(
       item('版本', overview.version || overview.installation?.version || '—', {mono: true}),
       item('运行模式', `${engineModeText}${switching ? ' · 切换中' : ''}`, {tone: switching ? 'warn' : ''}),
       item('数据库', databaseText, {tone: engineMode === 'lite' ? 'ok' : ''}),
+      item('自动清理', retentionText, {tone: retention?.error ? 'warn' : ''}),
       item('后台监视器', overview.supervisor.alive
         ? `运行中 · PID ${overview.supervisor.pid}`
         : '未运行', {tone: overview.supervisor.alive ? 'ok' : 'warn'}),
@@ -326,7 +333,7 @@
   function fillSettings(values) {
     if (values?.runMode !== undefined) $('runMode').value = values.runMode;
     if (values?.subagentMode !== undefined) $('subagentMode').value = values.subagentMode;
-    for (const key of ['refreshSeconds', 'gatewayGraceSeconds', 'logLimitMB']) {
+    for (const key of ['refreshSeconds', 'gatewayGraceSeconds', 'logLimitMB', 'tracesRetentionDays', 'sessionsRetentionDays']) {
       if (values?.[key] !== undefined) $(key).value = values[key];
     }
   }
@@ -508,7 +515,9 @@
       subagentMode: $('subagentMode').value,
       refreshSeconds: Number($('refreshSeconds').value),
       gatewayGraceSeconds: Number($('gatewayGraceSeconds').value),
-      logLimitMB: Number($('logLimitMB').value)
+      logLimitMB: Number($('logLimitMB').value),
+      tracesRetentionDays: Number($('tracesRetentionDays').value),
+      sessionsRetentionDays: Number($('sessionsRetentionDays').value)
     };
     try {
       const result = await api('/api/settings', {method: 'POST', body});
@@ -861,6 +870,52 @@
     }
   }
 
+  function renderDiagHints(hints) {
+    $('diagHints').replaceChildren(...(hints || []).map((hint) => {
+      const node = document.createElement('div');
+      node.className = 'notice';
+      node.dataset.kind = 'warning';
+      const label = document.createElement('strong');
+      label.textContent = hint.label;
+      node.append(label, document.createTextNode(` · ${hint.hint}`));
+      return node;
+    }));
+  }
+
+  async function loadLogs() {
+    const name = $('logName').value;
+    const tail = $('logTail').value;
+    $('diagState').textContent = '读取中…';
+    try {
+      const data = await api(`/api/logs?name=${encodeURIComponent(name)}&tail=${encodeURIComponent(tail)}`);
+      renderDiagHints(data.hints);
+      $('diagOutput').hidden = false;
+      $('diagOutput').textContent = data.exists
+        ? `${data.text || '（日志为空）'}\n\n— ${data.name} · ${numberText(data.size)} B${data.truncated ? ' · 仅显示尾部' : ''} —`
+        : `日志文件不存在：${data.path}`;
+      $('diagState').textContent = data.exists
+        ? `${numberText(data.lines)} 行${data.truncated ? ' · 已截断' : ''}`
+        : '未创建';
+    } catch (error) {
+      $('diagState').textContent = '读取失败';
+      $('diagOutput').hidden = false;
+      $('diagOutput').textContent = `读取失败：${error.message}`;
+    }
+  }
+
+  async function exportDiagnostics() {
+    $('diagState').textContent = '正在生成诊断包…';
+    try {
+      const data = await api('/api/diagnostics', {method: 'POST'});
+      renderDiagHints(data.hints);
+      $('diagState').textContent = '诊断包已保存';
+      notice(`诊断包已保存：${data.file}（日志已脱敏）。`, 'ok');
+    } catch (error) {
+      $('diagState').textContent = '生成失败';
+      notice(`诊断包生成失败：${error.message}`, 'error');
+    }
+  }
+
   function wire() {
     for (const [id, action] of [['start', 'start'], ['status', 'status'], ['restart', 'restart']]) {
       $(id).addEventListener('click', () => runAction(action));
@@ -874,6 +929,14 @@
     });
     $('dbRefresh').addEventListener('click', () => loadDatabase({force: true}));
     $('dbDeep').addEventListener('click', () => loadDatabase({force: true, deep: true}));
+    $('diagCard').addEventListener('toggle', () => {
+      if ($('diagCard').open && !$('diagOutput').dataset.loaded) {
+        $('diagOutput').dataset.loaded = '1';
+        loadLogs();
+      }
+    });
+    $('logRefresh').addEventListener('click', loadLogs);
+    $('diagDownload').addEventListener('click', exportDiagnostics);
     for (const button of document.querySelectorAll('[data-clean]')) {
       button.addEventListener('click', () => showCleanupConfirm(button.dataset.clean));
     }
@@ -927,7 +990,7 @@
       if (button) saveModelRow(button.dataset.saveModel);
     });
     $('resetSettings').addEventListener('click', () => {
-      const defaults = lastOverview?.settings?.defaults || {runMode: 'default', subagentMode: 'async', refreshSeconds: 15, gatewayGraceSeconds: 60, logLimitMB: 4};
+      const defaults = lastOverview?.settings?.defaults || {runMode: 'default', subagentMode: 'async', refreshSeconds: 15, gatewayGraceSeconds: 60, logLimitMB: 4, tracesRetentionDays: 7, sessionsRetentionDays: 0};
       fillSettings(defaults);
       $('settingsHint').textContent = '已填入默认值，点击「保存」后生效';
     });

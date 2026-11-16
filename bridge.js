@@ -8,6 +8,7 @@ import {gatewayModels} from './lib/config.js';
 import {read as readBridgeSettings,applyModelPreferences} from './lib/bridge-settings.js';
 import platform from './lib/platform.js';
 import {createSupervisor} from './lib/supervisor.js';
+import {pruneDatabase} from './control/database.js';
 import {version} from './version.js';
 
 const packageDir=path.dirname(fileURLToPath(import.meta.url));
@@ -111,6 +112,10 @@ if(command==='status') {
     publish:(state,extra)=>status(state,extra),
     applyProxy:proxy=>applyProxy(settings,file('settings-journal.json'),proxy),
     restoreProxy:()=>restoreProxy(file('settings-journal.json')),
+    // Automatic retention runs in this process, online: it batches deletes and
+    // never stops the engine or vacuums. The result is kept for the console.
+    pruneDatabase:({tracesDays,sessionsDays})=>pruneDatabase(file('data/bridge.db'),{tracesDays,sessionsDays}),
+    onPrune:result=>atomic(file('retention.json'),JSON.stringify(result,null,2)),
     spawnEngine:({mode,subagentMode,preferredProxyPort:port})=>spawn(platform.enginePathFor(packageDir),[file('effective.json')],{
       env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
     }),

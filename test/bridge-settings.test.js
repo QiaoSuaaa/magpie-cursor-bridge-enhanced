@@ -21,7 +21,7 @@ test('missing or malformed bridge settings fall back to defaults', (t) => {
 test('out-of-range values fall back per key when read', (t) => {
   const root = setup(t);
   fs.writeFileSync(settingsFile(root), JSON.stringify({refreshSeconds: 30, gatewayGraceSeconds: 9999, logLimitMB: 8}));
-  assert.deepEqual(read(root), {runMode: 'default', subagentMode: 'async', refreshSeconds: 30, gatewayGraceSeconds: defaults.gatewayGraceSeconds, logLimitMB: 8, modelNames: {}, modelOrder: []});
+  assert.deepEqual(read(root), {runMode: 'default', subagentMode: 'async', refreshSeconds: 30, gatewayGraceSeconds: defaults.gatewayGraceSeconds, logLimitMB: 8, tracesRetentionDays: defaults.tracesRetentionDays, sessionsRetentionDays: defaults.sessionsRetentionDays, modelNames: {}, modelOrder: []});
 });
 
 test('run mode falls back when read and is rejected strictly', (t) => {
@@ -44,10 +44,21 @@ test('writes validate strictly, round-trip and keep the file private', (t) => {
   const root = setup(t);
   assert.throws(() => write(root, {refreshSeconds: 1}), /5–300/);
   const saved = write(root, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8});
-  assert.deepEqual(saved, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8, modelNames: {}, modelOrder: []});
+  assert.deepEqual(saved, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8, tracesRetentionDays: defaults.tracesRetentionDays, sessionsRetentionDays: defaults.sessionsRetentionDays, modelNames: {}, modelOrder: []});
   assert.deepEqual(read(root), saved);
   if (process.platform !== 'win32') assert.equal(fs.statSync(settingsFile(root)).mode & 0o777, 0o600);
   assert.deepEqual(normalize({}), defaults);
+});
+
+test('retention days accept zero to disable and reject negatives strictly', (t) => {
+  const root = setup(t);
+  const saved = write(root, {tracesRetentionDays: 0, sessionsRetentionDays: 30});
+  assert.equal(saved.tracesRetentionDays, 0);
+  assert.equal(saved.sessionsRetentionDays, 30);
+  assert.throws(() => write(root, {tracesRetentionDays: -1}), /0–3650/);
+  fs.writeFileSync(settingsFile(root), JSON.stringify({tracesRetentionDays: 99999, sessionsRetentionDays: 'x'}));
+  assert.equal(read(root).tracesRetentionDays, defaults.tracesRetentionDays);
+  assert.equal(read(root).sessionsRetentionDays, defaults.sessionsRetentionDays);
 });
 
 test('model display names trim, drop empty values and round-trip', (t) => {

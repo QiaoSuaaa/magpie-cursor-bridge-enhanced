@@ -7,7 +7,7 @@ import path from 'node:path';
 import platform from '../lib/platform.js';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {readDatabase, cleanDatabase} from '../control/database.js';
+import {readDatabase, cleanDatabase, pruneDatabase} from '../control/database.js';
 import {createControlServer} from '../control/server.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -193,6 +193,31 @@ test('destructive cleanup writes a recoverable backup and verifies the database'
   assert.equal(again.check, 'ok');
   assert.equal(again.backup?.pruned?.length, 1);
   assert.equal(fs.readdirSync(backupDir).length, 1);
+});
+
+test('retention prunes old traces and sessions while keeping recent data', {skip: SKIP}, async (t) => {
+  const {dbPath} = fakeDatabase(t);
+  const old = Date.now() - 20 * 86400000;
+  sql(dbPath, `INSERT INTO cursor_run_traces VALUES ('trace-old', 'completed', ${old});`);
+  const result = await pruneDatabase(dbPath, {tracesDays: 5, sessionsDays: 5, batchSize: 1});
+  assert.equal(result.exists, true);
+  assert.equal(result.calls, 1, 'only the old model call is removed');
+  assert.equal(result.traces, 1, 'only the old Cursor trace is removed');
+  assert.equal(result.sessions, 1, 'only the old conversation is removed');
+  assert.equal(result.error, null);
+  assert.equal(result.check, 'ok');
+  assert.deepEqual(JSON.parse(query(dbPath, 'SELECT conversation_id FROM conversations;')), [{conversation_id: 'conv-new'}]);
+  assert.equal(Number(JSON.parse(query(dbPath, "SELECT COUNT(*) AS n FROM llm_calls WHERE call_id = 'call-old';"))[0].n), 0);
+  assert.equal(Number(JSON.parse(query(dbPath, "SELECT COUNT(*) AS n FROM llm_calls WHERE call_id = 'call-new';"))[0].n), 1);
+  assert.equal(query(dbPath, 'PRAGMA foreign_key_check;').trim(), '');
+});
+
+test('retention with both scopes disabled is a no-op', {skip: SKIP}, async (t) => {
+  const {dbPath} = fakeDatabase(t);
+  const before = Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM llm_calls;'))[0].n);
+  const result = await pruneDatabase(dbPath, {tracesDays: 0, sessionsDays: 0});
+  assert.equal(result.batches, 0);
+  assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM llm_calls;'))[0].n), before);
 });
 
 test('cleanup validates its scope and retention window', {skip: SKIP}, async (t) => {

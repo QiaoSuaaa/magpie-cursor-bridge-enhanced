@@ -182,6 +182,45 @@ test('console lists Magpie models and connects the agent in one click', async (t
   assert.equal(unknown.status, 400);
 });
 
+test('logs are redacted and diagnostics omit gateway credentials', async (t) => {
+  const home = fakeHome(t);
+  const previous = process.env.CURSOR_BRIDGE_HOME;
+  process.env.CURSOR_BRIDGE_HOME = home;
+  t.after(() => {
+    if (previous === undefined) delete process.env.CURSOR_BRIDGE_HOME;
+    else process.env.CURSOR_BRIDGE_HOME = previous;
+  });
+  const root = platformModule.pathsFor(home).config;
+  fs.writeFileSync(path.join(root, 'engine.log'), 'Authorization: Bearer supersecret\nready\n');
+  fs.writeFileSync(path.join(root, 'supervisor.log'), 'EADDRINUSE: port in use\n');
+  fs.writeFileSync(path.join(root, 'retention.json'), JSON.stringify({
+    at: '2026-01-01T00:00:00.000Z', calls: 2, traces: 1, sessions: 0
+  }));
+  const {server, port} = await createControlServer({repoRoot, port: 0, log: () => {}});
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const page = await request(port, {path: '/'});
+  const token = page.body.match(/__BRIDGE_TOKEN__="([0-9a-f]{64})"/)[1];
+  const headers = {'x-magpiebridge-token': token};
+
+  const logs = JSON.parse((await request(port, {path: '/api/logs?name=engine&tail=10', headers})).body);
+  assert.equal(logs.ok, true);
+  assert.doesNotMatch(logs.text, /supersecret/);
+  assert.match(logs.text, /\[redacted\]/);
+
+  const diagnostics = JSON.parse((await request(port, {path: '/api/diagnostics', headers})).body);
+  assert.equal(diagnostics.ok, true);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /secret-gateway-key/);
+  assert.equal(diagnostics.retention.calls, 2);
+  assert.match(diagnostics.logs.engine.text, /\[redacted\]/);
+  assert.ok(diagnostics.hints.some((hint) => hint.id === 'port'));
+
+  const exported = JSON.parse((await request(port, {method: 'POST', path: '/api/diagnostics', headers})).body);
+  assert.equal(exported.ok, true);
+  assert.ok(exported.file.startsWith(path.join(root, 'data', 'diagnostics')));
+  assert.ok(fs.existsSync(exported.file));
+  assert.doesNotMatch(fs.readFileSync(exported.file, 'utf8'), /secret-gateway-key/);
+});
+
 test('control settings validate and are written to the bridge root', async (t) => {
   const home = fakeHome(t);
   const previous = process.env.CURSOR_BRIDGE_HOME;
@@ -212,7 +251,7 @@ test('control settings validate and are written to the bridge root', async (t) =
   assert.equal(badName.status, 400);
   assert.match(badName.body, /80 个字符/);
 
-  const expected = {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6, modelNames: {'group/opus': 'Opus 4.5'}, modelOrder: ['group/sonnet', 'group/opus']};
+  const expected = {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6, tracesRetentionDays: 14, sessionsRetentionDays: 30, modelNames: {'group/opus': 'Opus 4.5'}, modelOrder: ['group/sonnet', 'group/opus']};
   const good = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify(expected)});
   assert.equal(good.status, 200);
   assert.deepEqual(JSON.parse(good.body).settings, expected);

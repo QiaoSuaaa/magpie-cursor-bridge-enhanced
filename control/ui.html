@@ -65,6 +65,8 @@
       <label><span class="label">模型目录同步间隔</span><span class="field"><input id="refreshSeconds" type="number" min="5" max="300" step="1" inputmode="numeric"><span class="unit">秒</span></span></label>
       <label><span class="label">网关断线容错</span><span class="field"><input id="gatewayGraceSeconds" type="number" min="10" max="600" step="1" inputmode="numeric"><span class="unit">秒</span></span></label>
       <label><span class="label">引擎日志上限</span><span class="field"><input id="logLimitMB" type="number" min="1" max="64" step="1" inputmode="numeric"><span class="unit">MB</span></span></label>
+      <label><span class="label">调用日志保留</span><span class="field"><input id="tracesRetentionDays" type="number" min="0" max="3650" step="1" inputmode="numeric"><span class="unit">天</span></span></label>
+      <label><span class="label">历史会话保留</span><span class="field"><input id="sessionsRetentionDays" type="number" min="0" max="3650" step="1" inputmode="numeric"><span class="unit">天</span></span></label>
       <div class="form-actions">
         <button id="saveSettings" class="primary" type="submit">保存</button>
         <button id="resetSettings" class="ghost" type="button">填入默认值</button>
@@ -72,6 +74,7 @@
       </div>
       <p class="hint mode-hint">轻量模式把 SQLite 放在引擎进程内存：bridge.db 不再写入，引擎重启后会话历史清空；切换模式会自动重启引擎，当前对话可能中断一次。</p>
       <p class="hint mode-hint">子代理模式：异步后台为默认，子代理在后台运行，完成后由桥接唤醒父代理继续；同步阻塞会强制 Task 以 run_in_background=false 执行，父代理等待子代理返回结果。切换同样会在数秒内重启引擎。</p>
+      <p class="hint mode-hint">自动清理在后台分批删除过期数据，不中断对话、不执行 VACUUM；0 表示不自动清理。调用日志默认保留 7 天，历史会话默认关闭；需要立即回收磁盘空间请使用下方「数据库管理」的手动清理。</p>
     </form>
   </section>
 
@@ -173,11 +176,38 @@
     </div>
   </details>
 
+  <details id="diagCard" class="card db-card">
+    <summary>
+      <span class="db-title"><h2>日志与诊断</h2><span class="hint">engine / supervisor 日志尾部与诊断包</span></span>
+      <span class="hint db-state" id="diagState">展开时读取</span>
+    </summary>
+    <div class="db-body">
+      <div class="db-toolbar diag-toolbar">
+        <label class="hint">日志 <select id="logName">
+          <option value="engine">engine</option>
+          <option value="supervisor">supervisor</option>
+          <option value="error">supervisor-error</option>
+        </select></label>
+        <label class="hint">行数 <select id="logTail">
+          <option value="100">100</option>
+          <option value="200" selected>200</option>
+          <option value="500">500</option>
+          <option value="1000">1000</option>
+        </select></label>
+        <button id="logRefresh" class="ghost" type="button">读取日志</button>
+        <button id="diagDownload" class="primary" type="button">导出诊断包</button>
+      </div>
+      <div id="diagHints" class="diag-hints"></div>
+      <pre id="diagOutput" class="output" hidden></pre>
+    </div>
+  </details>
+
   <section class="card">
     <div class="card-head"><h2>快捷入口</h2><span class="hint">在本机打开</span></div>
     <div class="links">
       <button type="button" data-target="config">配置目录</button>
       <button type="button" data-target="data">数据目录</button>
+      <button type="button" data-target="diagnostics">诊断目录</button>
       <button type="button" data-target="engine-log">engine.log</button>
       <button type="button" data-target="supervisor-log">supervisor.log</button>
       <button type="button" data-target="supervisor-error-log">supervisor-error.log</button>

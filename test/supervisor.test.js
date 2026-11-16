@@ -67,6 +67,8 @@ function harness(options={}) {
       if(options.applyProxy) options.applyProxy(proxy,state);
     },
     restoreProxy:()=>{events.push(['restore']);state.restores+=1;if(options.restoreProxy) options.restoreProxy(state);},
+    pruneDatabase:options.pruneDatabase,
+    onPrune:options.onPrune,
     onEngineStderr:()=>{},
     wait:async(ms)=>{
       if(ms===1) loopTicks+=1;
@@ -78,7 +80,9 @@ function harness(options={}) {
     initialProxyPort:options.initialProxyPort??'',
     engineReadyTimeoutMs:50,
     engineStopTimeoutMs:10,
-    loopIntervalMs:1
+    loopIntervalMs:1,
+    retentionIntervalMs:options.retentionIntervalMs??6*60*60*1000,
+    retentionInitialDelayMs:options.retentionInitialDelayMs??60*1000
   });
   return {supervisor,state,events,clock:()=>clock};
 }
@@ -201,6 +205,37 @@ test('stop restores Cursor settings before terminating the engine',async()=>{
   const killIndex=kinds.indexOf('kill');
   assert.ok(restoreIndex>=0&&killIndex>restoreIndex,'restore precedes kill');
   assert.deepEqual(h.state.kills,['SIGTERM']);
+});
+
+test('retention runs in the background without blocking the engine',async()=>{
+  let ran=0;
+  const pruned=[];
+  const h=harness({
+    isEnding:(state)=>ran>0&&state.publishes.some(entry=>entry.state==='connected'),
+    retentionInitialDelayMs:0,
+    configure:()=>({...BASE_SETTINGS,tracesRetentionDays:7,sessionsRetentionDays:0}),
+    pruneDatabase:async(options)=>{ran+=1;return {at:'2026-01-01T00:00:00.000Z',calls:3,traces:2,sessions:0,tracesDays:options.tracesDays,sessionsDays:options.sessionsDays};},
+    onPrune:(result)=>{pruned.push(result);}
+  });
+  await h.supervisor.run();
+  await new Promise((resolve)=>setImmediate(resolve));
+  assert.equal(ran,1);
+  assert.equal(h.state.spawns.length,1,'the engine still starts while retention runs');
+  assert.equal(pruned[0].calls,3);
+  assert.equal(pruned[0].tracesDays,7);
+});
+
+test('retention is skipped in lite mode',async()=>{
+  let ran=0;
+  const h=harness({
+    isEnding:(state)=>state.publishes.some(entry=>entry.state==='connected'),
+    retentionInitialDelayMs:0,
+    configure:()=>({...BASE_SETTINGS,runMode:'lite',tracesRetentionDays:7,sessionsRetentionDays:0}),
+    pruneDatabase:async()=>{ran+=1;return {};}
+  });
+  await h.supervisor.run();
+  await new Promise((resolve)=>setImmediate(resolve));
+  assert.equal(ran,0);
 });
 
 test('an engine that exits before ready reports an error',async()=>{

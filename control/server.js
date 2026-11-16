@@ -6,7 +6,9 @@ import {execFile, spawn} from 'node:child_process';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, settingsFile} from '../lib/bridge-settings.js';
+import {atomic} from '../lib/settings.js';
 import {readDatabase, cleanDatabase} from './database.js';
+import {tailFile, redact, classify} from './diagnostics.js';
 import platform from '../lib/platform.js';
 
 // The control console is served from the Magpie plugin host. It runs the
@@ -47,12 +49,14 @@ export function paths(repoRoot) {
     autostart: layout.autostart || null,
     status: path.join(root, 'status.json'),
     installation: path.join(root, 'installation.json'),
+    retention: path.join(root, 'retention.json'),
     connection: connections[0],
     connections,
     supervisorPid: path.join(root, 'supervisor.lock/pid'),
     engineLog: path.join(root, 'engine.log'),
     supervisorLog: path.join(root, 'supervisor.log'),
     supervisorError: path.join(root, 'supervisor-error.log'),
+    diagnostics: path.join(root, 'data', 'diagnostics'),
     settings: settingsFile(root),
     setup: path.join(repoRoot, 'setup.command'),
     repo: repoRoot
@@ -281,6 +285,7 @@ async function overview(repoRoot, port) {
     serviceSupported: platform.serviceSupported,
     connection: safeConnection(repoRoot),
     database: stat(p.database),
+    retention: readJson(p.retention),
     settings: {
       values: readBridgeSettings(p.root),
       defaults: bridgeDefaults,
@@ -502,6 +507,38 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
     return overviewCache.pending;
   }
 
+  async function buildDiagnostics() {
+    const p = paths(repoRoot);
+    const snapshot = await cachedOverview();
+    const logs = {};
+    for (const [name, file] of Object.entries({engine: p.engineLog, supervisor: p.supervisorLog, error: p.supervisorError})) {
+      const tail = tailFile(file, {lines: 300});
+      logs[name] = {
+        exists: tail.exists,
+        size: tail.size,
+        updated: tail.updated,
+        truncated: tail.truncated,
+        text: redact(tail.text)
+      };
+    }
+    const hints = new Map();
+    for (const entry of Object.values(logs)) {
+      for (const hint of classify(entry.text)) hints.set(hint.id, hint);
+    }
+    const integrity = readJson(path.join(p.repo, 'integrity.json'));
+    return {
+      ok: true,
+      generated: new Date().toISOString(),
+      platform: {platform: process.platform, arch: process.arch, release: os.release()},
+      versions: {plugin: snapshot.version, engine: integrity?.engineVersion || null},
+      overview: snapshot,
+      settings: readBridgeSettings(p.root),
+      logs,
+      hints: [...hints.values()],
+      retention: readJson(p.retention)
+    };
+  }
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://127.0.0.1:${ownPort}`);
@@ -691,6 +728,44 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         }
       }
 
+      if (req.method === 'GET' && url.pathname === '/api/logs') {
+        const p = paths(repoRoot);
+        const names = {engine: p.engineLog, supervisor: p.supervisorLog, error: p.supervisorError};
+        const name = String(url.searchParams.get('name') || 'engine');
+        const file = names[name];
+        if (!file) return sendJson(res, 400, {ok: false, error: `未知的日志：${name}`});
+        const lines = Math.min(2000, Math.max(1, Number(url.searchParams.get('tail')) || 200));
+        const tail = tailFile(file, {lines});
+        return sendJson(res, 200, {
+          ok: true,
+          name,
+          path: file,
+          exists: tail.exists,
+          size: tail.size,
+          updated: tail.updated,
+          truncated: tail.truncated,
+          lines: tail.lines,
+          text: redact(tail.text),
+          hints: classify(tail.text)
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/diagnostics') {
+        return sendJson(res, 200, await buildDiagnostics());
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/diagnostics') {
+        // The control page runs in a WebView where a Blob download may not be
+        // wired up; writing the bundle locally and returning its path works on
+        // every platform and keeps the text out of the browser.
+        const data = await buildDiagnostics();
+        const p = paths(repoRoot);
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const file = path.join(p.diagnostics, `diagnostics-${stamp}.json`);
+        atomic(file, JSON.stringify(data, null, 2) + '\n');
+        return sendJson(res, 200, {ok: true, file, generated: data.generated, hints: data.hints});
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/action') {
         const body = await readBody(req);
         const action = String(body.action || '');
@@ -788,6 +863,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         const targets = {
           config: p.root,
           data: p.data,
+          diagnostics: p.diagnostics,
           'engine-log': p.engineLog,
           'supervisor-log': p.supervisorLog,
           'supervisor-error-log': p.supervisorError,
@@ -799,6 +875,11 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         if (!target) return sendJson(res, 400, {ok: false, error: '未知的打开目标'});
         const opener = platform.current.openCommand(target);
         if (!opener) return sendJson(res, 400, {ok: false, error: `当前平台（${platform.platform}）没有可用的打开命令`});
+        // The diagnostics folder only appears after the first export; opening it
+        // early should still work instead of reporting a missing path.
+        if (body.target === 'diagnostics') {
+          try { fs.mkdirSync(target, {recursive: true, mode: 0o700}); } catch { /* report the real path below */ }
+        }
         if (!fs.existsSync(target)) return sendJson(res, 404, {ok: false, error: `路径不存在：${target}`});
         const result = await run(opener.command, opener.args, {timeout: 10000});
         // explorer.exe exits 1 even when it opened the folder.

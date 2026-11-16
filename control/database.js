@@ -509,8 +509,11 @@ function deleteRows(statements, table, where = '', available) {
   statements.push(`DELETE FROM ${quoteIdent(table)}${where ? ` WHERE ${where}` : ''};`);
 }
 
-function buildSessionsScript(days, tables) {
+function buildSessionsScript(days, tables, limit = 0) {
   const cutoff = Date.now() - days * 86400000;
+  // Retention runs while the engine keeps writing, so each pass removes a
+  // bounded number of conversations and commits; the next pass continues.
+  const cap = Number.isInteger(limit) && limit > 0 ? ` LIMIT ${limit}` : '';
   const doomed = '(SELECT conversation_id FROM _doomed)';
   const runScope = `(SELECT run_id FROM runs WHERE conversation_id IN ${doomed})`;
   const roundScope = `(SELECT round_id FROM tool_rounds WHERE run_id IN ${runScope})`;
@@ -519,7 +522,7 @@ function buildSessionsScript(days, tables) {
     'PRAGMA defer_foreign_keys=ON;',
     'BEGIN IMMEDIATE;',
     'CREATE TEMP TABLE _counts(t TEXT PRIMARY KEY, n INTEGER NOT NULL);',
-    `CREATE TEMP TABLE _doomed AS SELECT conversation_id FROM conversations WHERE updated_at_ms < ${cutoff};`,
+    `CREATE TEMP TABLE _doomed AS SELECT conversation_id FROM conversations WHERE updated_at_ms < ${cutoff}${cap};`,
     "INSERT OR REPLACE INTO _counts SELECT 'conversations', COUNT(*) FROM _doomed;"
   ];
   countRows(statements, 'messages', `conversation_id IN ${doomed}`, tables);
@@ -561,6 +564,37 @@ function buildTracesScript(tables) {
   deleteRows(statements, 'cursor_run_trace_artifacts', '', tables);
   deleteRows(statements, 'cursor_run_traces', '', tables);
   statements.push('COMMIT;', 'SELECT t, n FROM _counts ORDER BY t;', 'DROP TABLE _counts;');
+  return statements.join('\n');
+}
+
+// Online retention: old call logs and traces are diagnostics, so they can be
+// deleted in bounded transactions while the engine keeps running. The temp
+// tables select one batch first; children are removed before their parents so
+// foreign keys stay valid without relying on ON DELETE CASCADE.
+function buildRetentionTracesScript(tables, cutoff, limit) {
+  const cap = Number.isInteger(limit) && limit > 0 ? ` LIMIT ${limit}` : '';
+  const calls = tables.has('llm_calls')
+    ? `CREATE TEMP TABLE _calls AS SELECT call_id FROM llm_calls WHERE created_at_ms < ${cutoff}${cap};`
+    : 'CREATE TEMP TABLE _calls(call_id TEXT);';
+  const traces = tables.has('cursor_run_traces')
+    ? `CREATE TEMP TABLE _traces AS SELECT request_id FROM cursor_run_traces WHERE received_at_ms < ${cutoff}${cap};`
+    : 'CREATE TEMP TABLE _traces(request_id TEXT);';
+  const statements = [
+    'PRAGMA foreign_keys=ON;',
+    'PRAGMA defer_foreign_keys=ON;',
+    'BEGIN IMMEDIATE;',
+    'CREATE TEMP TABLE _counts(t TEXT PRIMARY KEY, n INTEGER NOT NULL);',
+    calls,
+    traces,
+    "INSERT OR REPLACE INTO _counts SELECT 'llm_calls', COUNT(*) FROM _calls;",
+    "INSERT OR REPLACE INTO _counts SELECT 'cursor_run_traces', COUNT(*) FROM _traces;"
+  ];
+  deleteRows(statements, 'llm_call_requests', 'call_id IN (SELECT call_id FROM _calls)', tables);
+  deleteRows(statements, 'llm_call_response_chunks', 'call_id IN (SELECT call_id FROM _calls)', tables);
+  deleteRows(statements, 'llm_calls', 'call_id IN (SELECT call_id FROM _calls)', tables);
+  deleteRows(statements, 'cursor_run_trace_artifacts', 'request_id IN (SELECT request_id FROM _traces)', tables);
+  deleteRows(statements, 'cursor_run_traces', 'request_id IN (SELECT request_id FROM _traces)', tables);
+  statements.push('COMMIT;', 'SELECT t, n FROM _counts ORDER BY t;', 'DROP TABLE _counts;', 'DROP TABLE _calls;', 'DROP TABLE _traces;');
   return statements.join('\n');
 }
 
@@ -655,4 +689,66 @@ export async function cleanDatabase(dbPath, {scope = 'traces', olderThanDays = 3
     reclaimed: Math.max(0, before.total - after.total),
     durationMs: Date.now() - started
   };
+}
+
+// Automatic retention used by the supervisor. It never stops the engine and
+// never vacuums: bounded deletes in short transactions keep WAL writers
+// moving, and the freed pages are reused by later writes. Manual cleanup
+// remains the way to reclaim disk space.
+export async function pruneDatabase(dbPath, {tracesDays = 0, sessionsDays = 0, batchSize = 200, busyTimeout = 15000, maxBatches = 50} = {}) {
+  const result = {
+    exists: fs.existsSync(dbPath),
+    at: new Date().toISOString(),
+    calls: 0,
+    traces: 0,
+    sessions: 0,
+    batches: 0,
+    durationMs: 0,
+    check: null,
+    error: null
+  };
+  if (!result.exists) return result;
+  if (!(Number(tracesDays) > 0) && !(Number(sessionsDays) > 0)) return result;
+  const started = Date.now();
+  const tables = new Set(await listTables(dbPath));
+  const batch = Math.max(1, Math.min(2000, Number(batchSize) || 200));
+  const passes = Math.max(1, Math.min(200, Number(maxBatches) || 50));
+  const run = async (script) => {
+    if (!script) return {};
+    const output = await sqlite(dbPath, script, {json: true, timeout: CLEANUP_TIMEOUT, busyTimeout});
+    const counts = {};
+    for (const row of parseJson(output)) {
+      const name = String(row.t || '');
+      if (name) counts[name] = Number(row.n) || 0;
+    }
+    result.batches += 1;
+    return counts;
+  };
+  try {
+    if (Number(tracesDays) > 0) {
+      const cutoff = Date.now() - Number(tracesDays) * 86400000;
+      for (let pass = 0; pass < passes; pass += 1) {
+        const counts = await run(buildRetentionTracesScript(tables, cutoff, batch));
+        const calls = counts.llm_calls || 0;
+        const traces = counts.cursor_run_traces || 0;
+        result.calls += calls;
+        result.traces += traces;
+        if (!calls && !traces) break;
+      }
+    }
+    if (Number(sessionsDays) > 0 && tables.has('conversations')) {
+      for (let pass = 0; pass < passes; pass += 1) {
+        const counts = await run(buildSessionsScript(Number(sessionsDays), tables, batch));
+        const deleted = counts.conversations || 0;
+        result.sessions += deleted;
+        if (!deleted) break;
+      }
+    }
+  } catch (error) {
+    result.error = String(error?.message || error);
+  }
+  try { await sqlite(dbPath, 'PRAGMA optimize;', {busyTimeout, timeout: QUERY_TIMEOUT}); } catch { /* best effort */ }
+  result.check = await quickCheck(dbPath);
+  result.durationMs = Date.now() - started;
+  return result;
 }
