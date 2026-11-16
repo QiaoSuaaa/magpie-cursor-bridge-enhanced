@@ -5,7 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createControlServer, paths} from '../control/server.js';
+import {createControlServer, paths, readConnection} from '../control/server.js';
 import platformModule from '../lib/platform.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -60,6 +60,18 @@ function request(port, {method = 'GET', path: pathname = '/', headers = {}, body
     req.end();
   });
 }
+
+test('connection lookup skips missing and malformed candidates', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-bridge-connection-'));
+  t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+  const missing = path.join(dir, 'missing.json');
+  const broken = path.join(dir, 'broken.json');
+  const valid = path.join(dir, 'valid.json');
+  fs.writeFileSync(broken, '{');
+  fs.writeFileSync(valid, JSON.stringify({enabled: true, model: 'group/opus'}));
+  assert.deepEqual(readConnection([missing, broken, valid]), {enabled: true, model: 'group/opus'});
+  assert.equal(readConnection([missing, broken]), null);
+});
 
 test('control console serves a tokenised page and guards /api', async (t) => {
   const home = fakeHome(t);

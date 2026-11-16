@@ -157,14 +157,20 @@ async function launchAgentState(repoRoot) {
   return {registered: true, state, pid, supported: true};
 }
 
-function safeConnection(repoRoot) {
-  let data = null;
-  for (const candidate of paths(repoRoot).connections) {
-    if (!fs.existsSync(candidate)) continue;
-    data = readJson(candidate);
-    break;
+// Any candidate may be missing or damaged (a half-written file, a legacy
+// location); the next one can still hold the live connection. Never stop at
+// the first path that merely exists.
+export function readConnection(candidates) {
+  for (const candidate of candidates) {
+    const data = readJson(candidate);
+    if (data && typeof data === 'object' && !Array.isArray(data)) return data;
   }
-  if (!data || typeof data !== 'object') return {exists: false};
+  return null;
+}
+
+function safeConnection(repoRoot) {
+  const data = readConnection(paths(repoRoot).connections);
+  if (!data) return {exists: false};
   return {
     exists: true,
     enabled: data.enabled === true,
@@ -639,9 +645,11 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
           let failure = '';
           try {
             // Let an in-flight statistics read close its read transaction
-            // before VACUUM asks for an exclusive lock.
+            // before VACUUM asks for an exclusive lock. databasePending is the
+            // {deep, promise} wrapper; awaiting the wrapper itself would return
+            // immediately and leave the read running through VACUUM.
             if (databasePending) {
-              try { await databasePending; } catch { /* the cache is dropped below */ }
+              try { await databasePending.promise; } catch { /* the cache is dropped below */ }
             }
             // The engine keeps the database open in WAL mode; stop it so
             // deletes and VACUUM cannot race a live writer.

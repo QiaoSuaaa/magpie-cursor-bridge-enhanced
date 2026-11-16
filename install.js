@@ -85,16 +85,18 @@ try {
           for(const name of ['control','ui','lib','vendor']) fs.cpSync(path.join(source,name),path.join(p.target,name),{recursive:true,force:true});
           atomic(path.join(p.target,'agent.js'),fs.readFileSync(path.join(source,'agent.js'),'utf8'));
           atomic(path.join(p.target,'agent-platform.js'),fs.readFileSync(path.join(source,'agent-platform.js'),'utf8'));
+          atomic(path.join(p.target,'version.js'),fs.readFileSync(path.join(source,'version.js'),'utf8'));
           atomic(path.join(p.target,'package.json'),JSON.stringify({name:manifest.name,version:manifest.version,type:'module',main:manifest.main,magpie:manifest.magpie},null,2));
           atomic(path.join(p.target,'control-location.json'),JSON.stringify({source},null,2));
           if(magpieReady) run(magpie,['plugin','add',p.target]);
           else console.log(`未找到 Magpie 可执行文件，请从 Magpie 插件页手动添加：${p.target}`);
         }
         await activate(p,release,domain);
-        // Windows and Linux stage the host runtime (~100 MB) on every start;
+        // Every platform stages the host runtime (~100 MB) on a version change;
         // keeping only the active release stops a handful of clicks from
-        // filling the disk. macOS keeps its historical layout.
-        if(platform.IS_WIN||platform.IS_LINUX) pruneReleases(p,release);
+        // filling the disk. stage() reuses an identical release, so this also
+        // removes the copies older builds left behind.
+        pruneReleases(p,release);
         atomic(path.join(p.root,'installation.json'),JSON.stringify({version:manifest.version,release,source,installed:new Date().toISOString()},null,2));
         console.log(`已安装 v${manifest.version}。在 Magpie → Agents 选择 Cursor · Magpie Bridge 和模型；首次连接后重启 Cursor。`);
       }

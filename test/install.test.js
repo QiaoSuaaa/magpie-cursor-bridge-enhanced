@@ -6,8 +6,9 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {paths,verifyPackage,initializeCertificate,stage,activate,plistText,systemdUnitText,windowsLauncherScript,writeCursorAuthority,cursorAuthority,trustLinuxNss,writeLinuxTrustMarker,nssNickname} from '../lib/install.js';
+import {paths,verifyPackage,initializeCertificate,stage,pruneReleases,activate,plistText,systemdUnitText,windowsLauncherScript,writeCursorAuthority,cursorAuthority,trustLinuxNss,writeLinuxTrustMarker,nssNickname} from '../lib/install.js';
 import platformModule from '../lib/platform.js';
+import {version} from '../version.js';
 const source=fileURLToPath(new URL('..',import.meta.url));
 const engine=platformModule.enginePathFor(source);
 const stagedEngine=path.relative(source,engine);
@@ -45,7 +46,12 @@ test('fresh machines generate distinct CAs without a BYOK install, database or t
  assert.deepEqual(fs.readdirSync(one),['ca']);
  fs.unlinkSync(path.join(one,'ca/ca.crt'));assert.notEqual(init(one).status,0);assert.equal(hash(path.join(one,'ca/ca.key')),before);
 });
-test('package and native engine have the same pinned version and digest',()=>{assert.equal(verifyPackage(source).version,'0.2.22');});
+test('package and native engine have the same pinned version and digest',()=>{
+ assert.equal(verifyPackage(source).version,version);
+ const integrity=JSON.parse(fs.readFileSync(path.join(source,'integrity.json'),'utf8'));
+ assert.equal(integrity.version,version);
+ assert.equal(integrity.engineVersion,'0.2.15');
+});
 test('certificate trust uses SSL policy and argument arrays, and refuses failed authorization',{skip:!IS_DARWIN},t=>{
  const p=fakePaths(t),calls=[];let trusted=false;
  const exec=(cmd,args,options)=>{calls.push({cmd,args,options});if(args[0]==='--init-ca')return {status:0,stdout:'{"ca":"untrusted"}'};if(args[0]==='add-trusted-cert'){trusted=true;return {status:0};}return {status:trusted?0:1};};
@@ -150,12 +156,25 @@ test('linux activation falls back to a detached supervisor when no user manager 
  assert.match(unit,/ExecStart=.*bridge\.js" supervise/);
  assert.match(unit,/WantedBy=default\.target/);
 });
-test('complete staging never overwrites an existing running release',t=>{
+test('staging reuses identical releases and never overwrites a running one',t=>{
  const p=fakePaths(t);const fakeRuntime=path.join(p.home,'runtime');fs.writeFileSync(fakeRuntime,'test');
- const one=stage(source,p,'0.2.22',fakeRuntime),two=stage(source,p,'0.2.22',fakeRuntime);
- assert.notEqual(one,two);assert.equal(hash(path.join(one,stagedEngine)),hash(engine));
+ const one=stage(source,p,version,fakeRuntime),two=stage(source,p,version,fakeRuntime);
+ assert.equal(two,one,'identical payloads reuse the staged copy');
+ assert.equal(hash(path.join(one,stagedEngine)),hash(engine));
  assert.ok(fs.existsSync(path.join(two,'vendor/jsonc-parser/package.json')));
  if(!IS_WIN) assert.equal(fs.statSync(path.join(two,'bin',runtimeName)).mode&0o777,0o755);
+ // A different runtime identity or plugin version must stage a fresh copy.
+ fs.writeFileSync(fakeRuntime,'test-v2');
+ const changedRuntime=stage(source,p,version,fakeRuntime);
+ assert.notEqual(changedRuntime,one);
+ const changedVersion=stage(source,p,`${version}-next`,fakeRuntime);
+ assert.notEqual(changedVersion,one);
+});
+test('release pruning keeps only the activated release',t=>{
+ const p=fakePaths(t);const dir=path.join(p.target,'releases');
+ for(const name of ['old-a','old-b','keep']) fs.mkdirSync(path.join(dir,name),{recursive:true});
+ assert.equal(pruneReleases(p,path.join(dir,'keep')),2);
+ assert.deepEqual(fs.readdirSync(dir),['keep']);
 });
 test('windows activation writes a Startup launcher and starts the supervisor once',{skip:!IS_WIN},async t=>{
  const p=fakePaths(t);
@@ -195,8 +214,11 @@ test('GitHub installation stages the vendored JSONC parser without npm install',
    if(['node_modules','.git'].includes(name)) continue;
    fs.cpSync(path.join(source,name),path.join(plugin,name),{recursive:true});
  }
- assert.equal(verifyPackage(plugin).version,'0.2.22');
+ assert.equal(verifyPackage(plugin).version,version);
  const runtime=path.join(home,'runtime');fs.writeFileSync(runtime,'test');
- const release=stage(plugin,p,'0.2.22',runtime);
+ const release=stage(plugin,p,version,runtime);
  assert.ok(fs.existsSync(path.join(release,'vendor/jsonc-parser/lib/umd/main.js')));
+ assert.equal(stage(plugin,p,version,runtime),release,'a second setup reuses the release');
+ fs.appendFileSync(path.join(plugin,'lib/config.js'),'\n// development change\n');
+ assert.notEqual(stage(plugin,p,version,runtime),release,'changed plugin sources stage a fresh release');
 });

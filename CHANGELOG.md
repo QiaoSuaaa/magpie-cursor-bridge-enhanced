@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.23（P0 止血：版本单一来源与安装复用）
+
+- 修复控制台数据库清理前的等待竞态：`databasePending` 是 `{deep, promise}` 包装对象，之前 `await databasePending` 会立即返回，正在进行的统计读事务并未结束，VACUUM 仍可能与其抢锁；改为 `await databasePending.promise`，清理前真正等待统计读结束。
+- 修复连接文件候选读取：`safeConnection` 之前遇到第一个“存在”的 `connection.json` 就停止，若该文件损坏（半写、旧路径），不会再尝试后续候选，控制台误报“未连接”。新增 `readConnection()` 逐个解析，损坏则继续；Windows/Linux 的双路径兜底真正生效。
+- 新增 `version.js` 作为运行时版本单一来源：`agent.js`、`bridge.js` 与控制台 User-Agent 统一从它读取；`verifyPackage` 校验 `version.js`、`package.json`、`integrity.json` 与原生引擎版本一致，测试断言改为动态读取，避免发版漏改。
+- 移除 `package.json` 中不存在的 `npm-shrinkwrap.json` 发布条目（项目无运行时 npm 依赖），README 的发版同步说明改为 `version.js` / `package.json` / `integrity.json` / 原生引擎四处。
+- 安装器 release 复用：stage 前计算载荷、引擎摘要与运行时身份（size/mtime）指纹；同版本同内容直接复用已有 release，内容或运行时变化才新建。`release.json` 最后写入，作为完整落盘的标记；各平台 `pruneReleases` 只保留当前激活的 release。macOS 之前每次启动/重启/清理都会新增一份 100MB+ release 且从不清理，现已与 Windows/Linux 一致。
+- Magpie 模型目录同步改为实时名称优先：网关返回的 `name` / `context_window` 覆盖 `connection.json` 里记录的旧副本，Magpie 中改名后无需重新连接即可在 Cursor 菜单看到；仅在网关缺字段时回退。
+- `package.json` 增加 `engines.node >= 20`，明确 Node 与 Bun 的运行基线。
+- 测试新增：release 复用与内容变化失效、release 剪枝、连接候选跳过损坏文件、网关名称实时优先与 User-Agent 版本；版本配对测试改为读取 `version.js`。macOS 本机 57 项测试 53 通过、4 项按平台跳过。
+- 版本号升至 0.2.23；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.22（模型显示名与排序增强）
 
 - 「模型显示名」改为独立折叠卡片：默认收起，与「数据库管理」交互一致；展开时才读取模型目录并渲染表格。

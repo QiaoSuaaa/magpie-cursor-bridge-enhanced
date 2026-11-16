@@ -8,9 +8,9 @@ import {atomic,applyProxy,restoreProxy} from './lib/settings.js';
 import {validate,gatewayModels} from './lib/config.js';
 import {read as readBridgeSettings,applyModelPreferences} from './lib/bridge-settings.js';
 import platform from './lib/platform.js';
+import {version} from './version.js';
 
 const packageDir=path.dirname(fileURLToPath(import.meta.url));
-const version=JSON.parse(fs.readFileSync(path.join(packageDir,'package.json'),'utf8')).version;
 const root=process.env.CURSOR_BRIDGE_ROOT||platform.current.paths().config;
 const settings=process.env.CURSOR_BRIDGE_SETTINGS||platform.current.cursorSettings();
 const file=name=>path.join(root,name);
