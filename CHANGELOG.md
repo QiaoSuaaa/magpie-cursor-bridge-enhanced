@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.24（核心可靠性：supervisor 测试、三平台 CI、清理备份）
+
+- 新增 `lib/supervisor.js`：把连接判定、引擎启停/重启、网关断线宽限、模式切换、模型目录热更新与代理恢复从 `bridge.js` 抽成依赖注入的状态机；`bridge.js` 保留锁、状态文件、日志轮转与信号处理。行为保持不变，所有副作用可测试。
+- 新增 9 项 supervisor 测试：未连接、首次启动、网关短暂失败与恢复、运行模式重启、显示名热更新、外部代理改动暂停、引擎崩溃重启、先还原代理再终止引擎、启动即退出报错。
+- 新增 `.github/workflows/test.yml`：macOS / Ubuntu / Windows 三平台运行语法检查与全部测试；Linux 额外安装 `sqlite3` 并校验 `source.patch` 与 `source-linux.patch` 可依次应用。
+- 数据库清理新增备份与完整性检查：`VACUUM INTO` 在删除前生成一致快照（包含 WAL 已提交内容），默认目录 `data/backups`，保留最近 3 份；服务端默认仅对 `sessions` / `all` 备份；控制台按范围设置默认值（`sessions` / `all` 勾选，`traces` 不勾选），可手动调整。清理后执行 `PRAGMA quick_check`，结果随响应返回并在控制台提示。
+- 控制台数据库清理卡片新增「清理前备份数据库」开关；确认文案与结果提示包含备份路径、大小与检查结果。
+- 测试新增 supervisor 状态机与数据库备份/保留策略用例；macOS 本机 67 项测试 63 通过、4 项按平台跳过。
+- 版本号升至 0.2.24；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.23（P0 止血：版本单一来源与安装复用）
 
 - 修复控制台数据库清理前的等待竞态：`databasePending` 是 `{deep, promise}` 包装对象，之前 `await databasePending` 会立即返回，正在进行的统计读事务并未结束，VACUUM 仍可能与其抢锁；改为 `await databasePending.promise`，清理前真正等待统计读结束。

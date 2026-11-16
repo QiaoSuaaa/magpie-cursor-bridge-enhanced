@@ -1,0 +1,52 @@
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install sqlite3 (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Syntax check
+        shell: bash
+        run: |
+          for file in agent.js agent-platform.js version.js bridge.js install.js lib/*.js control/*.js ui/*.js test/*.js; do
+            node --check "$file"
+          done
+
+      - name: Unit tests
+        shell: bash
+        run: node --test test/*.test.js
+
+      - name: Verify source patches apply
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          git clone --branch v1.0.1 --depth 1 https://github.com/leookun/cursor-byok.git "$RUNNER_TEMP/cursor-byok"
+          git -C "$RUNNER_TEMP/cursor-byok" apply "$GITHUB_WORKSPACE/source.patch"
+          git -C "$RUNNER_TEMP/cursor-byok" apply --check "$GITHUB_WORKSPACE/source-linux.patch"

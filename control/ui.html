@@ -159,6 +159,7 @@
           <button class="danger" type="button" data-clean="all">清空…</button>
         </div>
         <label class="vacuum-check"><input id="dbVacuum" type="checkbox" checked> 清理后压缩数据库（VACUUM，回收磁盘空间）</label>
+        <label class="vacuum-check"><input id="dbBackup" type="checkbox" checked> 清理前备份数据库（VACUUM INTO 快照，保留最近 3 份）</label>
         <div id="dbConfirm" class="confirm" hidden>
           <p id="dbConfirmText"></p>
           <label id="dbConfirmTypeWrap" class="confirm-type" hidden>输入「<code>清空全部</code>」以确认 <input id="dbConfirmType" type="text" autocomplete="off" spellcheck="false"></label>

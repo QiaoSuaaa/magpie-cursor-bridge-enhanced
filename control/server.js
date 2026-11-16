@@ -632,8 +632,14 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         }
         if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
         const vacuum = scope === 'vacuum' || body.vacuum !== false;
+        // Destructive scopes are backed up by default; diagnostics cleanup
+        // (traces) is not, because it can be the largest and least valuable
+        // copy. The console sends an explicit value once its toggle is used.
+        const backup = body.backup === undefined
+          ? ['sessions', 'all'].includes(scope)
+          : body.backup === true;
         busy = '数据库清理';
-        log(`database cleanup: ${scope}${scope === 'sessions' ? ` (>${olderThanDays}d)` : ''} vacuum=${vacuum}`);
+        log(`database cleanup: ${scope}${scope === 'sessions' ? ` (>${olderThanDays}d)` : ''} vacuum=${vacuum} backup=${backup}`);
         try {
           const p = paths(repoRoot);
           const runtime = readJson(p.status);
@@ -654,7 +660,13 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
             // The engine keeps the database open in WAL mode; stop it so
             // deletes and VACUUM cannot race a live writer.
             if (wasRunning) await stopBridge(repoRoot);
-            cleanup = await cleanDatabase(p.database, {scope, olderThanDays, vacuum});
+            cleanup = await cleanDatabase(p.database, {
+              scope,
+              olderThanDays,
+              vacuum,
+              backup,
+              backupDir: path.join(p.data, 'backups')
+            });
           } catch (error) {
             failure = String(error?.message || error);
           } finally {

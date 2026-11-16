@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import {randomBytes} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import platform from '../lib/platform.js';
 
@@ -16,6 +18,7 @@ import platform from '../lib/platform.js';
 const QUERY_TIMEOUT = 60000;
 const CLEANUP_TIMEOUT = 300000;
 const VACUUM_TIMEOUT = 900000;
+const BACKUP_KEEP = 3;
 
 // The schema is owned by the engine and may grow between releases. Known
 // tables are grouped for humans; anything new lands in "其他表" so it still
@@ -227,6 +230,38 @@ function sizes(dbPath) {
   const wal = fileInfo(`${dbPath}-wal`);
   const shm = fileInfo(`${dbPath}-shm`);
   return {db, wal, shm, total: db.size + wal.size + shm.size};
+}
+
+// VACUUM INTO writes a consistent, compact snapshot including committed WAL
+// content; copying the file directly could miss rows still in the WAL. The
+// caller stops the engine first, so there is no concurrent writer.
+async function backupDatabase(dbPath, directory, scope, keepBackups) {
+  fs.mkdirSync(directory, {recursive: true, mode: 0o700});
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const file = path.join(directory, `bridge-${stamp}-${scope}-${randomBytes(4).toString('hex')}.db`);
+  await sqlite(dbPath, `VACUUM INTO ${quoteText(file)};`, {timeout: VACUUM_TIMEOUT, busyTimeout: 15000});
+  const size = fs.statSync(file).size;
+  const keep = Math.max(1, Number(keepBackups) || BACKUP_KEEP);
+  const backups = fs.readdirSync(directory)
+    .filter((name) => name.startsWith('bridge-') && name.endsWith('.db'))
+    .map((name) => ({name, at: fs.statSync(path.join(directory, name)).mtimeMs}))
+    .sort((a, b) => b.at - a.at || b.name.localeCompare(a.name));
+  const pruned = [];
+  for (const entry of backups.slice(keep)) {
+    try { fs.unlinkSync(path.join(directory, entry.name)); pruned.push(entry.name); } catch { /* in use */ }
+  }
+  return {file, size, pruned};
+}
+
+async function quickCheck(dbPath) {
+  try {
+    const rows = parseJson(await sqlite(dbPath, 'PRAGMA quick_check;', {readonly: true, json: true, timeout: CLEANUP_TIMEOUT}));
+    const values = rows.map((row) => String(row.quick_check || 'unknown'));
+    if (!values.length) return 'unknown';
+    return values.every((value) => value === 'ok') ? 'ok' : values.join('; ');
+  } catch (error) {
+    return `unavailable: ${error.message}`;
+  }
 }
 
 async function listTables(dbPath) {
@@ -567,7 +602,7 @@ function buildCleanupScript(scope, days, tables) {
   return buildAllScript(tables);
 }
 
-export async function cleanDatabase(dbPath, {scope = 'traces', olderThanDays = 3, vacuum = true} = {}) {
+export async function cleanDatabase(dbPath, {scope = 'traces', olderThanDays = 3, vacuum = true, backup = false, backupDir = path.join(path.dirname(dbPath), 'backups'), keepBackups = BACKUP_KEEP} = {}) {
   if (!['traces', 'sessions', 'all', 'vacuum'].includes(scope)) {
     throw new Error(`未知的清理范围：${scope || '空'}`);
   }
@@ -577,6 +612,11 @@ export async function cleanDatabase(dbPath, {scope = 'traces', olderThanDays = 3
   }
   const started = Date.now();
   const before = sizes(dbPath);
+  // A destructive scope may be irreversible; the backup is written before any
+  // DELETE runs so a failed cleanup still leaves the original data recoverable.
+  const backupResult = backup && scope !== 'vacuum'
+    ? await backupDatabase(dbPath, backupDir, scope, keepBackups)
+    : null;
   const counts = {};
   if (scope !== 'vacuum') {
     const tables = new Set(await listTables(dbPath));
@@ -602,10 +642,13 @@ export async function cleanDatabase(dbPath, {scope = 'traces', olderThanDays = 3
       {timeout: VACUUM_TIMEOUT, busyTimeout: 15000});
     vacuumed = true;
   }
+  const check = await quickCheck(dbPath);
   const after = sizes(dbPath);
   return {
     scope,
     vacuumed,
+    backup: backupResult,
+    check,
     counts,
     before,
     after,

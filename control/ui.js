@@ -169,6 +169,7 @@
     if ($('dbDeep')) $('dbDeep').disabled = cleaning || dbLoading;
     if ($('cleanDays')) $('cleanDays').disabled = cleaning;
     if ($('dbVacuum')) $('dbVacuum').disabled = cleaning;
+    if ($('dbBackup')) $('dbBackup').disabled = cleaning;
     if ($('dbConfirmType')) $('dbConfirmType').disabled = cleaning;
     if ($('dbConfirmGo')) {
       $('dbConfirmGo').disabled = cleaning || !pendingClean
@@ -765,6 +766,7 @@
   function cleanupPlan(scope) {
     const days = Number($('cleanDays').value) || 3;
     const vacuum = scope === 'vacuum' || $('dbVacuum').checked;
+    const backup = scope !== 'vacuum' && $('dbBackup').checked;
     const rows = new Map();
     for (const category of dbData?.categories || []) {
       for (const table of category.tables) rows.set(table.name, table);
@@ -789,7 +791,10 @@
     } else {
       text += ' 未勾选压缩：删除后的空间会被后续写入复用，文件不会立即缩小。';
     }
-    return {scope, days, vacuum, text};
+    if (backup) {
+      text += ' 清理前会生成数据库快照备份到 data/backups，保留最近 3 份。';
+    }
+    return {scope, days, vacuum, backup, text};
   }
 
   function refreshCleanupPlan() {
@@ -804,6 +809,9 @@
 
   function showCleanupConfirm(scope) {
     if (!dbData?.exists || cleaning) return;
+    // Destructive session resets are backed up by default; diagnostics cleanup
+    // can be the largest (and least valuable) copy, so it stays opt-in.
+    $('dbBackup').checked = scope === 'sessions' || scope === 'all';
     pendingClean = cleanupPlan(scope);
     $('dbConfirmText').textContent = pendingClean.text;
     $('dbConfirmTypeWrap').hidden = scope !== 'all';
@@ -825,15 +833,19 @@
     try {
       const result = await api('/api/database/cleanup', {
         method: 'POST',
-        body: {scope: plan.scope, olderThanDays: plan.days, vacuum: plan.vacuum}
+        body: {scope: plan.scope, olderThanDays: plan.days, vacuum: plan.vacuum, backup: plan.backup}
       });
       const cleanup = result.cleanup;
       const released = cleanup.reclaimed > 0 ? `，释放 ${bytes(cleanup.reclaimed)}` : '';
+      const backedUp = cleanup.backup
+        ? `，已备份 ${bytes(cleanup.backup.size)} 到 ${shorten(cleanup.backup.file)}`
+        : '';
+      const check = cleanup.check && cleanup.check !== 'ok' ? `；数据库检查：${cleanup.check}` : '';
       if (result.restart && !result.restart.ok) {
-        notice(`数据库已清理（${bytes(cleanup.before.total)} → ${bytes(cleanup.after.total)}${released}），但桥接重启失败：${result.restart.error || '未知错误'}`, 'error');
+        notice(`数据库已清理（${bytes(cleanup.before.total)} → ${bytes(cleanup.after.total)}${released}${backedUp}），但桥接重启失败：${result.restart.error || '未知错误'}${check}`, 'error');
       } else {
         const restarted = result.restart?.ok ? '，桥接已重启' : '';
-        notice(`清理完成：${bytes(cleanup.before.total)} → ${bytes(cleanup.after.total)}${released}${restarted}。`, 'ok');
+        notice(`清理完成：${bytes(cleanup.before.total)} → ${bytes(cleanup.after.total)}${released}${restarted}${backedUp}${check}。`, check ? 'warning' : 'ok');
       }
       pendingClean = null;
       $('dbConfirm').hidden = true;
@@ -867,6 +879,7 @@
     }
     $('cleanDays').addEventListener('change', refreshCleanupPlan);
     $('dbVacuum').addEventListener('change', refreshCleanupPlan);
+    $('dbBackup').addEventListener('change', refreshCleanupPlan);
     $('dbConfirmType').addEventListener('input', updateDbControls);
     $('dbConfirmGo').addEventListener('click', executeCleanup);
     $('dbConfirmCancel').addEventListener('click', () => {

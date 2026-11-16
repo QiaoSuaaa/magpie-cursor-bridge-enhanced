@@ -175,6 +175,26 @@ test('full cleanup clears runtime data, keeps configuration, then vacuums', {ski
   assert.ok(fs.existsSync(dbPath));
 });
 
+test('destructive cleanup writes a recoverable backup and verifies the database', {skip: SKIP}, async (t) => {
+  const {dbPath} = fakeDatabase(t);
+  const backupDir = path.join(path.dirname(dbPath), 'backups');
+  const result = await cleanDatabase(dbPath, {scope: 'sessions', olderThanDays: 5, vacuum: false, backup: true, backupDir});
+  assert.equal(result.check, 'ok');
+  assert.ok(result.backup?.file);
+  assert.ok(fs.existsSync(result.backup.file));
+  assert.ok(result.backup.size > 0);
+  // The snapshot is taken before the deletes, so the removed conversation is
+  // still recoverable from it.
+  const rows = JSON.parse(execFileSync(SQLITE, ['-json', '-readonly', result.backup.file, 'SELECT conversation_id FROM conversations ORDER BY conversation_id;'], {encoding: 'utf8'}));
+  assert.deepEqual(rows.map((row) => row.conversation_id), ['conv-new', 'conv-old']);
+  assert.equal(JSON.parse(query(dbPath, "SELECT conversation_id FROM conversations;"))[0].conversation_id, 'conv-new');
+  // Retention keeps only the newest snapshot.
+  const again = await cleanDatabase(dbPath, {scope: 'traces', vacuum: false, backup: true, backupDir, keepBackups: 1});
+  assert.equal(again.check, 'ok');
+  assert.equal(again.backup?.pruned?.length, 1);
+  assert.equal(fs.readdirSync(backupDir).length, 1);
+});
+
 test('cleanup validates its scope and retention window', {skip: SKIP}, async (t) => {
   const {dbPath} = fakeDatabase(t);
   await assert.rejects(cleanDatabase(dbPath, {scope: 'everything'}), /未知的清理范围/);
@@ -235,5 +255,16 @@ test('control console exposes database stats and cleanup routes', {skip: SKIP}, 
   const result = JSON.parse(cleaned.body);
   assert.equal(result.ok, true);
   assert.equal(result.cleanup.counts.llm_calls, 2);
+  assert.equal(result.cleanup.check, 'ok');
+  assert.equal(result.cleanup.backup, null, 'diagnostics cleanup is not backed up by default');
   assert.equal(result.restart, null);
+
+  const backed = await call('POST', '/api/database/cleanup', JSON.stringify({
+    scope: 'sessions', olderThanDays: 5, vacuum: false, backup: true
+  }));
+  assert.equal(backed.status, 200);
+  const backedResult = JSON.parse(backed.body);
+  assert.equal(backedResult.cleanup.check, 'ok');
+  assert.ok(backedResult.cleanup.backup?.file);
+  assert.ok(fs.existsSync(backedResult.cleanup.backup.file));
 });
