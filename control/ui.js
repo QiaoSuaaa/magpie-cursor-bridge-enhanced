@@ -352,10 +352,13 @@
     setBusy(true);
     const label = {start: '启动', status: '状态', restart: '重启'}[action];
     const win = lastOverview?.platform === 'win32';
+    const linux = lastOverview?.platform === 'linux';
     const command = action === 'status'
       ? (win ? 'install.js status' : 'bash setup.command status')
       : (action === 'restart'
-        ? (win ? '停止后台进程 + install.js setup' : 'launchctl bootout + 杀掉后台进程 + bash setup.command')
+        ? (win ? '停止后台进程 + install.js setup'
+          : linux ? 'systemctl --user stop + 杀掉后台进程 + bash setup.command'
+          : 'launchctl bootout + 杀掉后台进程 + bash setup.command')
         : (win ? 'install.js setup' : 'bash setup.command'));
     output(`$ ${command}\n执行中…`);
     notice('');

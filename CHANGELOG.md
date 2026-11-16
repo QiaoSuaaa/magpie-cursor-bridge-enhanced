@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.19（Linux 适配）
+
+- 新增 Linux x64 / arm64 完整支持：随包原生引擎 `bin/linux-<arch>/cursor-magpie-bridge`、按架构分目录、纳入 `integrity.json` 的 `platforms.linux-x64|arm64` 摘要；`lib/platform.js` 的 `enginePathFor()` 与 `serviceSupported` 同步扩展。Linux 产物以 glibc 2.34（Debian 12 / Ubuntu 22.04）为基线，并以 vendored 方式静态链接 OpenSSL，不依赖目标系统的 `libssl` 版本；arm64 产物在 amd64 容器内交叉编译，无需拉取额外的 Docker 镜像。
+- 新增 systemd 用户单元守护：安装器写入 `~/.config/systemd/user/local.magpie.cursor-bridge.service`（`Restart=on-failure`、`UMask=0077`、日志追加到 `supervisor.log` / `supervisor-error.log`），执行 `daemon-reload` 与 `enable --now`；停止、重启、卸载均走 `systemctl --user`，并等待 supervisor/引擎退出。
+- 无 systemd 用户实例（容器、部分 WSL、精简发行版）时回退为**分离进程**立即启动，单元文件保留供下次登录接管；systemd 明确拒绝单元时自动 `disable`，避免每次登录重复失败。
+- Linux 证书信任全程无需 root：把 CA 路径写入 Cursor 的 `~/.config/Cursor/argv.json`（`certificate-authority`，保留原文件注释），并在存在 `certutil` 时导入用户 NSS 库 `~/.pki/nssdb`；两条路径都会写入 `data/ca/trusted.json` 指纹标记，系统级 CA 仅打印可选命令提示。
+- 新增 Linux 专属引擎补丁 `source-linux.patch`：`is_installed()` 在系统 anchor 之外同时接受 Cursor `argv.json` 与 NSS 导入标记，使其与零 root 安装方式一致；macOS / Windows 的引擎判定与二进制不受影响。
+- 新增构建入口：`scripts/build-native-linux.sh`（Linux 主机原生构建）与 `scripts/build-native-linux-docker.sh`（在 macOS/Linux 上用 Docker 构建 x64 与 arm64，带 Cargo 缓存卷）；构建前依次应用 `source.patch` 与 `source-linux.patch`，并以 `integrity.json` 的 `engineVersion` 校验 `--version`。
+- 控制台在 Linux 启用「启动 / 状态 / 重启」：安装入口统一为 `bash setup.command`，服务状态读取单元文件与 `supervisor.lock`，停止时调用 `systemctl --user stop` 并兜底终止残留进程；页脚、命令提示与 Agent notice 同步更新。
+- Linux 每次 setup 后清理旧 release，只保留当前版本；卸载时删除 systemd 单元并 `daemon-reload`。
+- 测试新增 Linux 路径、引擎布局、systemd 单元、`argv.json`（保留注释）、NSS 导入与信任标记用例；macOS 专属用例改为按平台跳过。验证结果：macOS 本机 46 项通过；Debian 12 容器内 45 项通过（5 项 Windows 专属跳过）；完成 `setup → argv.json/NSS → 无 systemd 回退 → 卸载` 端到端冒烟；arm64 产物经 QEMU 执行 `--version` 返回 0.2.15。
+- 版本号升至 0.2.19；macOS / Windows 引擎构建不变（`engineVersion` 仍为 0.2.15），Linux 引擎由同一上游提交 + Linux 信任补丁构建。
+
 ## 0.2.18（易用性：控制台一键连接模型）
 
 - 控制台新增「连接模型」卡片：未连接时直接列出 Magpie 模型目录（读取 `~/.config/magpie/gateway.json` 中的本机网关地址并请求 `/v1/models`，只访问 `127.0.0.1`），选择一个模型点「连接并启动」即可。后台未运行时自动先执行一次 setup，因此首次安装也能一键完成「安装 → 选择模型 → 引擎运行」。

@@ -129,6 +129,9 @@ test('console lists Magpie models and connects the agent in one click', async (t
   fs.writeFileSync(p.supervisorPid, String(process.pid));
 
   const connectAgent = async (model) => {
+    // Linux keeps the XDG root for state while Magpie writes connection.json
+    // under ~/.config, so the two directories are distinct in this fixture.
+    fs.mkdirSync(path.dirname(p.connections[0]), {recursive: true});
     fs.writeFileSync(p.connections[0], JSON.stringify({
       enabled: true, gateway: 'http://127.0.0.1:3425/v1', key: 'secret',
       model, models: [{id: model}]
@@ -156,7 +159,7 @@ test('console lists Magpie models and connects the agent in one click', async (t
     method: 'POST', path: '/api/agent/connect', headers: {...headers, 'content-type': 'application/json'},
     body: JSON.stringify({model: 'group/opus'})
   })).body);
-  assert.equal(connected.ok, true);
+  assert.equal(connected.ok, true, JSON.stringify(connected));
   assert.equal(connected.overview.connection.model, 'group/opus');
   assert.equal(connected.overview.engine.alive, true);
 

@@ -11,15 +11,16 @@ const manifest=JSON.parse(fs.readFileSync(path.join(source,'package.json'),'utf8
 const command=process.argv[2]||'setup';
 const p=paths(os.homedir());
 try {
-  if(command==='--help'||command==='-h') console.log(`Usage: bash setup.command [setup|status|uninstall|--version]\nsetup: install/update the paired plugin and service.\nmacOS uses a LaunchAgent; Windows uses a Startup-folder launcher (no administrator rights needed); ${platform.platform === 'linux' ? 'Linux can run the control console only' : platform.platform + ' is supported'}.`);
+  if(command==='--help'||command==='-h') console.log(`Usage: bash setup.command [setup|status|uninstall|--version]\nsetup: install/update the paired plugin and service.\nmacOS uses a LaunchAgent; Windows uses a Startup-folder launcher (no administrator rights needed); Linux uses a systemd user unit and falls back to a detached supervisor when no user manager is reachable.`);
   else if(command==='--version') console.log(manifest.version);
   else if(command==='status') {
     console.log(fs.existsSync(path.join(p.root,'status.json'))?fs.readFileSync(path.join(p.root,'status.json'),'utf8'):'未安装或尚未运行');
   } else {
     if(!['setup','uninstall'].includes(command)) throw new Error('未知命令；使用 --help 查看用法');
-    if(!platform.IS_DARWIN&&!platform.IS_WIN) throw new Error(`当前平台（${platform.platform}）暂不支持自动安装后台服务；控制台可在源码目录直接使用，原生引擎需要对应平台的构建产物`);
+    if(!platform.IS_DARWIN&&!platform.IS_WIN&&!platform.IS_LINUX) throw new Error(`当前平台（${platform.platform}）暂不支持自动安装后台服务；控制台可在源码目录直接使用，原生引擎需要对应平台的构建产物`);
     if(platform.IS_DARWIN&&process.arch!=='arm64') throw new Error('Apple Silicon 发布物仅包含 arm64 原生引擎；Intel Mac 需另行构建 x64 版本后再安装');
     if(platform.IS_WIN&&!['x64','arm64'].includes(process.arch)) throw new Error(`当前发布物仅包含 Windows x64 原生引擎，无法在 ${process.arch} 上运行`);
+    if(platform.IS_LINUX&&!['x64','arm64'].includes(process.arch)) throw new Error(`Linux 发布物仅包含 x64/arm64 原生引擎，无法在 ${process.arch} 上运行`);
     const domain=platform.IS_DARWIN?`gui/${process.getuid()}`:'';
     const magpie=platform.current.magpieExecutable();
     const magpieReady=!!magpie&&fs.existsSync(magpie);
@@ -35,6 +36,14 @@ try {
         if(platform.IS_WIN) {
           const autostart=p.autostart||platform.current.autostartEntry(p.home);
           if(autostart&&fs.existsSync(autostart)) fs.unlinkSync(autostart);
+        }
+        if(platform.IS_LINUX) {
+          const unit=p.systemdUnit||platform.current.systemdUnit(p.home);
+          if(unit&&fs.existsSync(unit)) {
+            fs.unlinkSync(unit);
+            const systemctl=platform.current.systemctl();
+            if(systemctl) run(systemctl,['--user','daemon-reload'],{optional:true,timeout:30000});
+          }
         }
         if(magpieReady) run(magpie,['plugin','rm',p.target],{optional:true});
         if(p.plist&&fs.existsSync(p.plist)) fs.unlinkSync(p.plist);
@@ -82,10 +91,10 @@ try {
           else console.log(`未找到 Magpie 可执行文件，请从 Magpie 插件页手动添加：${p.target}`);
         }
         await activate(p,release,domain);
-        // Windows stages the host runtime (~100 MB) on every start; keeping
-        // only the active release stops a handful of clicks from filling the
-        // disk. Other platforms keep their historical layout.
-        if(platform.IS_WIN) pruneReleases(p,release);
+        // Windows and Linux stage the host runtime (~100 MB) on every start;
+        // keeping only the active release stops a handful of clicks from
+        // filling the disk. macOS keeps its historical layout.
+        if(platform.IS_WIN||platform.IS_LINUX) pruneReleases(p,release);
         atomic(path.join(p.root,'installation.json'),JSON.stringify({version:manifest.version,release,source,installed:new Date().toISOString()},null,2));
         console.log(`已安装 v${manifest.version}。在 Magpie → Agents 选择 Cursor · Magpie Bridge 和模型；首次连接后重启 Cursor。`);
       }

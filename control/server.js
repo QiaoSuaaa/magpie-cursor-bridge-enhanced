@@ -31,8 +31,8 @@ export function paths(repoRoot) {
   const layout = platform.pathsFor(home);
   const root = layout.config;
   const share = layout.share;
-  // Magpie may write the agent connection to a different file on Windows;
-  // `connections` lists the same candidates the supervisor reads.
+  // Magpie may write the agent connection to a different file on Windows or
+  // Linux; `connections` lists the same candidates the supervisor reads.
   const connections = platform.current.connectionFiles(home);
   return {
     home,
@@ -43,6 +43,7 @@ export function paths(repoRoot) {
     databaseWal: path.join(root, 'data/bridge.db-wal'),
     databaseShm: path.join(root, 'data/bridge.db-shm'),
     plist: layout.plist,
+    systemdUnit: layout.systemdUnit || null,
     autostart: layout.autostart || null,
     status: path.join(root, 'status.json'),
     installation: path.join(root, 'installation.json'),
@@ -127,6 +128,20 @@ async function launchAgentState(repoRoot) {
     const p = paths(repoRoot);
     const pid = readPid(p.supervisorPid);
     const registered = !!p.autostart && fs.existsSync(p.autostart);
+    return {
+      registered,
+      state: pid ? (alive(pid) ? 'running' : 'stopped') : (registered ? 'ready' : null),
+      pid,
+      supported: true
+    };
+  }
+  if (platform.IS_LINUX) {
+    // A systemd unit and the detached fallback both write supervisor.lock, so
+    // the pid answers "is it running" without shelling out on every poll. The
+    // unit file answers "will it come back at login".
+    const p = paths(repoRoot);
+    const pid = readPid(p.supervisorPid);
+    const registered = !!p.systemdUnit && fs.existsSync(p.systemdUnit);
     return {
       registered,
       state: pid ? (alive(pid) ? 'running' : 'stopped') : (registered ? 'ready' : null),
@@ -265,6 +280,7 @@ async function overview(repoRoot, port) {
       configDir: p.root,
       installDir: p.share,
       plist: p.plist,
+      systemdUnit: p.systemdUnit,
       repo: p.repo,
       setup: p.setup
     },
@@ -304,11 +320,12 @@ function capture(child, resolve) {
 
 function installerCommand(repoRoot, action) {
   const p = paths(repoRoot);
-  if (platform.IS_DARWIN) {
+  if (!platform.IS_WIN) {
+    // macOS and Linux share setup.command, which resolves Magpie's own Bun
+    // runtime; Windows has no bash and runs install.js through the host.
     const bash = platform.current.bash() || '/bin/bash';
     return {command: bash, args: [p.setup, action]};
   }
-  // Windows/Linux run the installer with the host runtime instead of bash.
   return {command: process.execPath, args: [path.join(repoRoot, 'install.js'), action]};
 }
 
@@ -375,6 +392,9 @@ async function stopBridge(repoRoot) {
   const p = paths(repoRoot);
   if (platform.IS_WIN) {
     await run('schtasks', ['/End', '/TN', platform.serviceName], {timeout: 15000});
+  } else if (platform.IS_LINUX) {
+    const systemctl = platform.current.systemctl();
+    if (systemctl) await run(systemctl, ['--user', 'stop', LABEL], {timeout: 30000});
   } else if (platform.serviceSupported) {
     await run('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`], {timeout: 15000});
   }

@@ -1,0 +1,105 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index d6d8b60..d0c7c0a 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1221,6 +1221,7 @@ dependencies = [
+  "image",
+  "include_dir",
+  "json5",
++ "openssl-sys",
+  "parking_lot",
+  "pem",
+  "prost",
+diff --git a/server/Cargo.toml b/server/Cargo.toml
+index 7f1f7f0..590994c 100644
+--- a/server/Cargo.toml
++++ b/server/Cargo.toml
+@@ -34,6 +34,10 @@ parking_lot = "0.12"
+ pem = "3"
+ prost = "0.13"
+ prost-types = "0.13"
++# Linux builds ship one binary per architecture, including a cross-compiled
++# arm64 from an amd64 container. Linking a vendored OpenSSL is what makes that
++# cross-build possible, and it removes the target's libssl version dependency.
++openssl-sys = { version = "0.9", features = ["vendored"] }
+ reqwest = { version = "0.12", default-features = false, features = ["blocking", "brotli", "deflate", "gzip", "json", "native-tls", "socks", "stream", "system-proxy", "zstd"] }
+ regex = "1"
+ rcgen = { version = "0.14", features = ["aws_lc_rs", "pem", "x509-parser"] }
+diff --git a/server/src/local_app/ca/mod.rs b/server/src/local_app/ca/mod.rs
+index d9816b8..2455d19 100644
+--- a/server/src/local_app/ca/mod.rs
++++ b/server/src/local_app/ca/mod.rs
+@@ -210,7 +210,72 @@ fn is_installed(cert: &str) -> Result<bool> {
+     windows::is_installed(cert)
+ }
+ 
+-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
++#[cfg(target_os = "linux")]
++fn is_installed(cert: &str) -> Result<bool> {
++    // A system-wide anchor is the strongest signal and keeps the historical
++    // behaviour for users who already ran update-ca-certificates.
++    if let Ok(installed) = fs::read_to_string(linux_anchor_file()) {
++        if installed.trim() == cert.trim() {
++            return Ok(true);
++        }
++    }
++    // Cursor is an Electron app and reads extra runtime arguments from
++    // <config-home>/Cursor/argv.json. The installer points
++    // `certificate-authority` at this CA, which needs no root.
++    for argv_file in linux_cursor_argv_files() {
++        if let Ok(content) = fs::read_to_string(&argv_file) {
++            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
++                if let Some(path) = value.get("certificate-authority").and_then(|value| value.as_str()) {
++                    if fs::read_to_string(path)
++                        .map(|text| text.trim() == cert.trim())
++                        .unwrap_or(false)
++                    {
++                        return Ok(true);
++                    }
++                }
++            }
++        }
++    }
++    // Chromium also trusts the per-user NSS database. The installer records a
++    // fingerprint once `certutil -A` succeeds, so startup never shells out.
++    if let Some(data_dir) = std::env::var_os("CURSOR_BYOK_DATA_DIR").map(PathBuf::from) {
++        if let Ok(content) = fs::read_to_string(data_dir.join("ca/trusted.json")) {
++            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
++                let digest = value.get("sha256").and_then(|value| value.as_str()).unwrap_or_default();
++                if !digest.is_empty() && digest.eq_ignore_ascii_case(&cert_sha256(cert.trim())) {
++                    return Ok(true);
++                }
++            }
++        }
++    }
++    Ok(false)
++}
++
++#[cfg(target_os = "linux")]
++fn cert_sha256(cert: &str) -> String {
++    use sha2::{Digest, Sha256};
++    hex::encode(Sha256::digest(cert.as_bytes()))
++}
++
++#[cfg(target_os = "linux")]
++fn linux_cursor_argv_files() -> Vec<PathBuf> {
++    // A systemd user service may not carry XDG_CONFIG_HOME even though the
++    // installer had it, so both the XDG location and the historical
++    // ~/.config/Cursor/argv.json stay readable.
++    let mut files = Vec::new();
++    if let Some(config) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
++        files.push(config.join("Cursor").join("argv.json"));
++    }
++    if let Some(home) = dirs::home_dir() {
++        let fallback = home.join(".config").join("Cursor").join("argv.json");
++        if !files.contains(&fallback) {
++            files.push(fallback);
++        }
++    }
++    files
++}
++
++#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+ fn is_installed(cert: &str) -> Result<bool> {
+     match fs::read_to_string(linux_anchor_file()) {
+         Ok(installed) => Ok(installed.trim() == cert.trim()),

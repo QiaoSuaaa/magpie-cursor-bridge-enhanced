@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import {
   pathsFor,
+  systemdUnitFor,
+  enginePathFor,
   magpieConfigDirFor,
   connectionFilesFor,
   cursorSettingsFor,
+  cursorArgvFor,
+  nssDatabaseFor,
   cursorDirFor,
   sqlite3For,
   bashFor
@@ -25,9 +29,12 @@ test('paths follow XDG on linux', () => {
   assert.equal(layout.config, '/xdg/c/magpie-cursor-bridge');
   assert.equal(layout.share, '/xdg/d/magpie-cursor-bridge');
   assert.equal(layout.plist, null);
+  assert.equal(layout.systemdUnit, '/xdg/c/systemd/user/local.magpie.cursor-bridge.service');
+  assert.equal(layout.autostart, layout.systemdUnit);
   const fallback = pathsFor('/home/u', 'linux', {});
   assert.equal(fallback.config, path.posix.join('/home/u', '.config', 'magpie-cursor-bridge'));
   assert.equal(fallback.share, path.posix.join('/home/u', '.local', 'share', 'magpie-cursor-bridge'));
+  assert.equal(fallback.systemdUnit, path.posix.join('/home/u', '.config', 'systemd', 'user', 'local.magpie.cursor-bridge.service'));
 });
 
 test('paths follow APPDATA on windows', () => {
@@ -56,12 +63,34 @@ test('magpie config directory follows each platform', () => {
   );
 });
 
-test('windows autostart uses the per-user Startup folder', () => {
-  assert.equal(pathsFor('/home/u', 'linux', {}).autostart, null);
+test('autostart follows each platform service manager', () => {
+  // Linux uses a systemd user unit as both the runtime definition and the
+  // login entry; macOS keeps its LaunchAgent plist.
+  assert.equal(
+    pathsFor('/home/u', 'linux', {}).autostart,
+    path.posix.join('/home/u', '.config', 'systemd', 'user', 'local.magpie.cursor-bridge.service')
+  );
   assert.equal(
     pathsFor('/Users/u', 'darwin', {}).autostart,
     path.posix.join('/Users/u', 'Library', 'LaunchAgents', 'local.magpie.cursor-bridge.plist')
   );
+});
+
+test('linux engine payload is per-architecture and other platforms keep their layout', () => {
+  assert.equal(enginePathFor('/pkg', 'linux', 'x64'), '/pkg/bin/linux-x64/cursor-magpie-bridge');
+  assert.equal(enginePathFor('/pkg', 'linux', 'arm64'), '/pkg/bin/linux-arm64/cursor-magpie-bridge');
+  assert.equal(enginePathFor('/pkg', 'darwin'), '/pkg/bin/cursor-magpie-bridge');
+  assert.equal(enginePathFor('/pkg', 'win32'), win.join('/pkg', 'bin', 'win32-x64', 'cursor-magpie-bridge.exe'));
+  assert.equal(systemdUnitFor('/home/u', 'linux', {XDG_CONFIG_HOME: '/xdg/c'}), '/xdg/c/systemd/user/local.magpie.cursor-bridge.service');
+  assert.equal(systemdUnitFor('/Users/u', 'darwin', {}), null);
+});
+
+test('linux certificate trust lives entirely in the user profile', () => {
+  assert.equal(cursorArgvFor('/home/u', 'linux', {}), path.posix.join('/home/u', '.config', 'Cursor', 'argv.json'));
+  assert.equal(cursorArgvFor('/home/u', 'linux', {XDG_CONFIG_HOME: '/xdg/c'}), '/xdg/c/Cursor/argv.json');
+  assert.equal(cursorArgvFor('/Users/u', 'darwin', {}), null);
+  assert.equal(nssDatabaseFor('/home/u', 'linux'), path.posix.join('/home/u', '.pki', 'nssdb'));
+  assert.equal(nssDatabaseFor('/Users/u', 'darwin'), null);
 });
 
 test('windows connection lookup also reads the agent sandbox fallback', () => {
@@ -75,9 +104,15 @@ test('windows connection lookup also reads the agent sandbox fallback', () => {
     connectionFilesFor('/Users/u', 'darwin', {}),
     [path.posix.join('/Users/u', '.config', 'magpie-cursor-bridge', 'connection.json')]
   );
+  // Magpie's sandbox always expands ~ and writes under ~/.config, so that
+  // historical path wins; XDG is only a fallback for a moved profile.
   assert.deepEqual(
     connectionFilesFor('/home/u', 'linux', {XDG_CONFIG_HOME: '/xdg/c'}),
-    ['/xdg/c/magpie-cursor-bridge/connection.json']
+    ['/home/u/.config/magpie-cursor-bridge/connection.json', '/xdg/c/magpie-cursor-bridge/connection.json']
+  );
+  assert.deepEqual(
+    connectionFilesFor('/home/u', 'linux', {}),
+    ['/home/u/.config/magpie-cursor-bridge/connection.json']
   );
 });
 
