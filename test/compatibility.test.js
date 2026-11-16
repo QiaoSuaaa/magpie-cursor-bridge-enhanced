@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {cursorCompatibility, CURSOR_TESTED} from '../lib/compatibility.js';
+import {cursorCompatibility, compareVersions, CURSOR_TESTED} from '../lib/compatibility.js';
 
 test('cursor versions inside the tested range are marked tested', () => {
   for (const version of ['3.28.0', '3.28.7', '3.30.8']) {
@@ -21,6 +21,14 @@ test('versions outside the range are flagged with direction', () => {
   assert.equal(newer.status, 'newer');
   assert.equal(newer.tested, false);
   assert.match(newer.hint, /高于已实测范围/);
+});
+
+test('version comparison orders releases', () => {
+  assert.ok(compareVersions('0.2.28', '0.2.27') > 0);
+  assert.ok(compareVersions('0.2.27', '0.2.28') < 0);
+  assert.equal(compareVersions('0.2.27', '0.2.27'), 0);
+  assert.equal(compareVersions('1.10.0', '1.9.9'), 1);
+  assert.equal(compareVersions('bad', '0.2.27'), 0);
 });
 
 test('missing or malformed versions are unknown', () => {

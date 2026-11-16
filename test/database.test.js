@@ -7,7 +7,7 @@ import path from 'node:path';
 import platform from '../lib/platform.js';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {readDatabase, cleanDatabase, pruneDatabase} from '../control/database.js';
+import {readDatabase, readRecentCalls, cleanDatabase, pruneDatabase} from '../control/database.js';
 import {createControlServer} from '../control/server.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -65,7 +65,7 @@ CREATE TABLE tool_rounds(round_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, base_c
 CREATE TABLE tool_round_calls(round_id TEXT NOT NULL, call_index INTEGER NOT NULL, call_id TEXT NOT NULL, model_call_id TEXT NOT NULL, arguments_json TEXT NOT NULL, status TEXT NOT NULL, result_content TEXT, result_is_error INTEGER, committed_checkpoint_id INTEGER, completed_at_ms INTEGER, argument_error TEXT, PRIMARY KEY(round_id, call_index), UNIQUE(round_id, call_id), FOREIGN KEY(round_id) REFERENCES tool_rounds(round_id), FOREIGN KEY(committed_checkpoint_id) REFERENCES conversation_checkpoints(checkpoint_id));
 CREATE TABLE blobs(blob_id BLOB PRIMARY KEY, data BLOB NOT NULL, created_at_ms INTEGER NOT NULL);
 CREATE TABLE blob_edges(parent_blob_id BLOB NOT NULL, child_blob_id BLOB NOT NULL, field_name TEXT NOT NULL, PRIMARY KEY(parent_blob_id, child_blob_id, field_name), FOREIGN KEY(parent_blob_id) REFERENCES blobs(blob_id), FOREIGN KEY(child_blob_id) REFERENCES blobs(blob_id));
-CREATE TABLE llm_calls(call_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, conversation_id TEXT NOT NULL, status TEXT NOT NULL, finish_reason TEXT, usage_json TEXT, error_message TEXT, created_at_ms INTEGER NOT NULL);
+CREATE TABLE llm_calls(call_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, conversation_id TEXT NOT NULL, provider_call_index INTEGER NOT NULL DEFAULT 0, model_hash TEXT, provider_type TEXT NOT NULL DEFAULT '', provider_url TEXT NOT NULL DEFAULT '', request_type TEXT NOT NULL DEFAULT '', request_url TEXT NOT NULL DEFAULT '', model_id TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, finish_reason TEXT, created_at_ms INTEGER NOT NULL, request_started_at_ms INTEGER, response_headers_at_ms INTEGER, first_event_at_ms INTEGER, first_text_at_ms INTEGER, finished_at_ms INTEGER, queue_ms INTEGER, ttfb_ms INTEGER, ttft_ms INTEGER, duration_ms INTEGER, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER, reasoning_tokens INTEGER, usage_json TEXT, message_count INTEGER NOT NULL DEFAULT 0, tool_count INTEGER NOT NULL DEFAULT 0, request_bytes INTEGER, response_bytes INTEGER NOT NULL DEFAULT 0, stream_event_count INTEGER NOT NULL DEFAULT 0, http_status INTEGER, error_kind TEXT, error_message TEXT, detailed INTEGER NOT NULL DEFAULT 0, reasoning_effort TEXT, fast INTEGER NOT NULL DEFAULT 0, first_valid_response_at_ms INTEGER, ttfr_ms INTEGER);
 CREATE TABLE llm_call_requests(call_id TEXT PRIMARY KEY, headers_json TEXT NOT NULL, body_json TEXT NOT NULL, byte_count INTEGER NOT NULL, FOREIGN KEY(call_id) REFERENCES llm_calls(call_id) ON DELETE CASCADE);
 CREATE TABLE cursor_run_traces(request_id TEXT PRIMARY KEY, status TEXT NOT NULL, received_at_ms INTEGER NOT NULL);
 CREATE TABLE cursor_run_trace_artifacts(request_id TEXT NOT NULL, seq INTEGER NOT NULL, artifact_type TEXT NOT NULL, source TEXT NOT NULL, blob_id BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', created_at_ms INTEGER NOT NULL, PRIMARY KEY(request_id, seq), FOREIGN KEY(request_id) REFERENCES cursor_run_traces(request_id) ON DELETE CASCADE, FOREIGN KEY(blob_id) REFERENCES blobs(blob_id));
@@ -92,8 +92,8 @@ INSERT INTO tool_round_calls(round_id, call_index, call_id, model_call_id, argum
 INSERT INTO blobs VALUES (X'${BLOB_A}', 'shared content', ${old});
 INSERT INTO blobs VALUES (X'${BLOB_B}', 'child content', ${now});
 INSERT INTO blob_edges VALUES (X'${BLOB_A}', X'${BLOB_B}', 'root.child');
-INSERT INTO llm_calls(call_id, run_id, conversation_id, status, usage_json, created_at_ms) VALUES ('call-old', 'run-old', 'conv-old', 'completed', '{"total":10}', ${old});
-INSERT INTO llm_calls(call_id, run_id, conversation_id, status, usage_json, created_at_ms) VALUES ('call-new', 'run-new', 'conv-new', 'completed', '{"total":20}', ${now});
+INSERT INTO llm_calls(call_id, run_id, conversation_id, model_id, display_name, provider_type, request_type, status, finish_reason, usage_json, created_at_ms, duration_ms, ttft_ms, input_tokens, output_tokens, total_tokens, cache_read_tokens, reasoning_tokens, http_status, error_kind, error_message) VALUES ('call-old', 'run-old', 'conv-old', 'group/opus', 'Opus', 'chat', 'chat_completions', 'completed', 'stop', '{"total":10}', ${old}, 1200, 300, 10, 5, 15, 4, 1, 200, NULL, '');
+INSERT INTO llm_calls(call_id, run_id, conversation_id, model_id, display_name, provider_type, request_type, status, finish_reason, usage_json, created_at_ms, duration_ms, ttft_ms, input_tokens, output_tokens, total_tokens, cache_read_tokens, reasoning_tokens, http_status, error_kind, error_message) VALUES ('call-new', 'run-new', 'conv-new', 'group/sonnet', 'Sonnet', 'chat', 'chat_completions', 'failed', NULL, '{"total":20}', ${now}, 800, 200, 20, 0, 20, 2, 0, 401, 'gateway', 'HTTP 401 api_key=fake-secret');
 INSERT INTO llm_call_requests VALUES ('call-old', '{}', '{}', 128);
 INSERT INTO cursor_run_traces VALUES ('trace-1', 'completed', ${now});
 INSERT INTO cursor_run_trace_artifacts VALUES ('trace-1', 0, 'request', 'cursor_client', X'${BLOB_B}', '{}', ${now});
@@ -127,6 +127,25 @@ test('database overview groups tables and reports content sizes', {skip: SKIP}, 
   assert.equal(deepCategories.content.measured, true);
   assert.ok(deep.totals.bytes > data.totals.bytes, 'deep pass adds blob body bytes');
   assert.equal(deep.totals.rows, data.totals.rows);
+});
+
+test('recent calls expose model, latency, tokens and redacted errors', {skip: SKIP}, async (t) => {
+  const {dbPath} = fakeDatabase(t);
+  const all = await readRecentCalls(dbPath, {limit: 10});
+  assert.equal(all.exists, true);
+  assert.deepEqual(all.calls.map((call) => call.id), ['call-new', 'call-old']);
+  assert.equal(all.calls[0].model, 'Sonnet');
+  assert.equal(all.calls[0].status, 'failed');
+  assert.equal(all.calls[0].durationMs, 800);
+  assert.equal(all.calls[0].totalTokens, 20);
+  assert.equal(all.calls[0].httpStatus, 401);
+  assert.match(all.calls[0].error, /HTTP 401/);
+  assert.doesNotMatch(all.calls[0].error, /fake-secret/);
+  assert.match(all.calls[0].error, /\[redacted\]/);
+  const errors = await readRecentCalls(dbPath, {errorsOnly: true});
+  assert.deepEqual(errors.calls.map((call) => call.id), ['call-new']);
+  const missing = await readRecentCalls(path.join(path.dirname(dbPath), 'missing.db'));
+  assert.equal(missing.exists, false);
 });
 
 test('session cleanup removes old conversations and keeps shared blobs', {skip: SKIP}, async (t) => {
@@ -271,6 +290,12 @@ test('control console exposes database stats and cleanup routes', {skip: SKIP}, 
   assert.ok(database.categories.some((entry) => entry.id === 'sessions'));
   assert.ok(database.file.db > 0);
   assert.ok(fs.existsSync(dbPath));
+
+  const calls = JSON.parse((await call('GET', '/api/calls?limit=10')).body);
+  assert.equal(calls.ok, true);
+  assert.equal(calls.calls.length, 2);
+  assert.equal(calls.calls[0].model, 'Sonnet');
+  assert.doesNotMatch(calls.calls[0].error, /fake-secret/);
 
   const bad = await call('POST', '/api/database/cleanup', JSON.stringify({scope: 'nope'}));
   assert.equal(bad.status, 400);

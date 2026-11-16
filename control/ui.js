@@ -26,6 +26,7 @@
   let lastOverview = null;
   let dbData = null;
   let dbLoading = false;
+  let updateCommand = '';
   let agentModels = {at: 0, models: null};
   let pendingClean = null;
   let cleaning = false;
@@ -114,7 +115,7 @@
   }
 
   function setBusy(value) {
-    for (const id of ['start', 'status', 'restart', 'agentConnect', 'saveModelNames']) {
+    for (const id of ['start', 'status', 'restart', 'agentConnect', 'saveModelNames', 'updateRun']) {
       if ($(id)) $(id).disabled = value;
     }
     for (const button of document.querySelectorAll('.row-save')) button.disabled = value;
@@ -927,6 +928,38 @@
     }
   }
 
+  async function loadCalls() {
+    const limit = $('callsLimit').value;
+    const errors = $('callsErrors').checked ? '1' : '0';
+    $('callsState').textContent = '读取中…';
+    try {
+      const data = await api(`/api/calls?limit=${encodeURIComponent(limit)}&errors=${errors}`);
+      if (!data.exists) {
+        $('callsState').textContent = '未创建';
+        $('callsHint').textContent = '数据库尚未创建；轻量模式下没有可读取的调用记录。';
+        $('callsBody').replaceChildren();
+        return;
+      }
+      $('callsState').textContent = `${numberText(data.calls.length)} 条${data.truncated ? ' · 已有更多' : ''}`;
+      $('callsHint').textContent = '时间、模型、状态、耗时、token 与错误摘要；错误内容已脱敏。';
+      const rows = data.calls.map((call) => [
+        {text: timeText(call.created), mono: true},
+        {text: call.model, title: call.id},
+        {text: call.finish ? `${call.status} / ${call.finish}` : call.status},
+        call.durationMs ? `${numberText(call.durationMs)} ms` : '—',
+        `${numberText(call.inputTokens)} / ${numberText(call.outputTokens)} / ${numberText(call.totalTokens)}`,
+        {text: call.error ? shorten(call.error, 90) : '—', title: call.error || ''}
+      ]);
+      $('callsBody').replaceChildren(rows.length
+        ? dbTable(['时间', '模型', '状态', '耗时', 'token（入/出/总）', '错误'], rows)
+        : document.createTextNode('暂无调用记录'));
+    } catch (error) {
+      $('callsState').textContent = '读取失败';
+      $('callsHint').textContent = `读取失败：${error.message}`;
+      $('callsBody').replaceChildren();
+    }
+  }
+
   function renderDiagHints(hints) {
     $('diagHints').replaceChildren(...(hints || []).map((hint) => {
       const node = document.createElement('div');
@@ -957,6 +990,78 @@
       $('diagState').textContent = '读取失败';
       $('diagOutput').hidden = false;
       $('diagOutput').textContent = `读取失败：${error.message}`;
+    }
+  }
+
+  async function checkUpdate() {
+    const button = $('updateCheck');
+    button.disabled = true;
+    $('updateState').textContent = '正在检查…';
+    try {
+      const data = await api('/api/update');
+      if (!data.ok) {
+        $('updateState').textContent = '检查失败';
+        notice(`检查更新失败：${data.error}`, 'error');
+        return;
+      }
+      if (!data.updateAvailable) {
+        $('updateCard').hidden = true;
+        notice(`已是最新版本 v${data.current}`, 'ok');
+        return;
+      }
+      updateCommand = data.command || '';
+      $('updateCard').hidden = false;
+      $('updateVersion').textContent = `v${data.current} → v${data.latest}`;
+      $('updateHint').textContent = data.canUpgrade
+        ? `发现新版本 v${data.latest}；当前为干净源码安装，可直接升级并重启后台。`
+        : `发现新版本 v${data.latest}；当前安装方式需手动升级${updateCommand ? `：${updateCommand}` : ''}`;
+      $('updateRun').hidden = !data.canUpgrade;
+      $('updateRun').dataset.version = data.latest;
+      $('updateCopy').hidden = !updateCommand;
+      $('updateLink').hidden = !data.url;
+      if (data.url) $('updateLink').href = data.url;
+      $('updateState').textContent = '';
+      notice(`发现新版本 v${data.latest}`, 'warning');
+    } catch (error) {
+      $('updateState').textContent = '检查失败';
+      notice(`检查更新失败：${error.message}`, 'error');
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function copyUpdateCommand() {
+    if (!updateCommand) return;
+    try {
+      await navigator.clipboard.writeText(updateCommand);
+      notice('升级命令已复制', 'ok');
+    } catch {
+      notice(`请手动复制：${updateCommand}`, 'warning');
+    }
+  }
+
+  async function runUpdate() {
+    const target = $('updateRun').dataset.version;
+    if (!target) return;
+    if (!confirm(`升级到 v${target} 并重启后台？当前对话可能中断一次。`)) return;
+    busy = '升级';
+    setBusy(true);
+    $('updateState').textContent = '正在升级…';
+    try {
+      const data = await api('/api/update', {method: 'POST', body: {confirm: true}});
+      if (!data.updated) {
+        notice(data.message || '已是最新版本', 'ok');
+        return;
+      }
+      $('updateState').textContent = '升级完成';
+      notice(`已升级到 v${data.to}，后台已重启；请刷新页面或重启 Magpie 加载新控制台。`, 'ok');
+      setTimeout(() => location.reload(), 2500);
+    } catch (error) {
+      $('updateState').textContent = '升级失败';
+      notice(`升级失败：${error.message}`, 'error');
+    } finally {
+      busy = null;
+      setBusy(false);
     }
   }
 
@@ -1003,6 +1108,9 @@
     }
     $('agentConnect').addEventListener('click', connectAgent);
     $('refresh').addEventListener('click', () => loadStatus());
+    $('updateCheck').addEventListener('click', checkUpdate);
+    $('updateRun').addEventListener('click', runUpdate);
+    $('updateCopy').addEventListener('click', copyUpdateCommand);
     $('reload').addEventListener('click', () => location.reload());
     $('dbCard').addEventListener('toggle', () => {
       if ($('dbCard').open && !dbData && !cleaning) loadDatabase();
@@ -1010,6 +1118,12 @@
     });
     $('dbRefresh').addEventListener('click', () => loadDatabase({force: true}));
     $('dbDeep').addEventListener('click', () => loadDatabase({force: true, deep: true}));
+    $('callsCard').addEventListener('toggle', () => {
+      if ($('callsCard').open) loadCalls();
+    });
+    $('callsRefresh').addEventListener('click', loadCalls);
+    $('callsErrors').addEventListener('change', loadCalls);
+    $('callsLimit').addEventListener('change', loadCalls);
     $('diagCard').addEventListener('toggle', () => {
       if ($('diagCard').open && !$('diagOutput').dataset.loaded) {
         $('diagOutput').dataset.loaded = '1';

@@ -2,11 +2,11 @@
 
 让普通版 Cursor 使用 **Magpie** 中配置的模型与路由组：模型菜单只列出 Magpie 目录，隐藏 Cursor Auto 入口，保留 Cursor 原有登录与 Tab 补全。
 
-- **当前版本**：`0.2.27`（本地增强版）
+- **当前版本**：`0.2.28`（本地增强版）
 - **适配范围**：Cursor 3.28.x ～ 3.30.8（已实测）；控制台会读取本机实际版本，超出范围时标记「未验证」并建议先运行自检
 - **平台支持**：macOS（Apple Silicon 与 Intel x64，LaunchAgent 守护；Intel 引擎为 `bin/darwin-x64/cursor-magpie-bridge`）、Windows x64（启动文件夹守护，`bin/win32-x64/cursor-magpie-bridge.exe`，无需管理员权限即可常驻；首次信任证书需一次管理员确认）与 Linux x64/arm64（systemd 用户单元守护，`bin/linux-<arch>/cursor-magpie-bridge`；证书写入 Cursor `argv.json` 与用户 NSS 库，无需 root；无 systemd 用户实例时回退为分离进程）
 - **与上游的关系**：基于 [nodlles/magpie-agent-cursor-bridge](https://github.com/nodlles/magpie-agent-cursor-bridge) `v0.2.2` 与本机 fork 增补，原生核心来自 [leookun/cursor-byok v1.0.1](https://github.com/leookun/cursor-byok/tree/v1.0.1)；Linux 适配参考 [Ice0828/magpie-agent-cursor-bridge-linux](https://github.com/Ice0828/magpie-agent-cursor-bridge-linux)
-- **本仓库定位**：公开增强版，GitHub topic 已标记 `magpie-plugin`；可从 Magpie 插件页安装 `github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.27`，也支持本机源码安装
+- **本仓库定位**：公开增强版，GitHub topic 已标记 `magpie-plugin`；可从 Magpie 插件页安装 `github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.28`，也支持本机源码安装
 - **变更记录**：[CHANGELOG.md](CHANGELOG.md)
 
 ---
@@ -63,6 +63,8 @@ Cursor 的 Agent / Composer 默认只认自家订阅与官方后端。通过 Mag
 | Cursor 版本探测与兼容提示 | ✅ 0.2.27 |
 | 分层自检（代理 / 证书 / 网关 / 模型） | ✅ 0.2.27 |
 | 模型隐藏 / 搜索 / 单模型测试 | ✅ 0.2.27 |
+| 最近调用与错误视图 | ✅ 0.2.28 |
+| 更新检查（干净源码安装可一键升级） | ✅ 0.2.28 |
 | Cursor 3.29+ 二进制协议编码 | ✅ 0.2.3 |
 | Cursor 3.27 本地循环开关回退 | ✅ 上游 0.2.2 |
 | Tab 补全 / 行内补全 | 沿用 Cursor 原路径 |
@@ -209,7 +211,7 @@ Cursor 请求里的 `requested_model.model_id` 是桥接生成的 `model_hash`�
 从 Magpie 插件页安装（推荐）——在 **Magpie → Plugins** 添加固定版本地址：
 
 ```text
-github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.27
+github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.28
 ```
 
 安装后在终端运行一次包内初始化：
@@ -229,7 +231,7 @@ bash setup.command
 
 1. 校验二进制摘要与版本配对（`integrity.json` 分别固定插件版本 `version` 与随包引擎版本 `engineVersion`，分平台摘要见 `platforms`）；
 2. 复用已有证书，或在首次安装时生成本机 CA 并完成平台信任：macOS 请求系统授权、Windows 加入本机 Root、Linux 写入 Cursor `argv.json` 并尽力导入用户 NSS 库；
-3. 把完整版本目录 stage 到 `releases/0.2.27-xxxxxx`；载荷、引擎与运行时都未变化时直接复用已有目录，各平台只保留当前激活的 release；
+3. 把完整版本目录 stage 到 `releases/0.2.28-xxxxxx`；载荷、引擎与运行时都未变化时直接复用已有目录，各平台只保留当前激活的 release；
 4. 把 `~/.local/share/magpie-cursor-bridge` 注册为本地 Magpie 插件；
 5. 停止旧后台、切换服务定义（LaunchAgent / 启动文件夹 / systemd 用户单元）、启动新后台。
 
@@ -292,6 +294,8 @@ Magpie 的代理卡片内部是内置 UI，插件无法把控件插进那张卡�
 - **模型显示名、顺序与隐藏**：控制台独立的「模型显示名」折叠卡片（默认收起，展开才读取模型目录）中，每个模型一行：拖动行首 `⋮⋮` 调整顺序、勾选「菜单」决定是否在 Cursor 中显示、填写显示名、行内「保存」只更新该行名称；「测试」向 Magpie 网关发送一条极短请求并显示延迟；顶部搜索框可按模型 ID 或名称过滤；底部「保存全部」一次保存名称、顺序与隐藏项。配置写入 `bridge-settings.json` 的 `modelNames`、`modelOrder` 与 `modelHidden`，只影响传给引擎的目录，模型 ID、路由、计费与连接语义不变；当前选中的模型即使被隐藏也始终保留，避免路由失效。保存后 supervisor 更新 `effective.json`，引擎热更新模型目录，约 2–4 秒生效。
 - **快捷入口**：配置目录、数据目录、诊断目录、`engine.log`、`supervisor.log`、`supervisor-error.log`、安装目录、插件目录。
 - **日志与诊断**：折叠卡片可读取三类日志的尾部（100–1000 行），按证书、端口、网关、协议、连接停滞、启动超时、代理改动归类并给出操作建议；「导出诊断包」把状态、设置、版本、平台、保留结果与脱敏日志写入 `data/diagnostics/diagnostics-<时间>.json`，并返回文件路径。
+- **最近调用**：折叠卡片读取 `llm_calls` 最近 25/50/100 条，显示时间、模型、状态、耗时、token（入/出/总）与错误摘要；可切换「只看错误」，错误内容脱敏；只读查询走 `created_at_ms` 索引，不扫描请求正文。
+- **版本更新**：控制台「检查更新」读取 GitHub latest Release，显示当前与最新版本；干净源码安装可「升级并重启」（`git fetch` + `--ff-only` 合并 tag + `setup.command`），其他安装方式显示 `magpie plugin update` 等手动命令。检查结果缓存 10 分钟；GitHub API 不可达时给出错误，不影响桥接运行。
 - **分层自检**：同卡片中的「运行自检」依次检查插件版本、Magpie 连接、引擎 PID、代理端口、MITM 证书链路、网关目录，以及可选的极短模型请求（默认勾选，可能计费）。结果以检查表显示并给出失败层；它覆盖到模型层，Cursor 的 Bidi/RunSSE 原生往返仍由构建侧的 `magpie_smoke` 示例覆盖。
 - **Cursor 版本**：控制台读取本机 Cursor 安装版本，与已实测范围 3.28.x–3.30.8 比较；超出范围显示「未验证」并提示先运行自检。
 
@@ -309,7 +313,7 @@ bash setup.command status    # 输出 status.json 原文
 
 ```json
 {
-  "version": "0.2.27",
+  "version": "0.2.28",
   "state": "connected",
   "mode": "lite",
   "engineMode": "lite",
@@ -369,7 +373,7 @@ bash setup.command uninstall
 | Windows 启动失败：引擎退出码 1 / `requires an already trusted CA` | 旧版安装器只写入了当前用户证书存储，随包引擎只认本机存储 | 升级到本版本后重新点「启动」；首次会弹出一次 UAC |
 | Windows 日志出现 `EADDRINUSE` 或 agent id 重复 | Magpie 插件列表登记了两份本插件 | 在 Magpie 插件页保留一份，移除 `%LOCALAPPDATA%\magpie-cursor-bridge` 或仓库路径的其余登记 |
 | Windows 控制台「后台服务」显示未加载 | 登录自启文件被删除，或从未完成「启动」 | 检查 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\local.magpie.cursor-bridge.vbs`，重新点「启动」 |
-| Intel Mac 提示缺少引擎 | 包内缺少 `bin/darwin-x64` 产物 | 使用 v0.2.27+ 版本；或在 Apple Silicon 上运行 `scripts/build-native-macos-x64.sh` 重新构建并更新 `integrity.json` |
+| Intel Mac 提示缺少引擎 | 包内缺少 `bin/darwin-x64` 产物 | 使用 v0.2.28+ 版本；或在 Apple Silicon 上运行 `scripts/build-native-macos-x64.sh` 重新构建并更新 `integrity.json` |
 
 ---
 
@@ -506,7 +510,7 @@ git -C /tmp/verify apply --check <项目目录>/source.patch
 node --test test/*.test.js
 ```
 
-覆盖：独立 CA 生成、版本配对与摘要、证书信任流程、release 复用与剪枝、release stage 不覆盖运行中版本、激活失败回退、代理设置恢复、配置校验、连接候选兜底、supervisor 状态机（首次连接、网关断线恢复、模式切换、目录热更新、外部改动暂停、引擎崩溃重启、在线保留策略）、数据库清理备份与 `quick_check`、在线保留策略、日志尾部/脱敏/错误归类、Cursor 版本兼容矩阵、分层自检、模型隐藏与单模型测试；Linux 额外覆盖 systemd 单元、argv.json 注释保留、NSS 导入与信任标记、无 systemd 回退。
+覆盖：独立 CA 生成、版本配对与摘要、证书信任流程、release 复用与剪枝、release stage 不覆盖运行中版本、激活失败回退、代理设置恢复、配置校验、连接候选兜底、supervisor 状态机（首次连接、网关断线恢复、模式切换、目录热更新、外部改动暂停、引擎崩溃重启、在线保留策略）、数据库清理备份与 `quick_check`、在线保留策略、日志尾部/脱敏/错误归类、Cursor 版本兼容矩阵、分层自检、模型隐藏与单模型测试、最近调用字段与错误脱敏、版本比较；Linux 额外覆盖 systemd 单元、argv.json 注释保留、NSS 导入与信任标记、无 systemd 回退。
 
 GitHub Actions 在 macOS、Ubuntu、Windows 三平台运行同一套语法检查与测试；Linux 额外安装 `sqlite3` 并校验 `source.patch` 与 `source-linux.patch` 可依次应用。
 
@@ -532,6 +536,8 @@ node test/manual-lifecycle.mjs
 | 看后台状态 | `bash setup.command status`（Windows：`node install.js status`），或 Magpie → Cursor · Magpie Bridge 行菜单「桥接控制台」 |
 | 看桥接诊断 | macOS/Linux：`~/.config/magpie-cursor-bridge/engine.log`；Windows：`%APPDATA%\magpie-cursor-bridge\engine.log`；控制台「日志与诊断」可直接读取尾部、查看错误归类，并把脱敏诊断包写入 `data/diagnostics/` |
 | 运行分层自检 | 控制台「日志与诊断」→「运行自检」；覆盖插件版本、Magpie 连接、引擎、代理端口、MITM 证书、网关目录与可选模型请求 |
+| 看最近调用 | 控制台「最近调用」卡片，或 `GET /api/calls?limit=25&errors=1`；来自 `llm_calls` 的模型、耗时、token 与脱敏错误摘要 |
+| 检查更新 | 控制台顶部「检查更新」；干净源码安装可直接升级并重启，其他安装方式按返回命令手动升级 |
 | 看 Linux 服务日志 | `journalctl --user -u local.magpie.cursor-bridge -f`，或 `~/.local/share/magpie-cursor-bridge/releases/<version>/supervisor.log` |
 | 看最近模型调用 | `sqlite3 data/bridge.db "SELECT ... FROM llm_calls ORDER BY created_at_ms DESC LIMIT 10"` |
 | 看 Agent 运行 | `data/bridge.db` 的 `runs`、`cursor_run_traces` |
@@ -548,7 +554,7 @@ node test/manual-lifecycle.mjs
 
 ### 5.1 差异总览
 
-| 项目 | 上游 0.2.2 | 增强版 0.2.27 | 机制 |
+| 项目 | 上游 0.2.2 | 增强版 0.2.28 | 机制 |
 |---|---|---|---|
 | Cursor 3.29+ / 3.30.8 | ❌ 30 秒后 “Connection stalled” | ✅ 正常对话 | 上行编码从 hex 文本改为原始 protobuf 字节 |
 | `BidiAppend` 载荷 | 只接受 `data`（tag 1，hex） | `data_binary`（tag 4）优先，`data` 兜底 | 同一消息的两种编码，共用一个解码器 |
@@ -557,7 +563,7 @@ node test/manual-lifecycle.mjs
 | Cursor 3.27 / 3.28.x | ✅ | ✅ | 公共路径未改动 |
 | 运行模式 | 仅文件库 | 默认 + 轻量（内存库） | 轻量模式不写 `bridge.db`，适合磁盘敏感或只做转发的场景 |
 | Multitask 后台子代理 | 完成后不接管，子代理停在 Stopped | 完成即唤醒父代理，状态回写 Success | 完成通知进入运行时，不再当作 unsupported action 丢弃 |
-| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.27 | 避免与上游 release 目录、摘要互相覆盖 |
+| 分发方式 / 版本 | GitHub 插件页 / 0.2.2 | 本机 fork / 0.2.28 | 避免与上游 release 目录、摘要互相覆盖 |
 
 ### 5.2 0.2.7：Multitask 后台子代理完成后的接管
 

@@ -7,9 +7,9 @@ import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, settingsFile} from '../lib/bridge-settings.js';
 import {atomic} from '../lib/settings.js';
-import {cursorCompatibility} from '../lib/compatibility.js';
+import {cursorCompatibility, compareVersions} from '../lib/compatibility.js';
 import {version} from '../version.js';
-import {readDatabase, cleanDatabase} from './database.js';
+import {readDatabase, readRecentCalls, cleanDatabase} from './database.js';
 import {tailFile, redact, classify} from './diagnostics.js';
 import {runSelfTest} from './selftest.js';
 import platform from '../lib/platform.js';
@@ -529,6 +529,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
   // one snapshot without making the panel feel stale.
   let overviewCache = {at: 0, data: null, pending: null};
   let settingsQueue = Promise.resolve();
+  let updateCache = {at: 0, data: null};
   function cachedOverview() {
     if (overviewCache.data && Date.now() - overviewCache.at < 2000) {
       return Promise.resolve(overviewCache.data);
@@ -577,6 +578,66 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
       hints: [...hints.values()],
       retention: readJson(p.retention)
     };
+  }
+
+  function repositorySlug() {
+    const manifest = readJson(path.join(repoRoot, 'package.json'));
+    const url = String(manifest?.repository?.url || '');
+    const match = /github\.com[/:]([^/]+)\/([^/.#?]+?)(?:\.git)?(?:#.*)?$/.exec(url);
+    return match ? `${match[1]}/${match[2]}` : null;
+  }
+
+  async function updateStatus({force = false} = {}) {
+    if (!force && updateCache.data && Date.now() - updateCache.at < 10 * 60 * 1000) return updateCache.data;
+    const slug = repositorySlug();
+    if (!slug) throw new Error('package.json 中没有可识别的 GitHub 仓库地址');
+    const response = await fetch(`https://api.github.com/repos/${slug}/releases/latest`, {
+      headers: {'accept': 'application/vnd.github+json', 'user-agent': `cursor-magpie-bridge/${version}`},
+      signal: AbortSignal.timeout(8000)
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(body?.message || `GitHub API HTTP ${response.status}`);
+    const latestTag = String(body?.tag_name || '');
+    const latest = latestTag.replace(/^v/, '');
+    if (!latest) throw new Error('GitHub Release 缺少版本号');
+    const p = paths(repoRoot);
+    const installation = readJson(p.installation);
+    const current = String(installation?.version || version);
+    const source = installation?.source || repoRoot;
+    // A one-click upgrade is only safe for a clean source checkout whose
+    // origin is this repository. Magpie-managed or edited installs get the
+    // exact command instead of a surprising rewrite.
+    const hasEntry = fs.existsSync(path.join(source, 'setup.command')) || fs.existsSync(path.join(source, 'install.js'));
+    const mode = hasEntry ? 'source' : 'unknown';
+    let canUpgrade = false;
+    let command = '';
+    if (mode === 'source' && fs.existsSync(path.join(source, '.git'))) {
+      const status = await run('git', ['-C', source, 'status', '--porcelain'], {timeout: 8000});
+      const origin = await run('git', ['-C', source, 'remote', 'get-url', 'origin'], {timeout: 8000});
+      const clean = status.ok && !status.stdout.trim();
+      const matches = origin.ok && String(origin.stdout).includes(slug);
+      canUpgrade = compareVersions(latest, current) > 0 && clean && matches;
+      const setup = platform.IS_WIN ? `node "${path.join(source, 'install.js')}" setup` : `bash "${path.join(source, 'setup.command')}"`;
+      command = `git -C "${source}" fetch --tags origin && git -C "${source}" merge --ff-only ${latestTag} && ${setup}`;
+    } else {
+      const magpie = platform.current.magpieExecutable();
+      command = magpie ? `${magpie} plugin update` : 'magpie plugin update';
+    }
+    const data = {
+      ok: true,
+      current,
+      latest,
+      latestTag,
+      updateAvailable: compareVersions(latest, current) > 0,
+      url: typeof body?.html_url === 'string' ? body.html_url : null,
+      name: typeof body?.name === 'string' ? body.name : `v${latest}`,
+      published: typeof body?.published_at === 'string' ? body.published_at : null,
+      mode,
+      canUpgrade,
+      command
+    };
+    updateCache = {at: Date.now(), data};
+    return data;
   }
 
   const server = http.createServer(async (req, res) => {
@@ -661,6 +722,17 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         settingsQueue = job.then(() => {}, () => {});
         const result = await job;
         return sendJson(res, result.status, result.body);
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/calls') {
+        const p = paths(repoRoot);
+        const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 25));
+        const errorsOnly = url.searchParams.get('errors') === '1';
+        try {
+          return sendJson(res, 200, {ok: true, ...(await readRecentCalls(p.database, {limit, errorsOnly}))});
+        } catch (error) {
+          return sendJson(res, 500, {ok: false, error: `读取调用记录失败：${error.message}`});
+        }
       }
 
       if (req.method === 'GET' && url.pathname === '/api/database') {
@@ -832,6 +904,52 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         const file = path.join(p.diagnostics, `diagnostics-${stamp}.json`);
         atomic(file, JSON.stringify(data, null, 2) + '\n');
         return sendJson(res, 200, {ok: true, file, generated: data.generated, hints: data.hints});
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/update') {
+        try {
+          return sendJson(res, 200, await updateStatus());
+        } catch (error) {
+          return sendJson(res, 200, {ok: false, error: String(error.message || error)});
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/update') {
+        const body = await readBody(req);
+        if (body.confirm !== true) return sendJson(res, 400, {ok: false, error: '升级需要显式确认'});
+        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
+        busy = '升级';
+        try {
+          const info = await updateStatus({force: true});
+          if (!info.updateAvailable) {
+            return sendJson(res, 200, {ok: true, updated: false, message: `已是最新版本 v${info.current}`});
+          }
+          if (!info.canUpgrade) {
+            return sendJson(res, 409, {ok: false, error: '当前安装方式不支持一键升级，请按提示命令手动升级', command: info.command});
+          }
+          const p = paths(repoRoot);
+          const installation = readJson(p.installation);
+          const source = installation?.source || repoRoot;
+          const fetched = await run('git', ['-C', source, 'fetch', '--tags', 'origin'], {timeout: 60000});
+          if (!fetched.ok) throw new Error(`git fetch 失败：${fetched.error || fetched.stderr || fetched.stdout}`);
+          const merged = await run('git', ['-C', source, 'merge', '--ff-only', info.latestTag], {timeout: 30000});
+          if (!merged.ok) throw new Error(`无法快进到 ${info.latestTag}：${merged.stderr || merged.stdout || merged.error}`);
+          const manifest = readJson(path.join(source, 'package.json'));
+          if (manifest?.version !== info.latest) {
+            throw new Error(`源码版本为 ${manifest?.version || '未知'}，不是 ${info.latest}`);
+          }
+          const setup = await runSetup(source);
+          updateCache = {at: 0, data: null};
+          log(`update: ${info.current} -> ${info.latest} setup=${setup.ok ? 'ok' : 'failed'}`);
+          if (!setup.ok) {
+            return sendJson(res, 500, {ok: false, error: `源码已更新到 ${info.latest}，但安装失败：${setup.error || '未知错误'}`, setup});
+          }
+          return sendJson(res, 200, {ok: true, updated: true, from: info.current, to: info.latest, setup});
+        } catch (error) {
+          return sendJson(res, 500, {ok: false, error: String(error.message || error)});
+        } finally {
+          busy = null;
+        }
       }
 
       if (req.method === 'POST' && url.pathname === '/api/action') {

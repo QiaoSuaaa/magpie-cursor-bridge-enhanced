@@ -3,6 +3,7 @@ import path from 'node:path';
 import {randomBytes} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import platform from '../lib/platform.js';
+import {redact} from './diagnostics.js';
 
 // bridge.db belongs to the native engine. The control console only reads it
 // through the system sqlite3 binary: no npm dependency, no long-lived handle in
@@ -460,6 +461,58 @@ function fileSummary(dbPath) {
     shm: value.shm.size,
     total: value.total,
     updated: value.db.updated
+  };
+}
+
+// Recent calls are a bounded, indexed read (llm_calls_created): the console
+// needs the model, latency, tokens and failure reason, not the request bodies.
+export async function readRecentCalls(dbPath, {limit = 25, errorsOnly = false} = {}) {
+  if (!fs.existsSync(dbPath)) return {exists: false, calls: [], truncated: false};
+  const cap = Math.max(1, Math.min(200, Number(limit) || 25));
+  const tables = new Set(await listTables(dbPath));
+  if (!tables.has('llm_calls')) return {exists: true, calls: [], truncated: false};
+  const where = errorsOnly ? "WHERE status != 'completed' OR COALESCE(error_message, '') != ''" : '';
+  const full = `SELECT call_id, run_id, conversation_id, model_id, display_name, model_hash, provider_type,
+                       request_type, status, finish_reason, created_at_ms, duration_ms, ttft_ms,
+                       input_tokens, output_tokens, total_tokens, cache_read_tokens, reasoning_tokens,
+                       http_status, error_kind, error_message
+                FROM llm_calls ${where} ORDER BY created_at_ms DESC LIMIT ${cap};`;
+  const minimal = `SELECT call_id, run_id, conversation_id, status, finish_reason, created_at_ms, error_message
+                   FROM llm_calls ${where} ORDER BY created_at_ms DESC LIMIT ${cap};`;
+  let rows;
+  try {
+    rows = parseJson(await sqlite(dbPath, full, {readonly: true, json: true, timeout: QUERY_TIMEOUT}));
+  } catch {
+    // Older engine schemas lack the newer telemetry columns; the basic
+    // identity/status/error columns have been present since the first release.
+    rows = parseJson(await sqlite(dbPath, minimal, {readonly: true, json: true, timeout: QUERY_TIMEOUT}));
+  }
+  return {
+    exists: true,
+    truncated: rows.length >= cap,
+    calls: rows.map((row) => {
+      const error = [row.error_kind, row.error_message].filter(Boolean).join(': ');
+      return {
+        id: String(row.call_id || ''),
+        run: String(row.run_id || ''),
+        conversation: String(row.conversation_id || ''),
+        model: String(row.display_name || row.model_id || row.model_hash || '—'),
+        provider: String(row.provider_type || ''),
+        requestType: String(row.request_type || ''),
+        status: String(row.status || ''),
+        finish: String(row.finish_reason || ''),
+        created: Number(row.created_at_ms) || 0,
+        durationMs: Number(row.duration_ms) || 0,
+        ttftMs: Number(row.ttft_ms) || null,
+        inputTokens: Number(row.input_tokens) || 0,
+        outputTokens: Number(row.output_tokens) || 0,
+        totalTokens: Number(row.total_tokens) || 0,
+        cacheReadTokens: Number(row.cache_read_tokens) || 0,
+        reasoningTokens: Number(row.reasoning_tokens) || 0,
+        httpStatus: Number(row.http_status) || null,
+        error: redact(error).slice(0, 500)
+      };
+    })
   };
 }
 

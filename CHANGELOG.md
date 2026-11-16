@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.28（最近调用视图与更新检查）
+
+- 新增「最近调用」卡片与 `GET /api/calls`：从 `llm_calls` 按 `created_at_ms` 索引读取最近 25/50/100 条，显示时间、模型、状态、耗时、输入/输出/总 token、HTTP 状态与错误摘要；支持「只看错误」，错误内容复用日志脱敏规则；旧版引擎缺少新遥测列时自动回退到基础字段。
+- 新增更新检查 `GET /api/update`：读取 GitHub latest Release，与当前 `installation.json` 版本比较，返回当前/最新版本、Release 地址、安装方式（source/unknown）、是否可一键升级与手动命令；成功结果缓存 10 分钟。
+- 新增一键升级 `POST /api/update`：仅在「干净源码 checkout + origin 指向本仓库 + 存在更新」时执行 `git fetch --tags`、`git merge --ff-only <tag>` 与 `setup.command`，要求 `confirm:true`；Magpie 托管或源码有未提交改动时返回明确的手动升级命令，不擅自改写。
+- 控制台顶部新增「检查更新」，发现新版本时显示版本对比、Release 链接、升级/复制命令按钮；升级完成后提示刷新页面或重启 Magpie 加载新控制台。
+- 测试新增最近调用字段/排序/错误脱敏/缺失数据库、版本比较；macOS 本机 88 项测试 83 通过、5 项按平台跳过。
+- 版本号升至 0.2.28；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.27（Cursor 版本探测、分层自检与模型管理）
 
 - 新增 Cursor 版本探测：从 macOS `Contents/Resources/app/package.json` 与 Windows/Linux `resources/app/package.json` 读取版本，与已实测范围 3.28.x–3.30.8 比较；控制台概览显示「已实测 / 未验证」，诊断包同步包含版本与兼容提示。

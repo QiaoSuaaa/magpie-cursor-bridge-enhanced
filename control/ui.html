@@ -19,6 +19,7 @@
     <div class="head-actions">
       <span class="port">127.0.0.1:<span id="port">…</span></span>
       <button id="refresh" class="ghost" type="button" title="重新读取运行状态，不重新加载页面">刷新状态</button>
+      <button id="updateCheck" class="ghost" type="button" title="检查 GitHub 最新版本">检查更新</button>
       <button id="reload" class="ghost" type="button" title="重新加载控制台页面，获取当前控制口令">刷新页面</button>
     </div>
   </header>
@@ -50,6 +51,17 @@
   </section>
 
   <section class="grid" id="overview" aria-live="polite"></section>
+
+  <section id="updateCard" class="card" hidden>
+    <div class="card-head"><h2>版本更新</h2><span class="hint" id="updateVersion"></span></div>
+    <p class="hint" id="updateHint"></p>
+    <div class="form-actions">
+      <button id="updateRun" class="primary" type="button" hidden>升级并重启</button>
+      <button id="updateCopy" class="ghost" type="button" hidden>复制升级命令</button>
+      <a id="updateLink" class="hint" target="_blank" rel="noreferrer" hidden>Release 页面</a>
+      <span id="updateState" class="hint"></span>
+    </div>
+  </section>
 
   <section class="card">
     <div class="card-head"><h2>可编辑参数</h2><span class="hint">写入 bridge-settings.json</span></div>
@@ -174,6 +186,26 @@
           </div>
         </div>
       </div>
+    </div>
+  </details>
+
+  <details id="callsCard" class="card db-card">
+    <summary>
+      <span class="db-title"><h2>最近调用</h2><span class="hint">llm_calls · 只读</span></span>
+      <span class="hint db-state" id="callsState">展开时读取</span>
+    </summary>
+    <div class="db-body">
+      <div class="db-toolbar">
+        <label class="hint"><input id="callsErrors" type="checkbox"> 只看错误</label>
+        <label class="hint">条数 <select id="callsLimit">
+          <option value="25" selected>25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select></label>
+        <button id="callsRefresh" class="ghost" type="button">刷新</button>
+      </div>
+      <div id="callsHint" class="hint"></div>
+      <div id="callsBody"></div>
     </div>
   </details>
 

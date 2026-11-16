@@ -28,11 +28,11 @@ test('tailFile returns the last lines and reports truncation', (t) => {
 test('redact hides bearer tokens, api keys and JSON secrets', () => {
   const text = [
     'Authorization: Bearer abcdefghijklmnop',
-    '{"key":"secret-value","model":"m"}',
-    'api_key=sk-1234567890abcdef'
+    '{"key":"fake-secret","model":"m"}',
+    'api_key=fake-secret'
   ].join('\n');
   const out = redact(text);
-  assert.doesNotMatch(out, /abcdefghijklmnop|secret-value|1234567890abcdef/);
+  assert.doesNotMatch(out, /abcdefghijklmnop|fake-secret/);
   assert.match(out, /Authorization: Bearer \[redacted\]/);
   assert.match(out, /"key":"\[redacted\]"/);
   assert.match(out, /"model":"m"/);
