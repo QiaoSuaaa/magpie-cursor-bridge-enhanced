@@ -1081,10 +1081,19 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
           'supervisor-error-log': p.supervisorError,
           install: p.share,
           repo: p.repo,
-          plist: p.plist || ''
+          plist: p.plist || '',
+          // Opening a URL through the host OS is the only reliable way out of
+          // Magpie's WebView, where target="_blank" is blocked.
+          github: repoUrl
         };
         const target = targets[String(body.target || '')];
-        if (!target) return sendJson(res, 400, {ok: false, error: '未知的打开目标'});
+        if (!target) {
+          return sendJson(res, 400, {
+            ok: false,
+            error: body.target === 'github' ? 'package.json 未配置 GitHub 仓库地址' : '未知的打开目标'
+          });
+        }
+        const external = /^https:\/\//i.test(target);
         const opener = platform.current.openCommand(target);
         if (!opener) return sendJson(res, 400, {ok: false, error: `当前平台（${platform.platform}）没有可用的打开命令`});
         // The diagnostics folder only appears after the first export; opening it
@@ -1092,7 +1101,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         if (body.target === 'diagnostics') {
           try { fs.mkdirSync(target, {recursive: true, mode: 0o700}); } catch { /* report the real path below */ }
         }
-        if (!fs.existsSync(target)) return sendJson(res, 404, {ok: false, error: `路径不存在：${target}`});
+        if (!external && !fs.existsSync(target)) return sendJson(res, 404, {ok: false, error: `路径不存在：${target}`});
         const result = await run(opener.command, opener.args, {timeout: 10000});
         // explorer.exe exits 1 even when it opened the folder.
         const opened = result.ok || (platform.IS_WIN && result.code === 1);

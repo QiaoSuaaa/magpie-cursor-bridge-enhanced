@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.30（折叠卡片状态文字对齐与 GitHub 入口修复）
+
+- 控制台「模型显示名」「数据库管理」「最近调用」「日志与诊断」四张折叠卡片的状态文字（展开后编辑 / 展开时统计 / 展开时读取）改为与右侧展开箭头同组右对齐，不再停留在卡片中部。
+- 修复 GitHub 入口在 Magpie WebView 中点击不跳转：`target="_blank"` 被 WebView 阻止；点击改由 `/api/open` 的 `github` 目标调用本机默认浏览器（macOS `open` / Windows `explorer` / Linux `xdg-open`），地址仍来自 `package.json`。
+- macOS 本机 88 项测试 83 通过、5 项按平台跳过。
+- 版本号升至 0.2.30；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.29（控制台 GitHub 入口）
 
 - 控制台顶部「刷新页面」右侧新增 GitHub 仓库入口；地址从 `package.json` 的 `homepage` / `repository` 解析，未配置或非 GitHub 地址时自动隐藏。

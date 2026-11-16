@@ -1111,6 +1111,16 @@
     if (repo) {
       $('github').href = repo;
       $('github').hidden = false;
+      // Magpie's WebView blocks target="_blank"; ask the control service to
+      // hand the URL to the host OS opener instead.
+      $('github').addEventListener('click', async (event) => {
+        event.preventDefault();
+        try {
+          await api('/api/open', {method: 'POST', body: {target: 'github'}});
+        } catch (error) {
+          notice(`打开 GitHub 失败：${error.message}`, 'error');
+        }
+      });
     }
     $('refresh').addEventListener('click', () => loadStatus());
     $('updateCheck').addEventListener('click', checkUpdate);
