@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.25（CI 修复：Linux 单元文件测试按平台跳过）
+
+- 修复 GitHub Actions Windows 作业失败：`linux service unit` 用例在 Windows 上仍会执行，`path.join` 生成反斜杠路径导致断言失败。该单元文件只在 Linux 安装路径生成，测试现与 `linux activation` 等用例一致，按 `IS_LINUX` 跳过；Linux CI 仍完整覆盖。
+- 版本号升至 0.2.25；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.24（核心可靠性：supervisor 测试、三平台 CI、清理备份）
 
 - 新增 `lib/supervisor.js`：把连接判定、引擎启停/重启、网关断线宽限、模式切换、模型目录热更新与代理恢复从 `bridge.js` 抽成依赖注入的状态机；`bridge.js` 保留锁、状态文件、日志轮转与信号处理。行为保持不变，所有副作用可测试。

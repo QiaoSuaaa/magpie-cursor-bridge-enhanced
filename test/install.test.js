@@ -95,7 +95,7 @@ test('service plist escapes paths and uses an installed runtime, independent of 
  const p=fakePaths(t);const xml=plistText(p,'/tmp/A & B/runtime','/tmp/A < B/release');
  assert.match(xml,/A &amp; B/);assert.match(xml,/A &lt; B/);assert.doesNotMatch(xml,/nvm|\.cache/);
 });
-test('linux service unit quotes paths, restarts on failure and appends logs',t=>{
+test('linux service unit quotes paths, restarts on failure and appends logs',{skip:!IS_LINUX},t=>{
  const p=fakePaths(t);
  const unit=systemdUnitText(p,'/tmp/A & B/runtime','/tmp/A < B/release');
  assert.match(unit,/ExecStart="\/tmp\/A & B\/runtime" "\/tmp\/A < B\/release\/bridge\.js" supervise/);
