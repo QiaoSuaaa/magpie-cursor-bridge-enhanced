@@ -6,7 +6,7 @@ import {spawn,execFileSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {atomic,applyProxy,restoreProxy} from './lib/settings.js';
 import {validate,gatewayModels} from './lib/config.js';
-import {read as readBridgeSettings,applyModelNames} from './lib/bridge-settings.js';
+import {read as readBridgeSettings,applyModelPreferences} from './lib/bridge-settings.js';
 import platform from './lib/platform.js';
 
 const packageDir=path.dirname(fileURLToPath(import.meta.url));
@@ -90,7 +90,7 @@ if(command==='status') {
     fs.rmSync(lock,{recursive:true,force:true}); fs.mkdirSync(lock);
   }
   fs.writeFileSync(path.join(lock,'pid'),String(process.pid));
-  let child=null,ready=null,ending=false,lastConfig='',nextRefresh=0,paused=false,catalogueDownSince=0,lastModelCount=0,lastEffective='',lastModelNames='',runningMode='default',activeMode='default',runningSubagentMode='async';
+  let child=null,ready=null,ending=false,lastConfig='',nextRefresh=0,paused=false,catalogueDownSince=0,lastModelCount=0,lastEffective='',lastModelPrefs='',runningMode='default',activeMode='default',runningSubagentMode='async';
   // Lite mode starts from an empty in-memory database, so the proxy port cannot
   // be read back from SQLite. Carry the last port across restarts: Cursor does
   // not re-read http.proxy until it restarts.
@@ -154,18 +154,18 @@ if(command==='status') {
           // supervisor never rewrites effective.json just for a mode switch.
           const modeChanged=engineAlive && runningMode!==cfg.runMode;
           const subagentModeChanged=engineAlive && runningSubagentMode!==cfg.subagentMode;
-          // Display names live in bridge-settings.json: a change rewrites
-          // effective.json and the engine hot-swaps the catalogue, so neither
-          // Cursor nor the running conversation is restarted.
-          const modelNamesSignature=JSON.stringify(cfg.modelNames||{});
-          const modelNamesChanged=modelNamesSignature!==lastModelNames;
-          if(changed || Date.now()>=nextRefresh || !engineAlive || modeChanged || subagentModeChanged || modelNamesChanged) {
+          // Display names and menu order live in bridge-settings.json: a change
+          // rewrites effective.json and the engine hot-swaps the catalogue, so
+          // neither Cursor nor the running conversation is restarted.
+          const modelPrefsSignature=JSON.stringify({names:cfg.modelNames||{},order:cfg.modelOrder||[]});
+          const modelPrefsChanged=modelPrefsSignature!==lastModelPrefs;
+          if(changed || Date.now()>=nextRefresh || !engineAlive || modeChanged || subagentModeChanged || modelPrefsChanged) {
             let effective=null,failure=null;
             try {
               // gatewayModels returns the whole connection object; only its
-              // models array takes the display-name overrides.
+              // models array takes the display-name and order overrides.
               const catalogue=await gatewayModels(c);
-              effective={...catalogue,models:applyModelNames(catalogue.models,cfg.modelNames)};
+              effective={...catalogue,models:applyModelPreferences(catalogue.models,{modelNames:cfg.modelNames,modelOrder:cfg.modelOrder})};
             } catch(e) {failure=e;}
             nextRefresh=Date.now()+cfg.refreshSeconds*1000;
             if(failure) {
@@ -185,7 +185,7 @@ if(command==='status') {
               const serialized=JSON.stringify(effective);
               if(serialized!==lastEffective) {atomic(file('effective.json'),serialized);lastEffective=serialized;}
             }
-            lastConfig=raw;paused=false;lastModelCount=effective.models.length;lastModelNames=modelNamesSignature;
+            lastConfig=raw;paused=false;lastModelCount=effective.models.length;lastModelPrefs=modelPrefsSignature;
             update('connected',{model:c.model,models:effective.models.length,proxy:ready.proxy,backend:ready.backend,pid:child.pid});
           }
           try {applyProxy(settings,file('settings-journal.json'),ready.proxy);} catch(e) {

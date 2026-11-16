@@ -200,7 +200,7 @@ test('control settings validate and are written to the bridge root', async (t) =
   assert.equal(badName.status, 400);
   assert.match(badName.body, /80 个字符/);
 
-  const expected = {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6, modelNames: {'group/opus': 'Opus 4.5'}};
+  const expected = {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6, modelNames: {'group/opus': 'Opus 4.5'}, modelOrder: ['group/sonnet', 'group/opus']};
   const good = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify(expected)});
   assert.equal(good.status, 200);
   assert.deepEqual(JSON.parse(good.body).settings, expected);

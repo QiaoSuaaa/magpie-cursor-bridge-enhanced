@@ -20,7 +20,8 @@
   let modelNamesFilled = false;
   let modelNamesLoading = false;
   let modelNamesRetryAt = 0;
-  let modelNameModels = [];
+  let dragRow = null;
+  let dragSnapshot = null;
   let pollTimer = null;
   let lastOverview = null;
   let dbData = null;
@@ -113,9 +114,10 @@
   }
 
   function setBusy(value) {
-    for (const id of ['start', 'status', 'restart', 'agentConnect']) {
+    for (const id of ['start', 'status', 'restart', 'agentConnect', 'saveModelNames']) {
       if ($(id)) $(id).disabled = value;
     }
+    for (const button of document.querySelectorAll('.row-save')) button.disabled = value;
     if (!serviceSupported) {
       $('start').disabled = true;
       $('restart').disabled = true;
@@ -316,7 +318,8 @@
       fillSettings(overview.settings.values);
       settingsFilled = true;
     }
-    if (!modelNamesFilled) loadModelNames(overview);
+    // The card is collapsed by default; only load the catalogue once opened.
+    if ($('modelNamesCard')?.open && !modelNamesFilled) loadModelNames(overview);
   }
 
   function fillSettings(values) {
@@ -331,8 +334,9 @@
   // a model that has not been connected yet can still be renamed; when the
   // gateway is unreachable, fall back to the models recorded in connection.json.
   async function loadModelNames(overview) {
-    if (modelNamesFilled || modelNamesLoading || Date.now() < modelNamesRetryAt) return;
+    if (!overview || modelNamesFilled || modelNamesLoading || Date.now() < modelNamesRetryAt) return;
     modelNamesLoading = true;
+    $('modelNamesState').textContent = '正在读取…';
     try {
       let models = agentModels.models?.length ? agentModels.models : null;
       if (!models) {
@@ -352,7 +356,6 @@
         modelNamesRetryAt = Date.now() + 15000;
         return;
       }
-      modelNameModels = models;
       renderModelNameRows(models, overview.settings?.values?.modelNames || {});
       modelNamesFilled = true;
     } catch {
@@ -365,37 +368,78 @@
   }
 
   function renderModelNameRows(models, saved) {
-    const box = $('modelNameRows');
+    const body = $('modelNameRows');
     const seen = new Set();
     const rows = [];
     for (const model of models || []) {
       if (!model?.id || seen.has(model.id)) continue;
       seen.add(model.id);
-      const label = document.createElement('label');
-      const name = document.createElement('span');
-      name.className = 'label';
-      name.textContent = model.name || model.id;
-      name.title = model.id;
-      const field = document.createElement('span');
-      field.className = 'field';
+      const tr = document.createElement('tr');
+      tr.draggable = true;
+      tr.dataset.modelId = model.id;
+      tr.addEventListener('dragstart', (event) => {
+        if (busy) {
+          event.preventDefault();
+          return;
+        }
+        dragRow = tr;
+        dragSnapshot = [...tr.parentElement.children];
+        tr.classList.add('dragging');
+        event.dataTransfer.effectAllowed = 'move';
+        try { event.dataTransfer.setData('text/plain', model.id); } catch {}
+      });
+      tr.addEventListener('dragend', () => {
+        // A drag that ends outside the table never fires drop: restore the
+        // previous order instead of leaving an unsaved rearrangement.
+        if (dragRow === tr) {
+          if (dragSnapshot) tr.parentElement.replaceChildren(...dragSnapshot);
+          dragRow = null;
+        }
+        dragSnapshot = null;
+        tr.classList.remove('dragging');
+      });
+      const dragCell = document.createElement('td');
+      dragCell.className = 'drag-col';
+      const handle = document.createElement('span');
+      handle.className = 'drag-handle';
+      handle.textContent = '⋮⋮';
+      handle.title = '拖动调整顺序';
+      dragCell.append(handle);
+      const modelCell = document.createElement('td');
+      const modelName = document.createElement('span');
+      modelName.className = 'model-label';
+      modelName.textContent = model.name || model.id;
+      modelName.title = model.id;
+      modelCell.append(modelName);
+      const nameCell = document.createElement('td');
       const input = document.createElement('input');
       input.type = 'text';
       input.maxLength = 80;
+      input.draggable = false;
       input.placeholder = model.name || model.id;
       input.dataset.modelId = model.id;
       input.value = saved?.[model.id] || '';
-      field.append(input);
-      label.append(name, field);
-      rows.push(label);
+      nameCell.append(input);
+      const actionCell = document.createElement('td');
+      actionCell.className = 'action-col';
+      const rowSave = document.createElement('button');
+      rowSave.type = 'button';
+      rowSave.className = 'ghost row-save';
+      rowSave.dataset.saveModel = model.id;
+      rowSave.textContent = '保存';
+      actionCell.append(rowSave);
+      tr.append(dragCell, modelCell, nameCell, actionCell);
+      rows.push(tr);
     }
-    box.replaceChildren(...rows);
+    body.replaceChildren(...rows);
+    $('modelNamesTable').hidden = rows.length === 0;
+    const custom = [...seen].filter((id) => saved?.[id]).length;
+    $('modelNamesState').textContent = rows.length
+      ? `${rows.length} 个模型${custom ? ` · ${custom} 个自定义` : ''}`
+      : '当前没有模型目录';
     $('modelNamesHint').textContent = rows.length
-      ? '仅影响 Cursor 模型菜单的显示名称，不改变模型 ID、路由与计费；留空使用 Magpie 原名。保存后数秒内生效，重新打开菜单或重启 Cursor 查看。'
+      ? '仅影响 Cursor 模型菜单的显示名称，不改变模型 ID、路由与计费；留空使用 Magpie 原名。保存后约 2–4 秒写入引擎目录，重新打开 Cursor 模型菜单即可看到，无需重启引擎。'
       : '当前没有可用的模型目录；连接模型或刷新页面后即可在这里自定义显示名。';
-  }
-
-  function namesSignature(values) {
-    return JSON.stringify(Object.entries(values || {}).sort(([a], [b]) => a.localeCompare(b)));
   }
 
   async function loadStatus({quiet = false} = {}) {
@@ -458,7 +502,6 @@
     event.preventDefault();
     const beforeMode = lastOverview?.settings?.values?.runMode;
     const beforeSubagentMode = lastOverview?.settings?.values?.subagentMode;
-    const beforeNames = lastOverview?.settings?.values?.modelNames || {};
     const body = {
       runMode: $('runMode').value,
       subagentMode: $('subagentMode').value,
@@ -466,38 +509,141 @@
       gatewayGraceSeconds: Number($('gatewayGraceSeconds').value),
       logLimitMB: Number($('logLimitMB').value)
     };
-    if (modelNamesFilled) {
-      // Merge instead of replace: the catalogue may not list every configured
-      // model (gateway offline), and those entries must survive a save.
-      const names = {...beforeNames};
-      for (const input of document.querySelectorAll('#modelNameRows input[data-model-id]')) {
-        const id = input.dataset.modelId;
-        const value = input.value.trim();
-        if (value) names[id] = value;
-        else delete names[id];
-      }
-      body.modelNames = names;
-    }
     try {
       const result = await api('/api/settings', {method: 'POST', body});
       fillSettings(result.settings);
       settingsFilled = true;
-      const namesChanged = modelNamesFilled && namesSignature(beforeNames) !== namesSignature(result.settings.modelNames);
-      for (const input of document.querySelectorAll('#modelNameRows input[data-model-id]')) {
-        input.value = result.settings.modelNames?.[input.dataset.modelId] || '';
-      }
       const modeHint = beforeMode && beforeMode !== result.settings.runMode
         ? '运行模式已变更，引擎将在数秒内自动重启，当前对话可能中断一次；'
         : '';
       const subagentHint = beforeSubagentMode && beforeSubagentMode !== result.settings.subagentMode
         ? '子代理模式已变更，引擎将在数秒内自动重启，下一次 Task 调用生效；'
         : '';
-      const namesHint = namesChanged ? '模型显示名已更新，Cursor 菜单将在数秒内刷新；' : '';
-      $('settingsHint').textContent = `已保存：${modeHint}${subagentHint}${namesHint}同步间隔与容错下一轮生效，日志上限下次后台启动生效`;
+      $('settingsHint').textContent = `已保存：${modeHint}${subagentHint}同步间隔与容错下一轮生效，日志上限下次后台启动生效`;
       loadStatus({quiet: true});
     } catch (error) {
       $('settingsHint').textContent = `保存失败：${error.message}`;
     }
+  }
+
+  // Menu preferences live beside the other bridge settings, so every save
+  // sends the complete object and changes one part at a time.
+  function visibleModelOrder(saved) {
+    const visible = [...document.querySelectorAll('#modelNameRows tr')]
+      .map((row) => row.dataset.modelId)
+      .filter(Boolean);
+    const known = new Set(visible);
+    return [...visible, ...(saved || []).filter((id) => !known.has(id))];
+  }
+
+  async function saveModelSettings(overrides, successText) {
+    const values = lastOverview?.settings?.values;
+    if (!values) {
+      $('modelNamesStatus').textContent = '尚未读取到当前设置，请稍后重试';
+      return null;
+    }
+    try {
+      const result = await api('/api/settings', {method: 'POST', body: {
+        runMode: values.runMode,
+        subagentMode: values.subagentMode,
+        refreshSeconds: values.refreshSeconds,
+        gatewayGraceSeconds: values.gatewayGraceSeconds,
+        logLimitMB: values.logLimitMB,
+        modelNames: values.modelNames,
+        modelOrder: values.modelOrder,
+        ...overrides
+      }});
+      if (lastOverview?.settings) lastOverview.settings.values = result.settings;
+      $('modelNamesStatus').textContent = successText;
+      loadStatus({quiet: true});
+      return result;
+    } catch (error) {
+      $('modelNamesStatus').textContent = `保存失败：${error.message}`;
+      return null;
+    }
+  }
+
+  // Save every visible row plus the current drag order.
+  async function saveModelNames() {
+    if (busy) return;
+    const inputs = [...document.querySelectorAll('#modelNameRows input[data-model-id]')];
+    if (!inputs.length) {
+      $('modelNamesStatus').textContent = '当前没有可编辑的模型目录';
+      return;
+    }
+    const values = lastOverview?.settings?.values;
+    if (!values) {
+      $('modelNamesStatus').textContent = '尚未读取到当前设置，请稍后重试';
+      return;
+    }
+    // Merge instead of replace: the catalogue may not list every configured
+    // model (gateway offline), and those entries must survive a save.
+    const names = {...(values.modelNames || {})};
+    for (const input of inputs) {
+      const id = input.dataset.modelId;
+      const value = input.value.trim();
+      if (value) names[id] = value;
+      else delete names[id];
+    }
+    busy = '保存模型显示名';
+    setBusy(true);
+    $('modelNamesStatus').textContent = '正在保存…';
+    const result = await saveModelSettings(
+      {modelNames: names, modelOrder: visibleModelOrder(values.modelOrder)},
+      '已保存全部显示名与顺序，Cursor 菜单将在数秒内刷新'
+    );
+    busy = null;
+    setBusy(false);
+    if (result) {
+      for (const input of inputs) input.value = result.settings.modelNames?.[input.dataset.modelId] || '';
+    }
+  }
+
+  // Row-level save: only this model's display name changes.
+  async function saveModelRow(id) {
+    if (busy) return;
+    const input = [...document.querySelectorAll('#modelNameRows input[data-model-id]')]
+      .find((item) => item.dataset.modelId === id);
+    if (!input) return;
+    const values = lastOverview?.settings?.values;
+    if (!values) {
+      $('modelNamesStatus').textContent = '尚未读取到当前设置，请稍后重试';
+      return;
+    }
+    const names = {...(values.modelNames || {})};
+    const value = input.value.trim();
+    if (value) names[id] = value;
+    else delete names[id];
+    busy = '保存模型显示名';
+    setBusy(true);
+    $('modelNamesStatus').textContent = '正在保存…';
+    const result = await saveModelSettings({modelNames: names}, `已保存 ${input.placeholder || id} 的显示名`);
+    busy = null;
+    setBusy(false);
+    if (result) input.value = result.settings.modelNames?.[id] || '';
+  }
+
+  // Dragging saves the order immediately; names are left exactly as configured
+  // so an unsaved edit in another row is never committed by a drag.
+  async function saveModelOrder() {
+    if (busy) return;
+    const values = lastOverview?.settings?.values;
+    if (!values) {
+      $('modelNamesStatus').textContent = '尚未读取到当前设置，请稍后重试';
+      return;
+    }
+    const rows = $('modelNameRows');
+    const previous = [...rows.children];
+    busy = '保存模型顺序';
+    setBusy(true);
+    $('modelNamesStatus').textContent = '正在保存顺序…';
+    const result = await saveModelSettings(
+      {modelOrder: visibleModelOrder(values.modelOrder)},
+      '顺序已保存，Cursor 菜单将在数秒内刷新'
+    );
+    busy = null;
+    setBusy(false);
+    if (!result) rows.replaceChildren(...previous);
   }
 
   function renderDatabase(data) {
@@ -730,6 +876,43 @@
       updateDbControls();
     });
     $('settingsForm').addEventListener('submit', saveSettings);
+    $('saveModelNames').addEventListener('click', saveModelNames);
+    $('modelNamesCard').addEventListener('toggle', () => {
+      if ($('modelNamesCard').open && lastOverview) loadModelNames(lastOverview);
+    });
+    const modelRows = $('modelNameRows');
+    modelRows.addEventListener('dragover', (event) => {
+      if (!dragRow) return;
+      event.preventDefault();
+      const rows = [...modelRows.querySelectorAll('tr')].filter((row) => row !== dragRow);
+      const next = rows.find((row) => {
+        const box = row.getBoundingClientRect();
+        return event.clientY < box.top + box.height / 2;
+      });
+      if (next) modelRows.insertBefore(dragRow, next);
+      else modelRows.appendChild(dragRow);
+    });
+    modelRows.addEventListener('drop', (event) => {
+      if (!dragRow) return;
+      event.preventDefault();
+      const row = dragRow;
+      dragRow = null;
+      dragSnapshot = null;
+      row.classList.remove('dragging');
+      saveModelOrder();
+    });
+    modelRows.addEventListener('dragend', () => {
+      if (dragRow) {
+        dragRow.classList.remove('dragging');
+        if (dragSnapshot) modelRows.replaceChildren(...dragSnapshot);
+        dragRow = null;
+      }
+      dragSnapshot = null;
+    });
+    modelRows.addEventListener('click', (event) => {
+      const button = event.target.closest?.('button[data-save-model]');
+      if (button) saveModelRow(button.dataset.saveModel);
+    });
     $('resetSettings').addEventListener('click', () => {
       const defaults = lastOverview?.settings?.defaults || {runMode: 'default', subagentMode: 'async', refreshSeconds: 15, gatewayGraceSeconds: 60, logLimitMB: 4};
       fillSettings(defaults);
