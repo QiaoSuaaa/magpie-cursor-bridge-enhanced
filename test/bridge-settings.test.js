@@ -21,7 +21,7 @@ test('missing or malformed bridge settings fall back to defaults', (t) => {
 test('out-of-range values fall back per key when read', (t) => {
   const root = setup(t);
   fs.writeFileSync(settingsFile(root), JSON.stringify({refreshSeconds: 30, gatewayGraceSeconds: 9999, logLimitMB: 8}));
-  assert.deepEqual(read(root), {runMode: 'default', subagentMode: 'async', refreshSeconds: 30, gatewayGraceSeconds: defaults.gatewayGraceSeconds, logLimitMB: 8, tracesRetentionDays: defaults.tracesRetentionDays, sessionsRetentionDays: defaults.sessionsRetentionDays, modelNames: {}, modelOrder: []});
+  assert.deepEqual(read(root), {runMode: 'default', subagentMode: 'async', refreshSeconds: 30, gatewayGraceSeconds: defaults.gatewayGraceSeconds, logLimitMB: 8, tracesRetentionDays: defaults.tracesRetentionDays, sessionsRetentionDays: defaults.sessionsRetentionDays, modelNames: {}, modelOrder: [], modelHidden: []});
 });
 
 test('run mode falls back when read and is rejected strictly', (t) => {
@@ -44,7 +44,7 @@ test('writes validate strictly, round-trip and keep the file private', (t) => {
   const root = setup(t);
   assert.throws(() => write(root, {refreshSeconds: 1}), /5–300/);
   const saved = write(root, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8});
-  assert.deepEqual(saved, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8, tracesRetentionDays: defaults.tracesRetentionDays, sessionsRetentionDays: defaults.sessionsRetentionDays, modelNames: {}, modelOrder: []});
+  assert.deepEqual(saved, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8, tracesRetentionDays: defaults.tracesRetentionDays, sessionsRetentionDays: defaults.sessionsRetentionDays, modelNames: {}, modelOrder: [], modelHidden: []});
   assert.deepEqual(read(root), saved);
   if (process.platform !== 'win32') assert.equal(fs.statSync(settingsFile(root)).mode & 0o777, 0o600);
   assert.deepEqual(normalize({}), defaults);
@@ -85,6 +85,15 @@ test('model display names override only the catalogue name, never the id', () =>
   assert.equal(applyModelNames(models, {unknown: 'X'})[0], models[0]);
 });
 
+test('hidden models trim, dedupe and reject malformed values', (t) => {
+  const root = setup(t);
+  const saved = write(root, {modelHidden: [' group/opus ', 'group/gpt', 'group/opus', '']});
+  assert.deepEqual(saved.modelHidden, ['group/opus', 'group/gpt']);
+  assert.deepEqual(read(root).modelHidden, saved.modelHidden);
+  assert.throws(() => write(root, {modelHidden: 'group/opus'}), /需为模型 ID 数组/);
+  assert.throws(() => write(root, {modelHidden: [42]}), /需为文本/);
+});
+
 test('model order trims, dedupes and rejects malformed values', (t) => {
   const root = setup(t);
   const saved = write(root, {modelOrder: [' group/opus ', 'group/gpt', 'group/opus', '']});
@@ -106,4 +115,15 @@ test('model order reorders the catalogue and keeps unlisted models after it', ()
   );
   assert.deepEqual(applyModelPreferences(models, {modelOrder: ['unknown']}).map((model) => model.id), ['a', 'b', 'c']);
   assert.deepEqual(applyModelPreferences(models, {}).map((model) => model.id), ['a', 'b', 'c']);
+});
+
+test('hidden models leave the menu except the currently selected one', () => {
+  const models = [
+    {id: 'a', name: 'A'},
+    {id: 'b', name: 'B'},
+    {id: 'c', name: 'C'}
+  ];
+  assert.deepEqual(applyModelPreferences(models, {modelHidden: ['b']}).map((model) => model.id), ['a', 'c']);
+  assert.deepEqual(applyModelPreferences(models, {modelHidden: ['b'], keep: 'b'}).map((model) => model.id), ['a', 'b', 'c']);
+  assert.deepEqual(applyModelPreferences(models, {modelHidden: ['b'], modelOrder: ['c', 'a'], modelNames: {a: 'Ay'}}).map((model) => [model.id, model.name]), [['c', 'C'], ['a', 'Ay']]);
 });

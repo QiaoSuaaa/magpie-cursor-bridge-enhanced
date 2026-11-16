@@ -127,6 +127,10 @@ test('console lists Magpie models and connects the agent in one click', async (t
   fs.mkdirSync(magpieDir, {recursive: true});
   const gateway = http.createServer((req, res) => {
     res.writeHead(200, {'content-type': 'application/json'});
+    if (req.url.endsWith('/chat/completions')) {
+      res.end(JSON.stringify({choices: [{message: {content: 'BRIDGE_OK'}}]}));
+      return;
+    }
     res.end(JSON.stringify({data: [
       {id: 'group/opus', magpie_label: 'Opus · Group', display_name: 'Opus'},
       {id: 'group/sonnet', display_name: 'Sonnet'}
@@ -145,7 +149,7 @@ test('console lists Magpie models and connects the agent in one click', async (t
     // under ~/.config, so the two directories are distinct in this fixture.
     fs.mkdirSync(path.dirname(p.connections[0]), {recursive: true});
     fs.writeFileSync(p.connections[0], JSON.stringify({
-      enabled: true, gateway: 'http://127.0.0.1:3425/v1', key: 'secret',
+      enabled: true, gateway: `http://127.0.0.1:${gateway.address().port}/v1`, key: 'secret',
       model, models: [{id: model}]
     }));
     fs.writeFileSync(p.status, JSON.stringify({
@@ -174,6 +178,14 @@ test('console lists Magpie models and connects the agent in one click', async (t
   assert.equal(connected.ok, true, JSON.stringify(connected));
   assert.equal(connected.overview.connection.model, 'group/opus');
   assert.equal(connected.overview.engine.alive, true);
+
+  const tested = JSON.parse((await request(port, {
+    method: 'POST', path: '/api/agent/test', headers: {...headers, 'content-type': 'application/json'},
+    body: JSON.stringify({model: 'group/opus'})
+  })).body);
+  assert.equal(tested.ok, true, JSON.stringify(tested));
+  assert.equal(tested.text, 'BRIDGE_OK');
+  assert.ok(tested.latencyMs >= 0);
 
   const unknown = await request(port, {
     method: 'POST', path: '/api/agent/connect', headers: {...headers, 'content-type': 'application/json'},
@@ -251,11 +263,21 @@ test('control settings validate and are written to the bridge root', async (t) =
   assert.equal(badName.status, 400);
   assert.match(badName.body, /80 个字符/);
 
-  const expected = {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6, tracesRetentionDays: 14, sessionsRetentionDays: 30, modelNames: {'group/opus': 'Opus 4.5'}, modelOrder: ['group/sonnet', 'group/opus']};
+  const expected = {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6, tracesRetentionDays: 14, sessionsRetentionDays: 30, modelNames: {'group/opus': 'Opus 4.5'}, modelOrder: ['group/sonnet', 'group/opus'], modelHidden: ['group/sonnet']};
   const good = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify(expected)});
   assert.equal(good.status, 200);
   assert.deepEqual(JSON.parse(good.body).settings, expected);
   const file = paths(repoRoot).settings;
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), expected);
   if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+
+  // The model form and the run-parameter form post disjoint fields; a partial
+  // save must preserve everything owned by the other form.
+  const partial = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify({refreshSeconds: 25})});
+  assert.equal(partial.status, 200);
+  const merged = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(merged.refreshSeconds, 25);
+  assert.equal(merged.tracesRetentionDays, expected.tracesRetentionDays);
+  assert.deepEqual(merged.modelNames, expected.modelNames);
+  assert.deepEqual(merged.modelHidden, expected.modelHidden);
 });

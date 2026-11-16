@@ -84,10 +84,11 @@
       <span id="modelNamesState" class="hint model-names-state">展开后编辑</span>
     </summary>
     <div class="model-names-body">
-      <span id="modelNamesHint" class="hint">留空使用 Magpie 原名；保存后约 2–4 秒写入引擎目录，重新打开 Cursor 模型菜单即可看到，无需重启引擎。</span>
+      <span id="modelNamesHint" class="hint">留空使用 Magpie 原名；取消「菜单」勾选可从 Cursor 菜单隐藏该模型（当前选中的模型始终保留）；保存后约 2–4 秒写入引擎目录，无需重启引擎。</span>
+      <div class="model-search"><input id="modelSearch" type="search" placeholder="搜索模型 ID 或名称" autocomplete="off" spellcheck="false"></div>
       <table id="modelNamesTable" class="model-names-table" hidden>
         <thead>
-          <tr><th class="drag-col"></th><th>模型</th><th>Cursor 显示名</th><th class="action-col">操作</th></tr>
+          <tr><th class="drag-col"></th><th>模型</th><th class="show-col">菜单</th><th>Cursor 显示名</th><th class="action-col">操作</th></tr>
         </thead>
         <tbody id="modelNameRows"></tbody>
       </table>
@@ -182,6 +183,12 @@
       <span class="hint db-state" id="diagState">展开时读取</span>
     </summary>
     <div class="db-body">
+      <div class="selftest-row">
+        <label class="hint"><input id="selftestModel" type="checkbox" checked> 包含一条极短模型请求（可能计费）</label>
+        <button id="selftestRun" class="primary" type="button">运行自检</button>
+        <span id="selftestState" class="hint"></span>
+      </div>
+      <div id="selftestResults"></div>
       <div class="db-toolbar diag-toolbar">
         <label class="hint">日志 <select id="logName">
           <option value="engine">engine</option>

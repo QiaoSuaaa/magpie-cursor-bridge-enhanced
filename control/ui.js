@@ -288,10 +288,15 @@
       : (retention.error
         ? `上次失败 · ${shorten(retention.error)}`
         : `上次 ${timeText(retention.at)} · 调用 ${numberText(retention.calls)} / 会话 ${numberText(retention.sessions)}`);
+    const cursor = overview.cursor;
+    const cursorText = cursor?.version
+      ? `${cursor.version}${cursor.tested ? ' · 已实测' : ' · 未验证'}`
+      : '未检测到';
 
     const grid = $('overview');
     grid.replaceChildren(
       item('版本', overview.version || overview.installation?.version || '—', {mono: true}),
+      item('Cursor', cursorText, {tone: cursor?.version && !cursor.tested ? 'warn' : '', title: cursor?.hint || ''}),
       item('运行模式', `${engineModeText}${switching ? ' · 切换中' : ''}`, {tone: switching ? 'warn' : ''}),
       item('数据库', databaseText, {tone: engineMode === 'lite' ? 'ok' : ''}),
       item('自动清理', retentionText, {tone: retention?.error ? 'warn' : ''}),
@@ -364,7 +369,7 @@
         modelNamesRetryAt = Date.now() + 15000;
         return;
       }
-      renderModelNameRows(models, overview.settings?.values?.modelNames || {});
+      renderModelNameRows(models, overview.settings?.values || {});
       modelNamesFilled = true;
     } catch {
       // A malformed overview must not leave the section half-built and silent.
@@ -377,6 +382,8 @@
 
   function renderModelNameRows(models, saved) {
     const body = $('modelNameRows');
+    const savedNames = saved?.modelNames || {};
+    const hidden = new Set(saved?.modelHidden || []);
     const seen = new Set();
     const rows = [];
     for (const model of models || []) {
@@ -419,6 +426,14 @@
       modelName.textContent = model.name || model.id;
       modelName.title = model.id;
       modelCell.append(modelName);
+      const showCell = document.createElement('td');
+      showCell.className = 'show-col';
+      const show = document.createElement('input');
+      show.type = 'checkbox';
+      show.dataset.showModel = model.id;
+      show.checked = !hidden.has(model.id);
+      show.title = show.checked ? '在 Cursor 菜单中显示' : '已从 Cursor 菜单隐藏';
+      showCell.append(show);
       const nameCell = document.createElement('td');
       const input = document.createElement('input');
       input.type = 'text';
@@ -426,28 +441,42 @@
       input.draggable = false;
       input.placeholder = model.name || model.id;
       input.dataset.modelId = model.id;
-      input.value = saved?.[model.id] || '';
+      input.value = savedNames[model.id] || '';
       nameCell.append(input);
       const actionCell = document.createElement('td');
       actionCell.className = 'action-col';
+      const rowTest = document.createElement('button');
+      rowTest.type = 'button';
+      rowTest.className = 'ghost row-test';
+      rowTest.dataset.testModel = model.id;
+      rowTest.textContent = '测试';
       const rowSave = document.createElement('button');
       rowSave.type = 'button';
       rowSave.className = 'ghost row-save';
       rowSave.dataset.saveModel = model.id;
       rowSave.textContent = '保存';
-      actionCell.append(rowSave);
-      tr.append(dragCell, modelCell, nameCell, actionCell);
+      actionCell.append(rowTest, rowSave);
+      tr.append(dragCell, modelCell, showCell, nameCell, actionCell);
       rows.push(tr);
     }
     body.replaceChildren(...rows);
     $('modelNamesTable').hidden = rows.length === 0;
-    const custom = [...seen].filter((id) => saved?.[id]).length;
+    const custom = [...seen].filter((id) => savedNames[id]).length;
+    const hiddenCount = [...seen].filter((id) => hidden.has(id)).length;
     $('modelNamesState').textContent = rows.length
-      ? `${rows.length} 个模型${custom ? ` · ${custom} 个自定义` : ''}`
+      ? `${rows.length} 个模型${custom ? ` · ${custom} 个自定义` : ''}${hiddenCount ? ` · ${hiddenCount} 个隐藏` : ''}`
       : '当前没有模型目录';
     $('modelNamesHint').textContent = rows.length
-      ? '仅影响 Cursor 模型菜单的显示名称，不改变模型 ID、路由与计费；留空使用 Magpie 原名。保存后约 2–4 秒写入引擎目录，重新打开 Cursor 模型菜单即可看到，无需重启引擎。'
+      ? '名称与菜单勾选只影响 Cursor 的模型菜单，不改变模型 ID、路由与计费；留空使用 Magpie 原名。勾选变化点「保存全部」应用，保存后约 2–4 秒写入引擎目录。'
       : '当前没有可用的模型目录；连接模型或刷新页面后即可在这里自定义显示名。';
+    filterModelRows();
+  }
+
+  function filterModelRows() {
+    const term = $('modelSearch').value.trim().toLowerCase();
+    for (const row of document.querySelectorAll('#modelNameRows tr')) {
+      row.hidden = !!term && !row.textContent.toLowerCase().includes(term);
+    }
   }
 
   async function loadStatus({quiet = false} = {}) {
@@ -510,6 +539,8 @@
     event.preventDefault();
     const beforeMode = lastOverview?.settings?.values?.runMode;
     const beforeSubagentMode = lastOverview?.settings?.values?.subagentMode;
+    const beforeTraces = lastOverview?.settings?.values?.tracesRetentionDays;
+    const beforeSessions = lastOverview?.settings?.values?.sessionsRetentionDays;
     const body = {
       runMode: $('runMode').value,
       subagentMode: $('subagentMode').value,
@@ -529,7 +560,10 @@
       const subagentHint = beforeSubagentMode && beforeSubagentMode !== result.settings.subagentMode
         ? '子代理模式已变更，引擎将在数秒内自动重启，下一次 Task 调用生效；'
         : '';
-      $('settingsHint').textContent = `已保存：${modeHint}${subagentHint}同步间隔与容错下一轮生效，日志上限下次后台启动生效`;
+      const retentionHint = beforeTraces !== result.settings.tracesRetentionDays || beforeSessions !== result.settings.sessionsRetentionDays
+        ? '保留策略已更新，下一轮后台清理生效；'
+        : '';
+      $('settingsHint').textContent = `已保存：${modeHint}${subagentHint}${retentionHint}同步间隔与容错下一轮生效，日志上限下次后台启动生效`;
       loadStatus({quiet: true});
     } catch (error) {
       $('settingsHint').textContent = `保存失败：${error.message}`;
@@ -561,6 +595,7 @@
         logLimitMB: values.logLimitMB,
         modelNames: values.modelNames,
         modelOrder: values.modelOrder,
+        modelHidden: values.modelHidden,
         ...overrides
       }});
       if (lastOverview?.settings) lastOverview.settings.values = result.settings;
@@ -595,12 +630,15 @@
       if (value) names[id] = value;
       else delete names[id];
     }
+    const modelHidden = [...document.querySelectorAll('#modelNameRows tr')]
+      .filter((row) => row.dataset.modelId && row.querySelector('input[data-show-model]')?.checked === false)
+      .map((row) => row.dataset.modelId);
     busy = '保存模型显示名';
     setBusy(true);
     $('modelNamesStatus').textContent = '正在保存…';
     const result = await saveModelSettings(
-      {modelNames: names, modelOrder: visibleModelOrder(values.modelOrder)},
-      '已保存全部显示名与顺序，Cursor 菜单将在数秒内刷新'
+      {modelNames: names, modelOrder: visibleModelOrder(values.modelOrder), modelHidden},
+      '已保存全部显示名、顺序与菜单显示，Cursor 菜单将在数秒内刷新'
     );
     busy = null;
     setBusy(false);
@@ -631,6 +669,25 @@
     busy = null;
     setBusy(false);
     if (result) input.value = result.settings.modelNames?.[id] || '';
+  }
+
+  async function testModelRow(id, button) {
+    if (busy) return;
+    button.disabled = true;
+    button.textContent = '测试中…';
+    try {
+      const data = await api('/api/agent/test', {method: 'POST', body: {model: id}});
+      button.textContent = `${numberText(data.latencyMs)}ms`;
+      button.title = String(data.text || '通过');
+      $('modelNamesStatus').textContent = `${id} 测试通过 · ${String(data.text || '').slice(0, 80)}`;
+    } catch (error) {
+      button.textContent = '失败';
+      button.title = error.message;
+      $('modelNamesStatus').textContent = `${id} 测试失败：${error.message}`;
+      notice(`模型测试失败：${error.message}`, 'error');
+    } finally {
+      button.disabled = false;
+    }
   }
 
   // Dragging saves the order immediately; names are left exactly as configured
@@ -903,6 +960,30 @@
     }
   }
 
+  async function runSelfTestUI() {
+    const button = $('selftestRun');
+    button.disabled = true;
+    $('selftestState').textContent = '正在检查…（模型请求最长 30 秒）';
+    try {
+      const data = await api('/api/selftest', {method: 'POST', body: {model: $('selftestModel').checked}});
+      const result = data.result;
+      const rows = (result.checks || []).map((check) => [
+        check.label,
+        check.skipped ? '跳过' : (check.ok ? '通过' : '失败'),
+        check.detail,
+        check.durationMs ? `${numberText(check.durationMs)} ms` : '—'
+      ]);
+      $('selftestResults').replaceChildren(dbTable(['检查', '结果', '详情', '耗时'], rows));
+      $('selftestState').textContent = result.ok ? '自检通过' : '自检发现问题';
+      notice(result.ok ? '自检通过：各层均正常。' : '自检发现问题，请查看「日志与诊断」明细。', result.ok ? 'ok' : 'error');
+    } catch (error) {
+      $('selftestState').textContent = '自检失败';
+      notice(`自检失败：${error.message}`, 'error');
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   async function exportDiagnostics() {
     $('diagState').textContent = '正在生成诊断包…';
     try {
@@ -937,6 +1018,7 @@
     });
     $('logRefresh').addEventListener('click', loadLogs);
     $('diagDownload').addEventListener('click', exportDiagnostics);
+    $('selftestRun').addEventListener('click', runSelfTestUI);
     for (const button of document.querySelectorAll('[data-clean]')) {
       button.addEventListener('click', () => showCleanupConfirm(button.dataset.clean));
     }
@@ -956,7 +1038,13 @@
     $('modelNamesCard').addEventListener('toggle', () => {
       if ($('modelNamesCard').open && lastOverview) loadModelNames(lastOverview);
     });
+    $('modelSearch').addEventListener('input', filterModelRows);
     const modelRows = $('modelNameRows');
+    modelRows.addEventListener('change', (event) => {
+      if (event.target.matches?.('input[data-show-model]')) {
+        $('modelNamesStatus').textContent = '菜单显示有未保存改动，点击「保存全部」应用';
+      }
+    });
     modelRows.addEventListener('dragover', (event) => {
       if (!dragRow) return;
       event.preventDefault();
@@ -986,6 +1074,11 @@
       dragSnapshot = null;
     });
     modelRows.addEventListener('click', (event) => {
+      const test = event.target.closest?.('button[data-test-model]');
+      if (test) {
+        testModelRow(test.dataset.testModel, test);
+        return;
+      }
       const button = event.target.closest?.('button[data-save-model]');
       if (button) saveModelRow(button.dataset.saveModel);
     });

@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   pathsFor,
@@ -11,6 +13,7 @@ import {
   cursorArgvFor,
   nssDatabaseFor,
   cursorDirFor,
+  cursorVersionFrom,
   sqlite3For,
   bashFor
 } from '../lib/platform.js';
@@ -137,6 +140,20 @@ test('cursor settings and install directory follow each platform', () => {
     win.join('C:', 'Local', 'Programs', 'cursor')
   );
   assert.equal(cursorDirFor('/home/u', 'linux', {}), 'cursor');
+});
+
+test('cursor version is read from the macOS and Windows/Linux layouts', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-bridge-version-'));
+  t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+  const mac = path.join(dir, 'Cursor.app');
+  fs.mkdirSync(path.join(mac, 'Contents', 'Resources', 'app'), {recursive: true});
+  fs.writeFileSync(path.join(mac, 'Contents', 'Resources', 'app', 'package.json'), JSON.stringify({version: '3.30.8'}));
+  assert.equal(cursorVersionFrom(mac), '3.30.8');
+  const flat = path.join(dir, 'cursor');
+  fs.mkdirSync(path.join(flat, 'resources', 'app'), {recursive: true});
+  fs.writeFileSync(path.join(flat, 'resources', 'app', 'package.json'), JSON.stringify({version: '3.29.1'}));
+  assert.equal(cursorVersionFrom(flat), '3.29.1');
+  assert.equal(cursorVersionFrom(path.join(dir, 'missing')), null);
 });
 
 test('capability probes stay null when the platform cannot provide them', () => {

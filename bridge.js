@@ -104,7 +104,7 @@ if(command==='status') {
     // takes the display-name and order overrides.
     fetchCatalogue:async(connection,config)=>{
       const catalogue=await gatewayModels(connection);
-      return {...catalogue,models:applyModelPreferences(catalogue.models,{modelNames:config.modelNames,modelOrder:config.modelOrder})};
+      return {...catalogue,models:applyModelPreferences(catalogue.models,{modelNames:config.modelNames,modelOrder:config.modelOrder,modelHidden:config.modelHidden,keep:connection.model})};
     },
     writeEffective:text=>atomic(file('effective.json'),text),
     // status.json always advertises the configured mode, so the control panel

@@ -7,8 +7,11 @@ import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, settingsFile} from '../lib/bridge-settings.js';
 import {atomic} from '../lib/settings.js';
+import {cursorCompatibility} from '../lib/compatibility.js';
+import {version} from '../version.js';
 import {readDatabase, cleanDatabase} from './database.js';
 import {tailFile, redact, classify} from './diagnostics.js';
+import {runSelfTest} from './selftest.js';
 import platform from '../lib/platform.js';
 
 // The control console is served from the Magpie plugin host. It runs the
@@ -224,6 +227,39 @@ export async function magpieCatalogue(home) {
     }));
 }
 
+// A single model check from the model table. The catalogue is refreshed first
+// so a removed or renamed model is rejected before spending a request.
+async function runModelTest(repoRoot, model) {
+  const p = paths(repoRoot);
+  const catalogue = await magpieCatalogue(p.home);
+  if (!catalogue.some((entry) => entry.id === model)) throw new Error('该模型已不在 Magpie 目录中，请刷新后重试');
+  const connection = readConnection(p.connections);
+  if (!connection?.key || !connection?.gateway) throw new Error('尚未连接 Magpie 模型');
+  const started = Date.now();
+  const response = await fetch(`${connection.gateway.replace(/\/$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      Authorization: `Bearer ${connection.key}`,
+      'User-Agent': `cursor-magpie-bridge/${version}-model-test`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{role: 'user', content: 'Reply with exactly BRIDGE_OK. Do not call any tools.'}],
+      max_tokens: 8,
+      stream: false
+    }),
+    signal: AbortSignal.timeout(30000)
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(`Magpie 网关 HTTP ${response.status}`);
+  return {
+    model,
+    latencyMs: Date.now() - started,
+    text: String(body?.choices?.[0]?.message?.content || '').trim().slice(0, 200)
+  };
+}
+
 // Connecting through Magpie's own CLI keeps `magpie ls`, its Agents page and
 // the connection file in sync; writing the file ourselves would leave the
 // app believing no model was chosen.
@@ -284,6 +320,10 @@ async function overview(repoRoot, port) {
     platform: platform.platform,
     serviceSupported: platform.serviceSupported,
     connection: safeConnection(repoRoot),
+    cursor: (() => {
+      const version = platform.current.cursorVersion(p.home);
+      return {version, ...cursorCompatibility(version)};
+    })(),
     database: stat(p.database),
     retention: readJson(p.retention),
     settings: {
@@ -606,7 +646,12 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         // read-modify-write and leave the file with the older payload.
         const job = settingsQueue.then(() => {
           try {
-            const saved = writeBridgeSettings(paths(repoRoot).root, body);
+            // The console has separate forms for run parameters and model
+            // preferences; each posts only its own fields. Merge over the
+            // current file so one form never resets the other's values, while
+            // an explicitly posted {} still clears a list.
+            const root = paths(repoRoot).root;
+            const saved = writeBridgeSettings(root, {...readBridgeSettings(root), ...body});
             log(`bridge settings saved: ${JSON.stringify(saved)}`);
             return {status: 200, body: {ok: true, settings: saved}};
           } catch (error) {
@@ -750,6 +795,29 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         });
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/selftest') {
+        const body = await readBody(req);
+        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
+        busy = '自检';
+        try {
+          const p = paths(repoRoot);
+          const result = await runSelfTest({
+            installation: readJson(p.installation),
+            connection: readConnection(p.connections),
+            runtime: readJson(p.status),
+            dataDir: p.data,
+            gatewayBase: gatewayBase(p.home),
+            includeModel: body.model !== false,
+            alive
+          });
+          const failed = result.checks.filter((check) => !check.ok && !check.skipped).map((check) => check.id);
+          log(`self-test: ${result.ok ? 'ok' : `failed (${failed.join(',') || 'unknown'})`}`);
+          return sendJson(res, 200, {ok: true, result});
+        } finally {
+          busy = null;
+        }
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/diagnostics') {
         return sendJson(res, 200, await buildDiagnostics());
       }
@@ -806,6 +874,21 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
           return sendJson(res, 200, {ok: true, models, current});
         } catch (error) {
           return sendJson(res, 200, {ok: false, error: String(error.message || error)});
+        }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/agent/test') {
+        const body = await readBody(req);
+        const model = String(body.model || '').trim();
+        if (!model) return sendJson(res, 400, {ok: false, error: '请选择一个模型'});
+        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
+        busy = '模型测试';
+        try {
+          return sendJson(res, 200, {ok: true, ...(await runModelTest(repoRoot, model))});
+        } catch (error) {
+          return sendJson(res, 500, {ok: false, error: String(error.message || error)});
+        } finally {
+          busy = null;
         }
       }
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.27（Cursor 版本探测、分层自检与模型管理）
+
+- 新增 Cursor 版本探测：从 macOS `Contents/Resources/app/package.json` 与 Windows/Linux `resources/app/package.json` 读取版本，与已实测范围 3.28.x–3.30.8 比较；控制台概览显示「已实测 / 未验证」，诊断包同步包含版本与兼容提示。
+- 新增分层自检（`control/selftest.js`、`POST /api/selftest`）：依次检查插件版本、Magpie 连接、引擎 PID、代理端口 TCP、经本地代理到 `api2.cursor.sh` 的 TLS 握手与本机 CA、网关模型目录，以及可选的极短模型请求（默认勾选，可能计费）。结果以检查表显示失败层与耗时；它覆盖到模型层，Cursor Bidi/RunSSE 的原生往返仍由构建侧的 `magpie_smoke` 示例覆盖。
+- 模型管理增强：`bridge-settings.json` 新增 `modelHidden`，控制台模型表格新增「菜单」勾选、搜索框与行内「测试」；「保存全部」一次保存名称、顺序与隐藏项。当前选中的模型即使被隐藏也始终保留，避免目录校验失败导致引擎停止。
+- 新增 `POST /api/agent/test`：校验模型仍在 Magpie 目录后，发送一条 `max_tokens=8` 的极短请求并返回延迟与文本；受控制口令与 Host/Origin 校验保护。
+- 测试新增 Cursor 兼容矩阵、版本文件读取、自检分层（含 CONNECT 拒绝、TCP 可达性）、模型隐藏/保留当前模型、模型测试接口；macOS 本机 86 项测试 81 通过、5 项按平台跳过。
+- 版本号升至 0.2.27；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.26（数据库保留策略与日志诊断）
 
 - 新增自动保留策略：`bridge-settings.json` 增加 `tracesRetentionDays`（默认 7 天）与 `sessionsRetentionDays`（默认 0=关闭）；supervisor 每 6 小时在后台分批删除过期调用日志/历史会话，不中断对话、不执行 VACUUM，轻量模式下跳过。删除按批提交并启用 busy timeout，失败时 1 小时后重试，结果写入 `retention.json`。
