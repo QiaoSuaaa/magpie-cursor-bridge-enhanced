@@ -58,6 +58,8 @@ button.primary:hover:not(:disabled) { filter: brightness(1.06); }
 button.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 38%, var(--line)); }
 button.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 8%, var(--card)); }
 button.ghost { background: transparent; }
+a.link-button { font: inherit; color: inherit; background: transparent; border: 1px solid var(--magpie-line, var(--line)); border-radius: 7px; padding: 4px 12px; text-decoration: none; cursor: pointer; transition: border-color .12s, background .12s; }
+a.link-button:hover { border-color: var(--magpie-muted, var(--muted)); background: color-mix(in srgb, var(--magpie-muted, var(--muted)) 8%, transparent); }
 :focus-visible { outline: 2px solid var(--magpie-accent, var(--accent)); outline-offset: 1px; }
 
 .notice { border-radius: 8px; padding: 7px 10px; font-size: 12px; border: 1px solid var(--line); background: var(--magpie-card, var(--card)); }

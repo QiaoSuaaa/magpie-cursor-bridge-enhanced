@@ -21,6 +21,7 @@
       <button id="refresh" class="ghost" type="button" title="重新读取运行状态，不重新加载页面">刷新状态</button>
       <button id="updateCheck" class="ghost" type="button" title="检查 GitHub 最新版本">检查更新</button>
       <button id="reload" class="ghost" type="button" title="重新加载控制台页面，获取当前控制口令">刷新页面</button>
+      <a id="github" class="link-button" href="#" target="_blank" rel="noreferrer" title="在浏览器中打开项目 GitHub 仓库" hidden>GitHub</a>
     </div>
   </header>
 
@@ -257,7 +258,7 @@
 
   <p class="foot">控制台只监听 127.0.0.1；macOS 与 Linux 的「启动」「重启」「状态」调用 <code>bash setup.command</code>，Windows 通过宿主运行时调用 <code>install.js</code>（登录自启写入启动文件夹，无需管理员权限；首次安装证书会弹出一次管理员确认）。Linux 使用 systemd 用户单元，无 systemd 用户实例时回退为分离进程；证书写入 Cursor 的 <code>argv.json</code> 与用户 NSS 库，无需管理员权限。</p>
 </main>
-<script>window.__BRIDGE_TOKEN__="__CONTROL_TOKEN__";window.__BRIDGE_PORT__=__CONTROL_PORT__;</script>
+<script>window.__BRIDGE_TOKEN__="__CONTROL_TOKEN__";window.__BRIDGE_PORT__=__CONTROL_PORT__;window.__BRIDGE_REPO__=__REPO_URL__;</script>
 <script src="ui.js"></script>
 </body>
 </html>

@@ -175,6 +175,15 @@ export function readConnection(candidates) {
   return null;
 }
 
+function repositoryUrl(root) {
+  const manifest = readJson(path.join(root, 'package.json'));
+  const homepage = String(manifest?.homepage || '').trim();
+  if (/^https:\/\/github\.com\//.test(homepage)) return homepage.replace(/#.*$/, '');
+  const repository = String(manifest?.repository?.url || '');
+  const match = /github\.com[/:]([^/]+)\/([^/.#?]+?)(?:\.git)?(?:#.*)?$/.exec(repository);
+  return match ? `https://github.com/${match[1]}/${match[2]}` : '';
+}
+
 function safeConnection(repoRoot) {
   const data = readConnection(paths(repoRoot).connections);
   if (!data) return {exists: false};
@@ -510,6 +519,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 export function createControlServer({repoRoot, port, log = console.log, connectAgent = runMagpieConnect}) {
   const token = randomBytes(32).toString('hex');
+  const repoUrl = repositoryUrl(repoRoot);
   const htmlFile = path.join(here, 'ui.html');
   const readAsset = (name, type) => {
     const file = path.join(here, name);
@@ -662,7 +672,8 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
         const html = fs.readFileSync(htmlFile, 'utf8')
           .replace('__CONTROL_TOKEN__', token)
-          .replace('__CONTROL_PORT__', String(ownPort));
+          .replace('__CONTROL_PORT__', String(ownPort))
+          .replace('__REPO_URL__', JSON.stringify(repoUrl));
         // A sandboxed frame has an opaque origin, where CSP 'self' matches
         // nothing. Name the loopback sources explicitly or ui.css/ui.js are
         // refused and the page falls back to unstyled HTML with no handlers.

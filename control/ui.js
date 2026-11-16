@@ -1107,6 +1107,11 @@
       $(id).addEventListener('click', () => runAction(action));
     }
     $('agentConnect').addEventListener('click', connectAgent);
+    const repo = window.__BRIDGE_REPO__ || '';
+    if (repo) {
+      $('github').href = repo;
+      $('github').hidden = false;
+    }
     $('refresh').addEventListener('click', () => loadStatus());
     $('updateCheck').addEventListener('click', checkUpdate);
     $('updateRun').addEventListener('click', runUpdate);

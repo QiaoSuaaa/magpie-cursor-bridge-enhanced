@@ -90,6 +90,9 @@ test('control console serves a tokenised page and guards /api', async (t) => {
   const token = page.body.match(/__BRIDGE_TOKEN__="([0-9a-f]{64})"/)?.[1];
   assert.ok(token, 'token is inlined into the page');
   assert.equal((await request(port, {path: '/ui.js'})).status, 200);
+  assert.match(page.body, /id="github"/);
+  assert.match(page.body, /window\.__BRIDGE_REPO__="https:\/\/github\.com\//);
+  assert.doesNotMatch(page.body, /__REPO_URL__/);
 
   const missing = await request(port, {path: '/api/status'});
   assert.equal(missing.status, 403);

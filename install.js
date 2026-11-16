@@ -86,7 +86,7 @@ try {
           atomic(path.join(p.target,'agent.js'),fs.readFileSync(path.join(source,'agent.js'),'utf8'));
           atomic(path.join(p.target,'agent-platform.js'),fs.readFileSync(path.join(source,'agent-platform.js'),'utf8'));
           atomic(path.join(p.target,'version.js'),fs.readFileSync(path.join(source,'version.js'),'utf8'));
-          atomic(path.join(p.target,'package.json'),JSON.stringify({name:manifest.name,version:manifest.version,type:'module',main:manifest.main,magpie:manifest.magpie},null,2));
+          atomic(path.join(p.target,'package.json'),JSON.stringify({name:manifest.name,version:manifest.version,type:'module',main:manifest.main,magpie:manifest.magpie,homepage:manifest.homepage,repository:manifest.repository},null,2));
           atomic(path.join(p.target,'control-location.json'),JSON.stringify({source},null,2));
           if(magpieReady) run(magpie,['plugin','add',p.target]);
           else console.log(`未找到 Magpie 可执行文件，请从 Magpie 插件页手动添加：${p.target}`);
