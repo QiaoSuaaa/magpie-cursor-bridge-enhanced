@@ -115,7 +115,7 @@
   }
 
   function setBusy(value) {
-    for (const id of ['start', 'status', 'restart', 'agentConnect', 'saveModelNames', 'updateRun']) {
+    for (const id of ['start', 'stop', 'status', 'restart', 'agentConnect', 'saveModelNames', 'updateRun']) {
       if ($(id)) $(id).disabled = value;
     }
     for (const button of document.querySelectorAll('.row-save')) button.disabled = value;
@@ -275,6 +275,9 @@
       $(id).disabled = !!busy || !serviceSupported;
       $(id).title = serviceSupported ? '' : '当前平台暂不支持自动安装后台服务';
     }
+    const active = !!overview.supervisor?.alive || !!overview.engine?.alive;
+    $('stop').disabled = !!busy || !serviceSupported || !active;
+    $('stop').title = active ? '停止后台并还原 Cursor 代理' : '后台未运行';
 
     const configuredMode = runtime?.mode || overview.settings?.values?.runMode || 'default';
     const engineMode = runtime?.engineMode || null;
@@ -508,16 +511,20 @@
     }
     busy = action;
     setBusy(true);
-    const label = {start: '启动', status: '状态', restart: '重启'}[action];
+    const label = {start: '启动', stop: '停止', status: '状态', restart: '重启'}[action];
     const win = lastOverview?.platform === 'win32';
     const linux = lastOverview?.platform === 'linux';
     const command = action === 'status'
       ? (win ? 'install.js status' : 'bash setup.command status')
-      : (action === 'restart'
-        ? (win ? '停止后台进程 + install.js setup'
-          : linux ? 'systemctl --user stop + 杀掉后台进程 + bash setup.command'
-          : 'launchctl bootout + 杀掉后台进程 + bash setup.command')
-        : (win ? 'install.js setup' : 'bash setup.command'));
+      : (action === 'stop'
+        ? (win ? '停止后台进程 + 还原 Cursor 代理'
+          : linux ? 'systemctl --user stop + 停止后台进程 + 还原 Cursor 代理'
+          : 'launchctl bootout + 停止后台进程 + 还原 Cursor 代理')
+        : (action === 'restart'
+          ? (win ? '停止后台进程 + install.js setup'
+            : linux ? 'systemctl --user stop + 杀掉后台进程 + bash setup.command'
+            : 'launchctl bootout + 杀掉后台进程 + bash setup.command')
+          : (win ? 'install.js setup' : 'bash setup.command')));
     output(`$ ${command}\n执行中…`);
     notice('');
     try {
@@ -1103,7 +1110,7 @@
   }
 
   function wire() {
-    for (const [id, action] of [['start', 'start'], ['status', 'status'], ['restart', 'restart']]) {
+    for (const [id, action] of [['start', 'start'], ['stop', 'stop'], ['status', 'status'], ['restart', 'restart']]) {
       $(id).addEventListener('click', () => runAction(action));
     }
     $('agentConnect').addEventListener('click', connectAgent);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {cursorCompatibility, compareVersions, CURSOR_TESTED} from '../lib/compatibility.js';
 
 test('cursor versions inside the tested range are marked tested', () => {
-  for (const version of ['3.28.0', '3.28.7', '3.30.8']) {
+  for (const version of ['3.28.0', '3.28.7', '3.30.20']) {
     const result = cursorCompatibility(version);
     assert.equal(result.status, 'tested', version);
     assert.equal(result.tested, true);

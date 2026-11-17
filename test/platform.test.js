@@ -147,8 +147,8 @@ test('cursor version is read from the macOS and Windows/Linux layouts', (t) => {
   t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
   const mac = path.join(dir, 'Cursor.app');
   fs.mkdirSync(path.join(mac, 'Contents', 'Resources', 'app'), {recursive: true});
-  fs.writeFileSync(path.join(mac, 'Contents', 'Resources', 'app', 'package.json'), JSON.stringify({version: '3.30.8'}));
-  assert.equal(cursorVersionFrom(mac), '3.30.8');
+  fs.writeFileSync(path.join(mac, 'Contents', 'Resources', 'app', 'package.json'), JSON.stringify({version: '3.30.20'}));
+  assert.equal(cursorVersionFrom(mac), '3.30.20');
   const flat = path.join(dir, 'cursor');
   fs.mkdirSync(path.join(flat, 'resources', 'app'), {recursive: true});
   fs.writeFileSync(path.join(flat, 'resources', 'app', 'package.json'), JSON.stringify({version: '3.29.1'}));

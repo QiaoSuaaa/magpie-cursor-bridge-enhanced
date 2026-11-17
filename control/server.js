@@ -6,7 +6,7 @@ import {execFile, spawn} from 'node:child_process';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, settingsFile} from '../lib/bridge-settings.js';
-import {atomic} from '../lib/settings.js';
+import {atomic, restoreProxy} from '../lib/settings.js';
 import {cursorCompatibility, compareVersions} from '../lib/compatibility.js';
 import {version} from '../version.js';
 import {readDatabase, readRecentCalls, cleanDatabase} from './database.js';
@@ -966,7 +966,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
       if (req.method === 'POST' && url.pathname === '/api/action') {
         const body = await readBody(req);
         const action = String(body.action || '');
-        if (!['start', 'status', 'restart'].includes(action)) {
+        if (!['start', 'status', 'restart', 'stop'].includes(action)) {
           return sendJson(res, 400, {ok: false, error: `未知操作：${action || '空'}`});
         }
         if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
@@ -976,6 +976,15 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
           let result;
           if (action === 'status') {
             result = await runStatus(repoRoot);
+          } else if (action === 'stop') {
+            await stopBridge(repoRoot);
+            const p = paths(repoRoot);
+            // A force-killed supervisor cannot run its finally block; restore the
+            // journal explicitly and leave a stopped status the panel can show.
+            restoreProxy(path.join(p.root, 'settings-journal.json'));
+            const current = readJson(p.status) || {};
+            atomic(p.status, JSON.stringify({...current, state: 'stopped', updated: new Date().toISOString()}, null, 2));
+            result = {ok: true, code: 0, stdout: '后台已停止，Cursor 代理已还原。', stderr: '', error: ''};
           } else if (action === 'restart') {
             await stopBridge(repoRoot);
             result = await runSetup(repoRoot);
