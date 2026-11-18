@@ -115,7 +115,7 @@
   }
 
   function setBusy(value) {
-    for (const id of ['start', 'stop', 'status', 'restart', 'agentConnect', 'saveModelNames', 'updateRun']) {
+    for (const id of ['start', 'stop', 'status', 'restart', 'agentConnect', 'saveModelNames', 'updateRun', 'storageMigrate', 'saveTab', 'saveSettings']) {
       if ($(id)) $(id).disabled = value;
     }
     for (const button of document.querySelectorAll('.row-save')) button.disabled = value;
@@ -335,8 +335,94 @@
       fillSettings(overview.settings.values);
       settingsFilled = true;
     }
+    $('currentDataDir').textContent = overview.paths?.dataDir || '—';
+    $('tabState').textContent = overview.tabSupported === false ? '当前平台需构建新引擎' : (TAB_MODES[overview.settings?.values?.tabMode] || TAB_MODES.direct);
+    for (const option of $('tabMode').options) option.disabled = option.value !== 'direct' && overview.tabSupported === false;
+    if (!tabFilled && overview.settings?.values) fillTab(overview.settings.values);
     // The card is collapsed by default; only load the catalogue once opened.
     if ($('modelNamesCard')?.open && !modelNamesFilled) loadModelNames(overview);
+  }
+
+  const TAB_MODES = {direct: '沿用 Cursor 官方补全', official: '官方 Token 补全', custom: '自定义端点', public: '公共服务'};
+  let tabFilled = false;
+  let clearTabToken = false;
+
+  function updateTabMode() {
+    const mode = $('tabMode').value;
+    $('tabOfficialRow').hidden = mode !== 'official';
+    $('tabAddressRow').hidden = mode !== 'custom';
+    $('tabModeHint').textContent = {
+      direct: '使用 Cursor 原有登录与官方补全服务。',
+      official: '使用保存的 Cursor 登录 Token 请求官方补全服务，需有效的官方补全权限。Token 仅保存在本机配置中。',
+      custom: '将补全请求转发到兼容 Cursor 补全协议的服务地址。',
+      public: '代码上下文会发送至公共服务 https://tab.leokun.cn，请确认接受后保存。'
+    }[mode];
+    tellSize();
+  }
+
+  function fillTab(values) {
+    for (const key of ['tabMode', 'tabAddress']) $(key).value = values[key] || (key === 'tabMode' ? 'direct' : '');
+    $('tabToken').value = '';
+    $('tabToken').placeholder = values.tabTokenConfigured ? '已保存；留空保持' : '填写 Token';
+    clearTabToken = false;
+    tabFilled = true;
+    updateTabMode();
+  }
+
+  async function saveTab(event) {
+    event.preventDefault();
+    $('saveTab').disabled = true;
+    try {
+      const body = {tabMode: $('tabMode').value, tabAddress: $('tabAddress').value};
+      if ($('tabToken').value.trim() || clearTabToken) body.tabToken = $('tabToken').value.trim();
+      const result = await api('/api/settings', {method: 'POST', body});
+      fillTab(result.settings);
+      $('tabHint').textContent = '已保存，运行中的引擎将在数秒内应用；无需重启 Cursor';
+      await loadStatus({quiet: true});
+    } catch (error) {
+      $('tabHint').textContent = `保存失败：${error.message}`;
+    } finally { $('saveTab').disabled = false; }
+  }
+
+  async function extractTabToken() {
+    $('tabExtract').disabled = true;
+    try {
+      const result = await api('/api/tab/token/extract', {method: 'POST'});
+      $('tabToken').value = result.token;
+      clearTabToken = false;
+      $('tabHint').textContent = `已提取${result.email ? `（${result.email}）` : ''}，点击保存后生效`;
+    } catch (error) { $('tabHint').textContent = error.message; }
+    finally { $('tabExtract').disabled = false; }
+  }
+
+  async function migrateData(event) {
+    event.preventDefault();
+    if (busy) return;
+    const targetDir = $('storageTarget').value.trim();
+    if (!targetDir || !window.confirm(`将数据目录切换至：\n${targetDir}\n\n期间暂停桥接；空目录复制数据，已有数据库直接切换，原目录保留。继续？`)) return;
+    busy = 'storage';
+    setBusy(true);
+    $('storageHint').textContent = '正在暂停桥接并处理数据，请保持页面打开…';
+    try {
+      const result = await api('/api/storage/migrate', {method: 'POST', body: {targetDir}});
+      dbData = null;
+      pendingClean = null;
+      $('dbConfirm').hidden = true;
+      $('dbCategories').replaceChildren();
+      $('dbSummary').hidden = true;
+      $('dbConversations').hidden = true;
+      $('dbDaysBox').hidden = true;
+      $('dbState').textContent = '目录已切换，重新统计以读取';
+      $('callsBody').replaceChildren();
+      $('storageHint').textContent = result.restart?.ok === false
+        ? `目录已切换，但启动失败：${result.restart.error || result.restart.stderr || '请查看日志'}`
+        : `已${result.mode === 'copied' ? '复制并切换' : '切换'}至 ${result.dataDir}；原目录保留`;
+    } catch (error) { $('storageHint').textContent = error.message; }
+    finally {
+      busy = null;
+      setBusy(false);
+      await loadStatus({quiet: true});
+    }
   }
 
   function fillSettings(values) {
@@ -1170,6 +1256,18 @@
       updateDbControls();
     });
     $('settingsForm').addEventListener('submit', saveSettings);
+    $('tabForm').addEventListener('submit', saveTab);
+    $('tabMode').addEventListener('change', updateTabMode);
+    $('tabExtract').addEventListener('click', extractTabToken);
+    $('tabClear').addEventListener('click', () => {
+      $('tabToken').value = '';
+      clearTabToken = true;
+      $('tabToken').placeholder = '保存后清除';
+      $('tabHint').textContent = '已标记清除；请选择其他补全模式后保存';
+    });
+    $('tabCard').addEventListener('toggle', tellSize);
+    $('storageCard').addEventListener('toggle', tellSize);
+    $('storageForm').addEventListener('submit', migrateData);
     $('saveModelNames').addEventListener('click', saveModelNames);
     $('modelNamesCard').addEventListener('toggle', () => {
       if ($('modelNamesCard').open && lastOverview) loadModelNames(lastOverview);

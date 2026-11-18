@@ -516,6 +516,16 @@ export async function readRecentCalls(dbPath, {limit = 25, errorsOnly = false} =
   };
 }
 
+export async function extractCursorAuthToken(home) {
+  const dbPath = path.join(path.dirname(platform.current.cursorSettings(home)), 'globalStorage', 'state.vscdb');
+  if (!fs.existsSync(dbPath)) throw new Error('未找到 Cursor 状态数据库，请确认已安装并登录 Cursor');
+  const rows = parseJson(await sqlite(dbPath, "SELECT key, value FROM ItemTable WHERE key IN ('cursorAuth/accessToken', 'cursorAuth/cachedEmail');", {readonly: true, json: true, timeout: 10000, busyTimeout: 5000}));
+  const values = Object.fromEntries(rows.map((row) => [row.key, row.value]));
+  const token = values['cursorAuth/accessToken'];
+  if (typeof token !== 'string' || !token.trim()) throw new Error('未找到 Cursor Access Token，请先在 Cursor 中登录');
+  return {token: token.trim(), email: values['cursorAuth/cachedEmail'] || ''};
+}
+
 export async function readDatabase(dbPath, {deep = false} = {}) {
   if (!fs.existsSync(dbPath)) {
     return {exists: false, path: dbPath, file: fileSummary(dbPath), totals: {rows: 0, bytes: 0}, deep};

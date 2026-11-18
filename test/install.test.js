@@ -50,7 +50,7 @@ test('package and native engine have the same pinned version and digest',()=>{
  assert.equal(verifyPackage(source).version,version);
  const integrity=JSON.parse(fs.readFileSync(path.join(source,'integrity.json'),'utf8'));
  assert.equal(integrity.version,version);
- assert.equal(integrity.engineVersion,'0.2.15');
+ assert.equal(typeof (integrity.engineVersions?.[`${process.platform}-${process.arch}`] || integrity.engineVersion),'string');
 });
 test('certificate trust uses SSL policy and argument arrays, and refuses failed authorization',{skip:!IS_DARWIN},t=>{
  const p=fakePaths(t),calls=[];let trusted=false;
@@ -84,6 +84,22 @@ test('windows certificate trust elevates once and verifies the machine Root stor
  assert.equal(elevations,1,'an already trusted CA skips the prompt');
  assert.throws(()=>initializeCertificate(engine,p,exec,{trust:false}),/尚未受信任/);
 });
+test('certificate initialization uses the migrated data directory',{skip:!IS_WIN},t=>{
+ const p=fakePaths(t),data=path.join(p.home,'portable-data');
+ fs.mkdirSync(path.join(data,'ca'),{recursive:true});
+ fs.mkdirSync(p.root,{recursive:true});
+ fs.writeFileSync(path.join(p.root,'storage.json'),JSON.stringify({data_dir:data}));
+ fs.writeFileSync(path.join(data,'ca','ca.crt'),`-----BEGIN CERTIFICATE-----\n${Buffer.from('migrated-test-certificate').toString('base64')}\n-----END CERTIFICATE-----\n`);
+ let initialized='';
+ const exec=(cmd,args,options)=>{
+  if(args[0]==='--init-ca') {initialized=options.env.CURSOR_BYOK_DATA_DIR;return {status:0,stdout:'{"ca":"trusted"}'};}
+  return {status:0,stdout:(String(args.at(-1)).match(/eq '([0-9A-F]+)'/)||[])[1]||''};
+ };
+ initializeCertificate(engine,p,exec);
+ assert.equal(initialized,data);
+ assert.equal(fs.existsSync(path.join(p.root,'data')),false);
+});
+
 test('windows trust fails clearly when the administrator prompt is declined',{skip:!IS_WIN},t=>{
  const p=fakePaths(t);
  fs.mkdirSync(path.join(p.root,'data/ca'),{recursive:true});

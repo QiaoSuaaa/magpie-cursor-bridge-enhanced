@@ -1,5 +1,13 @@
 # Changelog
 
+## 未发布（Tab 补全与数据目录迁移）
+
+- 在 enhanced 控制台新增独立 Tab 卡片：direct、official、custom、public；默认保留 Cursor 原补全。官方 Token 从本机状态库只读提取，设置及生效文件私有保存，状态、日志与诊断不输出 Token。未加入参考分支中仅转发官方请求的 model 占位选项。
+- 原生源码保留 enhanced 的 Agent 引擎与子代理行为，增加官方 Tab 端点分流、Token/checksum 和共享路由热更新；源码由固定上游提交和 source.patch 重建。Windows 新引擎按平台记录版本/摘要，尚未重建的平台禁用非 direct 模式。
+- 新增 lib/storage.js：默认 root/data，可通过 storage.json 切换数据目录；空目录异步复制，已有 SQLite bridge.db 直接切换，保留原数据，不覆盖非空无效目标。
+- 迁移 API 串行化维护、等待数据库读取、停写后复制、原子提交配置并恢复原运行状态；目录解析统一覆盖引擎、自动保留、数据库清理/备份、CA 初始化、自检与诊断输出。
+- Windows supervisor 增加 stop-request.json 协作退出，停机前等待自动清理完成，避免直接终止进程留下写入者。新增迁移故障/并发、Token 脱敏、Tab 热更新和真实 supervisor 退出测试。
+
 ## 0.2.31（停止按钮、3.30.20 兼容与 Magpie 图文教程）
 
 - 控制台新增「停止」按钮：停止 supervisor 与原生引擎、还原 Cursor 代理设置，不卸载服务、不删除数据；再次点「启动」恢复。`POST /api/action` 新增 `stop`，并在停止后写入 `state: stopped` 状态。

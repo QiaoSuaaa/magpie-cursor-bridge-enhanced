@@ -85,10 +85,17 @@ a.link-button:hover { border-color: var(--magpie-muted, var(--muted)); backgroun
 .settings { display: flex; align-items: flex-end; gap: 12px 18px; flex-wrap: wrap; }
 .settings label { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--magpie-muted, var(--muted)); white-space: nowrap; }
 .settings label .label { letter-spacing: .01em; }
+#tabCard > summary, #storageCard > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; }
+#tabCard[open] > summary, #storageCard[open] > summary { margin-bottom: 14px; }
+#tabForm, #storageForm { align-items: stretch; flex-direction: column; }
+#tabForm .field input, #storageForm .field input { width: 100%; min-width: 0; }
+#tabOfficialRow .form-actions { margin-top: 8px; }
+#currentDataDir { overflow-wrap: anywhere; }
+#storageHint, #tabHint { overflow-wrap: anywhere; }
 .field { display: flex; align-items: center; gap: 7px; height: 30px; color: var(--magpie-fg, var(--fg)); }
 .unit { font-size: 11.5px; color: var(--magpie-muted, var(--muted)); }
 
-input[type="number"], input[type="text"], select { height: 30px; font: 12.5px var(--magpie-code, var(--code)); color: var(--magpie-fg, var(--fg)); background: var(--magpie-card, var(--card)); border: 1px solid var(--magpie-line, var(--line)); border-radius: 7px; padding: 0 9px; transition: border-color .12s, box-shadow .12s; }
+input[type="number"], input[type="text"], input[type="password"], input[type="url"], select { height: 30px; font: 12.5px var(--magpie-code, var(--code)); color: var(--magpie-fg, var(--fg)); background: var(--magpie-card, var(--card)); border: 1px solid var(--magpie-line, var(--line)); border-radius: 7px; padding: 0 9px; transition: border-color .12s, box-shadow .12s; }
 input[type="number"] { width: 74px; -moz-appearance: textfield; appearance: textfield; }
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }

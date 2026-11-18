@@ -15,14 +15,17 @@ mkdir -p "$bridge_package/bin"
 cp "$bridge_build/source/target/release/cursor-magpie-bridge" "$bridge_package/bin/cursor-magpie-bridge.new"
 chmod 755 "$bridge_package/bin/cursor-magpie-bridge.new"
 mv "$bridge_package/bin/cursor-magpie-bridge.new" "$bridge_package/bin/cursor-magpie-bridge"
-python3 - "$bridge_package" <<'PY'
-import hashlib,json,pathlib,subprocess,sys
-p=pathlib.Path(sys.argv[1]);v=json.loads((p/'package.json').read_text())['version'];b=p/'bin/cursor-magpie-bridge'
+python3 - "$bridge_package" "$bridge_build/source" <<'PY'
+import hashlib,json,pathlib,re,subprocess,sys
+p=pathlib.Path(sys.argv[1]);source=pathlib.Path(sys.argv[2]);key='darwin'+'-'+'arm64';b=p/'bin/cursor-magpie-bridge'
+v=re.search(r'println!\("(\d+\.\d+\.\d+)"\)',(source/'server/src/bin/cursor-magpie-bridge.rs').read_text(encoding='utf-8')).group(1)
 assert subprocess.check_output([str(b),'--version'],text=True).strip()==v
 digest=hashlib.sha256(b.read_bytes()).hexdigest()
-data=json.loads((p/'integrity.json').read_text()) if (p/'integrity.json').exists() else {}
-data['version']=v
+data=json.loads((p/'integrity.json').read_text(encoding='utf-8'))
+data['version']=json.loads((p/'package.json').read_text(encoding='utf-8'))['version']
 data['engine']=digest
-data.setdefault('platforms',{})['darwin-arm64']=digest
+data.setdefault('engineVersions',{})[key]=v
+data.setdefault('platforms',{})[key]=digest
+data['tabPlatforms']=sorted(set(data.get('tabPlatforms',[]))|{key})
 (p/'integrity.json').write_text(json.dumps(data,indent=2)+'\n')
 PY
