@@ -1,6 +1,6 @@
 # Cursor · Magpie Bridge 插件使用教程
 
-> 适用版本：`0.2.31`。本文控制台截图来自真实实例；本地路径、PID、模型名与部分列表已脱敏或替换为示例数据。
+> 适用版本：`0.2.32`。本文控制台截图来自真实实例；本地路径、PID、模型名与部分列表已脱敏或替换为示例数据。
 
 ---
 
@@ -182,7 +182,7 @@ Bridge 会把 `group/<id>` 当作一个普通模型同步到 Cursor 菜单；显
 
 | 项目 | 要求 |
 |---|---|
-| Cursor | 3.28.x ～ 3.30.20 为已实测范围；更高版本控制台会标记「未验证」 |
+| Cursor | 3.28.x ～ 3.31.3 为已实测范围；更高版本控制台会标记「未验证」 |
 | Magpie | 已安装、正在运行，且至少有一个可用模型 |
 | 平台 | macOS（Apple Silicon / Intel）、Windows x64、Linux x64 / arm64 |
 | 权限 | macOS 首次信任证书需系统授权；Windows 首次信任证书需一次管理员确认；Linux 无需 root |
@@ -198,7 +198,7 @@ Bridge 会把 `group/<id>` 当作一个普通模型同步到 Cursor 菜单；显
 在 **Magpie → Plugins** 添加快捷安装地址（固定版本）：
 
 ```text
-github:<owner>/magpie-agent-cursor-bridge-enhanced#v0.2.31
+github:<owner>/magpie-agent-cursor-bridge-enhanced#v0.2.32
 ```
 
 完整地址见 README 顶部的安装地址，把末尾 tag 换成目标版本即可。

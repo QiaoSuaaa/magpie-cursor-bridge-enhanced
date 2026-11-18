@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.32（Cursor 3.31.3 兼容）
+
+- Cursor 已实测范围更新为 3.28.x–3.31.3；控制台对 3.31.3 显示「已实测」，超出范围仍标记「未验证」。
+- 同步 README、`docs/plugin-usage.md` 与 `docs/promo-article.md` 中的适配范围表述。
+- 兼容测试更新：实测用例加入 3.31.3，超出范围用例改用 3.32.0（原 3.31.0-insider 已落入新范围内）。
+- 推广文标题改用 cursor-bridge 简称，便于阅读。
+- macOS 本机 88 项测试 83 通过、5 项按平台跳过。
+- 版本号升至 0.2.32；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.31（停止按钮、3.30.20 兼容与 Magpie 图文教程）
 
 - 控制台新增「停止」按钮：停止 supervisor 与原生引擎、还原 Cursor 代理设置，不卸载服务、不删除数据；再次点「启动」恢复。`POST /api/action` 新增 `stop`，并在停止后写入 `state: stopped` 状态。
