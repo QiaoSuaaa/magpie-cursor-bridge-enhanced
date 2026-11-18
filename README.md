@@ -1,6 +1,6 @@
 # Cursor · Magpie Bridge（增强版）
 
-让普通版 Cursor 使用 **Magpie** 中配置的模型与路由组：模型菜单只列出 Magpie 目录，隐藏 Cursor Auto 入口，保留 Cursor 原有登录与 Tab 补全。
+让普通版 Cursor 使用 **Magpie** 中配置的模型与路由组：模型菜单只列出 Magpie 目录，隐藏 Cursor Auto 入口，保留 Cursor 原有登录。当前本地开发版增加可选 Tab 补全接管和数据目录迁移；这些改动尚未包含在下方的 v0.2.32 发布包中。
 
 - **当前版本**：`0.2.32`（本地增强版）
 - **适配范围**：Cursor 3.28.x ～ 3.31.3（已实测）；控制台会读取本机实际版本，超出范围时标记「未验证」并建议先运行自检
@@ -41,7 +41,7 @@ Cursor 的 Agent / Composer 默认只认自家订阅与官方后端。通过 Mag
 
 - 不修改 Cursor 安装包，不注入代码，不绕过登录；
 - 不复制任何模型提供商的密钥，只使用 Magpie 的 Agent 网关密钥；
-- 不替代 Cursor 的 Tab 补全（补全仍走 Cursor 原路径）；
+- Tab 默认沿用 Cursor 原路径；启用官方 Token 或自定义服务后，仅接管 Tab 相关 RPC；
 - 不保证跨版本永久兼容——Cursor 的私有协议变化时需要配套更新（见 [第五节](#五与原版的升级点)）。
 
 ### 1.3 当前能力
@@ -69,7 +69,8 @@ Cursor 的 Agent / Composer 默认只认自家订阅与官方后端。通过 Mag
 | 一键停止并还原 Cursor 代理 | ✅ 0.2.31 |
 | Cursor 3.29+ 二进制协议编码 | ✅ 0.2.3 |
 | Cursor 3.27 本地循环开关回退 | ✅ 上游 0.2.2 |
-| Tab 补全 / 行内补全 | 沿用 Cursor 原路径 |
+| Tab 补全 / 行内补全 | 默认原路径；本地开发版 Windows 新引擎支持官方 Token / 自定义端点 / 公共服务 |
+| 数据目录迁移 / 已有数据库切换 | 本地开发版新增；保留源目录 |
 
 ---
 
@@ -181,7 +182,10 @@ Cursor 请求里的 `requested_model.model_id` 是桥接生成的 `model_hash`�
   releases/版本-随机后缀/          # 完整版本目录（含 bin/runtime）
 ~/.config/magpie-cursor-bridge/
   connection.json                 # Magpie 写入的私有连接配置（含网关 key）
-  effective.json                  # 当前生效的模型目录快照
+  effective.json                  # 引擎输入：模型目录与 Tab 配置（含 Token，私有文件）
+  bridge-settings.json            # 控制台参数与 Tab Token（私有文件）
+  storage.json                    # 数据目录选择：data_dir 绝对路径
+  stop-request.json               # 停机期间的 supervisor 协作退出请求
   installation.json               # 当前安装版本与 release 路径
   settings-journal.json           # Cursor 代理恢复记录（连接时存在）
   status.json                     # 后台运行状态
@@ -235,7 +239,7 @@ bash setup.command
 
 初始化会：
 
-1. 校验二进制摘要与版本配对（`integrity.json` 分别固定插件版本 `version` 与随包引擎版本 `engineVersion`，分平台摘要见 `platforms`）；
+1. 校验二进制摘要与版本配对（`integrity.json` 固定插件版本 `version`，按 `engineVersions[平台]` 或 `engineVersion` 校验引擎版本，`platforms` 保存摘要，`tabPlatforms` 标明已构建 Tab 新引擎的平台）；
 2. 复用已有证书，或在首次安装时生成本机 CA 并完成平台信任：macOS 请求系统授权、Windows 加入本机 Root、Linux 写入 Cursor `argv.json` 并尽力导入用户 NSS 库；
 3. 把完整版本目录 stage 到 `releases/0.2.31-xxxxxx`；载荷、引擎与运行时都未变化时直接复用已有目录，各平台只保留当前激活的 release；
 4. 把 `~/.local/share/magpie-cursor-bridge` 注册为本地 Magpie 插件；
@@ -299,6 +303,8 @@ Magpie 的代理卡片内部是内置 UI，插件无法把控件插进那张卡�
 - **运行模式**：默认模式 / 轻量模式。轻量模式让原生引擎使用进程内存中的 SQLite（shared-cache），不写 `data/bridge.db`；切换后 supervisor 在 2 秒内自动重启引擎，当前对话可能中断一次。轻量模式会沿用上次的代理端口（端口占用时回退随机），避免 Cursor 因端口变化而需要重启。
 - **可编辑参数**：模型目录同步间隔（默认 15 秒）、网关断线容错（默认 60 秒）、引擎日志上限（默认 4 MiB）、调用日志保留（默认 7 天，0=不自动清理）、历史会话保留（默认 0=不自动清理），写入 `~/.config/magpie-cursor-bridge/bridge-settings.json`。运行模式与同步间隔、容错在下一轮循环生效（模式变更会重启引擎）；日志上限在下次后台启动时生效；保留策略由 supervisor 在后台分批执行，不中断对话、不执行 VACUUM，结果写入 `retention.json` 并显示在控制台「自动清理」一栏。
 - **模型显示名、顺序与隐藏**：控制台独立的「模型显示名」折叠卡片（默认收起，展开才读取模型目录）中，每个模型一行：拖动行首 `⋮⋮` 调整顺序、勾选「菜单」决定是否在 Cursor 中显示、填写显示名、行内「保存」只更新该行名称；「测试」向 Magpie 网关发送一条极短请求并显示延迟；顶部搜索框可按模型 ID 或名称过滤；底部「保存全部」一次保存名称、顺序与隐藏项。配置写入 `bridge-settings.json` 的 `modelNames`、`modelOrder` 与 `modelHidden`，只影响传给引擎的目录，模型 ID、路由、计费与连接语义不变；当前选中的模型即使被隐藏也始终保留，避免路由失效。保存后 supervisor 更新 `effective.json`，引擎热更新模型目录，约 2–4 秒生效。
+- **Tab 代码补全**：展开独立卡片，默认「沿用 Cursor 官方补全」。Windows 新引擎可选择「官方 Token 补全」，提取本机 Cursor 的 Access Token 或手动填写后保存；仍需有效的官方补全权限。也可选择兼容 Cursor 补全协议的自定义端点或公共服务（代码上下文会发往 `https://tab.leokun.cn`）。保存后 supervisor → `effective.json` → 原生引擎共享路由状态，约 2–4 秒热更新；正在进行的 Tab 请求继续使用原配置，后续请求使用新配置，Agent 会话和引擎不重启。本次没有加入 Magpie 模型生成补全：参考分支的同名选项实际仍请求官方服务。Token 输入留空保留已存值，清除按钮需保存后生效；状态、日志和诊断包不返回 Token。其他平台随包旧引擎保持 direct，构建脚本产出并登记新引擎后才开放接管选项。
+- **数据目录迁移**：展开卡片，填写绝对路径。不存在或空的目录会异步复制当前数据（数据库与 WAL/SHM、CA、备份、诊断文件）；非空目录仅在包含 SQLite 格式的 `bridge.db` 时允许切换，不合并两套历史。执行顺序：阻止新维护任务 → 等待读取结束 → supervisor 完成自动清理并关闭引擎 → 复制或切换 → 原子写 `storage.json` → 按原运行状态启动。配置提交前失败时继续使用原目录；源数据始终保留。拒绝源目录与目标互为父子、符号链接和无效的非空目标。迁移会中断在途对话并创建新的引擎生命周期；轻量模式的内存历史无法迁移。配置、日志与后台服务目录留在原位置；数据、清理备份、诊断输出及证书初始化统一使用选中的目录。切换不同 CA 的已有目录时，启动可能要求重新信任证书，控制台会分别报告目录切换和重启结果。
 - **快捷入口**：配置目录、数据目录、诊断目录、`engine.log`、`supervisor.log`、`supervisor-error.log`、安装目录、插件目录。
 - **日志与诊断**：折叠卡片可读取三类日志的尾部（100–1000 行），按证书、端口、网关、协议、连接停滞、启动超时、代理改动归类并给出操作建议；「导出诊断包」把状态、设置、版本、平台、保留结果与脱敏日志写入 `data/diagnostics/diagnostics-<时间>.json`，并返回文件路径。
 - **最近调用**：折叠卡片读取 `llm_calls` 最近 25/50/100 条，显示时间、模型、状态、耗时、token（入/出/总）与错误摘要；可切换「只看错误」，错误内容脱敏；只读查询走 `created_at_ms` 索引，不扫描请求正文。
@@ -408,7 +414,8 @@ bash setup.command uninstall
 ├── lib/
 │   ├── config.js            # connection.json 校验与 Magpie 模型目录拉取
 │   ├── compatibility.js     # Cursor 已实测范围与版本比较
-│   ├── bridge-settings.js   # 可编辑参数（运行模式、保留策略、模型显示名/顺序/隐藏）
+│   ├── bridge-settings.js   # 参数校验：运行模式、保留策略、模型偏好、Tab 与 Token 脱敏
+│   ├── storage.js           # 数据目录解析、独占复制、已有库切换与失败清理
 │   ├── supervisor.js        # 引擎启停/重启/断线容错状态机（依赖注入，可测试）
 │   ├── install.js           # 版本配对、证书、release stage、LaunchAgent / systemd 单元
 │   └── settings.js          # Cursor settings.json 的原子写与代理恢复
@@ -643,7 +650,7 @@ let payload = if !request.data_binary.is_empty() {
 
 - 不修改 Cursor 安装包或二进制；
 - 不改变 Cursor 的登录与账号体系；
-- 不接管 Tab 补全；
+- Tab 默认沿用官方路径，接管为显式可选功能；
 - 不改变 Magpie 网关的模型路由与计费；
 - 不向上游推送任何内容，本 fork 仅在本机使用。
 

@@ -164,21 +164,77 @@ index 623566a..6d9fcf7 100644
          trace.begin(
 diff --git a/server/src/bin/cursor-magpie-bridge.rs b/server/src/bin/cursor-magpie-bridge.rs
 new file mode 100644
-index 0000000..1f4da30
+index 0000000..1fd59ab
 --- /dev/null
 +++ b/server/src/bin/cursor-magpie-bridge.rs
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,385 @@
 +//! Headless Cursor protocol bridge. No desktop/account writes or management API.
-+use std::{path::PathBuf, sync::Arc, time::Duration};
-+use cursor_server::{api, config, cursor::{prompting::{PromptAssets, PromptCompiler}, transport::TransportRegistry}, local_app::CursorHarness, model::ModelConfigInput, network::NetworkClients, plugin::{PluginRegistry, PluginRuntime}, provider::ProviderRouter, search::WebCache, store::Store};
++use cursor_server::{
++    api, config,
++    cursor::{
++        prompting::{PromptAssets, PromptCompiler},
++        transport::TransportRegistry,
++    },
++    local_app::CursorHarness,
++    model::ModelConfigInput,
++    network::NetworkClients,
++    plugin::{PluginRegistry, PluginRuntime},
++    provider::ProviderRouter,
++    search::WebCache,
++    store::{Store, TabMode, TabSettings},
++};
 +use serde::Deserialize;
 +use serde_json::json;
++use std::{path::PathBuf, sync::Arc, time::Duration};
 +use tokio_util::sync::CancellationToken;
 +
 +#[derive(Deserialize)]
-+struct Connection { gateway: String, key: String, model: String, models: Vec<BridgeModel> }
++struct Connection {
++    gateway: String,
++    key: String,
++    model: String,
++    models: Vec<BridgeModel>,
++    #[serde(default = "direct_tab")]
++    tab: TabSettings,
++}
++
++fn direct_tab() -> TabSettings {
++    TabSettings {
++        mode: TabMode::Direct,
++        ..Default::default()
++    }
++}
++
++fn tab_settings(bytes: &[u8]) -> Result<TabSettings, Box<dyn std::error::Error>> {
++    Ok(serde_json::from_slice::<Connection>(bytes)?.tab)
++}
++
++async fn apply_update(
++    store: &Store,
++    harness: &CursorHarness,
++    previous: &[u8],
++    next: &[u8],
++) -> Result<usize, Box<dyn std::error::Error>> {
++    let inputs = catalogue(next)?;
++    // Validate Tab before changing either configuration. The harness owns both
++    // persistence and the mode shared with the running proxy.
++    let tab = tab_settings(next)?;
++    tab.validate()?;
++    if serde_json::to_value(catalogue(previous)?)? != serde_json::to_value(&inputs)? {
++        store.replace_bridge_models(&inputs).await?;
++    }
++    if store.tab_settings().await? != tab {
++        harness.set_tab_settings(tab).await?;
++    }
++    Ok(inputs.len())
++}
 +#[derive(Deserialize)]
-+struct BridgeModel { id: String, #[serde(default)] name: String, context: Option<u64> }
++struct BridgeModel {
++    id: String,
++    #[serde(default)]
++    name: String,
++    context: Option<u64>,
++}
 +
 +/// Cursor 的模型选择器只显示第一段名称（如 "Opus"），
 +/// 避免 "Opus · routing group · group/opus" 这类三段长名。
@@ -193,10 +249,18 @@ index 0000000..1f4da30
 +fn catalogue(bytes: &[u8]) -> Result<Vec<ModelConfigInput>, Box<dyn std::error::Error>> {
 +    let c: Connection = serde_json::from_slice(bytes)?;
 +    let url = url::Url::parse(&c.gateway)?;
-+    if url.scheme() != "http" || !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")) || !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
++    if url.scheme() != "http"
++        || !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
++        || !url.username().is_empty()
++        || url.password().is_some()
++        || url.query().is_some()
++        || url.fragment().is_some()
++    {
 +        return Err("only a loopback Magpie gateway is supported".into());
 +    }
-+    if c.key.trim().is_empty() || !c.models.iter().any(|m| m.id == c.model) { return Err("missing gateway key or selected model".into()); }
++    if c.key.trim().is_empty() || !c.models.iter().any(|m| m.id == c.model) {
++        return Err("missing gateway key or selected model".into());
++    }
 +    let mut models = c.models;
 +    models.sort_by_key(|m| m.id != c.model);
 +    let mut seen = std::collections::HashSet::new();
@@ -207,7 +271,7 @@ index 0000000..1f4da30
 +            "group_name":"Magpie", "type":"openai", "base_url": c.gateway.trim_end_matches('/'),
 +            "api_key":c.key, "tooltip_data":format!("Magpie / {}",m.id), "model_id":m.id,
 +            "context_window_tokens":m.context.filter(|v| *v > 0),
-+            "custom_headers_enabled":true, "custom_headers":{"User-Agent":"cursor-magpie-bridge/0.2.15"}
++            "custom_headers_enabled":true, "custom_headers":{"User-Agent":"cursor-magpie-bridge/0.2.16"}
 +        }))?)
 +    }).collect()
 +}
@@ -238,18 +302,23 @@ index 0000000..1f4da30
 +    );
 +    let argument = std::env::args().nth(1);
 +    if argument.as_deref() == Some("--version") {
-+        println!("0.2.15");
++        println!("0.2.16");
 +        return Ok(());
 +    }
 +    if argument.as_deref() == Some("--help") || argument.is_none() {
-+        println!("cursor-magpie-bridge 0.2.15\nUsage: cursor-magpie-bridge --init-ca | CONNECTION.json\nRequires CURSOR_BYOK_DATA_DIR (absolute path). --init-ca never modifies certificate trust.");
++        println!("cursor-magpie-bridge 0.2.16\nUsage: cursor-magpie-bridge --init-ca | CONNECTION.json\nRequires CURSOR_BYOK_DATA_DIR (absolute path). --init-ca never modifies certificate trust.");
 +        return Ok(());
 +    }
 +    // A dedicated directory is mandatory: never open the desktop BYOK database.
-+    if std::env::var_os("CURSOR_BYOK_DATA_DIR").is_none() { return Err("CURSOR_BYOK_DATA_DIR is required".into()); }
++    if std::env::var_os("CURSOR_BYOK_DATA_DIR").is_none() {
++        return Err("CURSOR_BYOK_DATA_DIR is required".into());
++    }
 +    if argument.as_deref() == Some("--init-ca") {
 +        let state = cursor_server::local_app::initialize_bridge_ca()?;
-+        println!("{}", json!({"ca":state, "certificate":config::managed_data_dir()?.join("ca/ca.crt")}));
++        println!(
++            "{}",
++            json!({"ca":state, "certificate":config::managed_data_dir()?.join("ca/ca.crt")})
++        );
 +        return Ok(());
 +    }
 +    let path = PathBuf::from(argument.unwrap());
@@ -262,7 +331,7 @@ index 0000000..1f4da30
 +    let store = if lite {
 +        Store::connect_lite().await?
 +    } else {
-+        Store::connect(&format!("sqlite://{}",root.join("bridge.db").display())).await?
++        Store::connect(&format!("sqlite://{}", root.join("bridge.db").display())).await?
 +    };
 +    store.replace_bridge_models(&inputs).await?;
 +    if lite {
@@ -270,29 +339,53 @@ index 0000000..1f4da30
 +        // Cursor keeps using the old http.proxy until it restarts. Reuse the
 +        // port the supervisor observed last time; a busy port still falls back
 +        // to a random one inside the proxy listener.
-+        if let Some(port) = std::env::var("CURSOR_BRIDGE_PROXY_PORT").ok()
++        if let Some(port) = std::env::var("CURSOR_BRIDGE_PROXY_PORT")
++            .ok()
 +            .and_then(|value| value.parse::<u16>().ok())
 +            .filter(|port| *port != 0)
 +        {
 +            store.set_proxy_port(port).await?;
 +        }
 +    }
-+    let plugins = PluginRegistry::managed(store.clone(), PluginRuntime::managed()?, "1.0.1".into())?;
++    let plugins =
++        PluginRegistry::managed(store.clone(), PluginRuntime::managed()?, "1.0.1".into())?;
 +    let clients = NetworkClients::new(store.clone());
-+    let provider = Arc::new(ProviderRouter::new(store.clone(),plugins.clone(),clients.clone(),Duration::from_secs(3600),Duration::from_secs(1800)));
-+    let registry = TransportRegistry::with_plugins(store.clone(),provider,PromptCompiler::new(PromptAssets::embedded()?),WebCache::managed()?,plugins,root.join("rules"));
++    let provider = Arc::new(ProviderRouter::new(
++        store.clone(),
++        plugins.clone(),
++        clients.clone(),
++        Duration::from_secs(3600),
++        Duration::from_secs(1800),
++    ));
++    let registry = TransportRegistry::with_plugins(
++        store.clone(),
++        provider,
++        PromptCompiler::new(PromptAssets::embedded()?),
++        WebCache::managed()?,
++        plugins,
++        root.join("rules"),
++    );
 +    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
 +    let address = listener.local_addr()?;
 +    registry.web_cache().set_service_addr(address);
-+    let router = api::router(registry.clone(),clients)?
-+        .layer(axum::Extension(cursor_server::cursor::services::model_catalog::LocalCatalogOnly));
++    let router = api::router(registry.clone(), clients)?.layer(axum::Extension(
++        cursor_server::cursor::services::model_catalog::LocalCatalogOnly,
++    ));
 +    let harness = CursorHarness::new(store.clone())?;
 +    harness.set_backend_addr(address);
++    harness.set_tab_settings(tab_settings(&contents)?).await?;
 +    let proxy = harness.start_proxy_only().await?;
 +    let shutdown = CancellationToken::new();
 +    let cancel = shutdown.clone();
-+    let server = tokio::spawn(async move { axum::serve(listener,router).with_graceful_shutdown(async move {cancel.cancelled().await}).await });
-+    println!("{}",json!({"event":"ready","proxy":proxy,"backend":format!("http://{address}"),"models":inputs.len(),"mode":if lite{"lite"}else{"default"}}));
++    let server = tokio::spawn(async move {
++        axum::serve(listener, router)
++            .with_graceful_shutdown(async move { cancel.cancelled().await })
++            .await
++    });
++    println!(
++        "{}",
++        json!({"event":"ready","proxy":proxy,"backend":format!("http://{address}"),"models":inputs.len(),"mode":if lite{"lite"}else{"default"}})
++    );
 +    // The supervisor owns stdin. Its death must not leave an orphan TLS proxy.
 +    let parent_closed = CancellationToken::new();
 +    let parent_signal = parent_closed.clone();
@@ -305,7 +398,9 @@ index 0000000..1f4da30
 +    let mut interval = tokio::time::interval(Duration::from_secs(2));
 +    #[cfg(unix)]
 +    let terminate = async {
-+        if let Ok(mut signal) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
++        if let Ok(mut signal) =
++            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
++        {
 +            signal.recv().await;
 +        }
 +    };
@@ -320,14 +415,12 @@ index 0000000..1f4da30
 +            _ = interval.tick() => {
 +                if server.is_finished() { break; }
 +                match tokio::fs::read(&path).await {
-+                    Ok(next) if next != contents => match catalogue(&next) {
-+                        Ok(inputs) => {
-+                            if store.replace_bridge_models(&inputs).await.is_ok() {
-+                                contents = next;
-+                                println!("{}",json!({"event":"catalogue","models":inputs.len()}));
-+                            } else { eprintln!("catalogue update failed; retaining last complete catalogue"); }
++                    Ok(next) if next != contents => match apply_update(&store, &harness, &contents, &next).await {
++                        Ok(count) => {
++                            contents = next;
++                            println!("{}",json!({"event":"catalogue","models":count}));
 +                        }
-+                        Err(_) => eprintln!("invalid catalogue; retaining last complete catalogue"),
++                        Err(_) => eprintln!("configuration update failed; retaining last valid configuration"),
 +                    },
 +                    _ => {},
 +                }
@@ -337,52 +430,125 @@ index 0000000..1f4da30
 +    harness.stop_proxy_only().await;
 +    registry.shutdown().await;
 +    shutdown.cancel();
-+    let _ = tokio::time::timeout(Duration::from_secs(10),server).await;
++    let _ = tokio::time::timeout(Duration::from_secs(10), server).await;
 +    Ok(())
 +}
 +
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
-+    fn config() -> serde_json::Value { json!({"gateway":"http://127.0.0.1:3425/v1","key":"test-only","model":"p/b","models":[{"id":"p/a","name":"A","context":200000},{"id":"p/b","name":"B"}]}) }
++    fn config() -> serde_json::Value {
++        json!({"gateway":"http://127.0.0.1:3425/v1","key":"test-only","model":"p/b","models":[{"id":"p/a","name":"A","context":200000},{"id":"p/b","name":"B"}]})
++    }
++    #[test]
++    fn tab_configuration_accepts_only_implemented_modes_and_defaults_to_direct() {
++        assert_eq!(
++            tab_settings(&serde_json::to_vec(&config()).unwrap())
++                .unwrap()
++                .mode,
++            TabMode::Direct
++        );
++        for mode in ["direct", "official", "public", "custom"] {
++            let mut c = config();
++            c["tab"] = json!({"mode":mode,"token":"test-only","address":"https://tab.example"});
++            assert!(tab_settings(&serde_json::to_vec(&c).unwrap()).is_ok());
++        }
++        let mut c = config();
++        c["tab"] = json!({"mode":"model"});
++        assert!(tab_settings(&serde_json::to_vec(&c).unwrap()).is_err());
++    }
++
++    #[tokio::test]
++    async fn tab_only_update_keeps_catalogue_and_invalid_update_keeps_settings() {
++        let store = Store::connect_lite().await.unwrap();
++        let harness = CursorHarness::new(store.clone()).unwrap();
++        let previous = serde_json::to_vec(&config()).unwrap();
++        store
++            .replace_bridge_models(&catalogue(&previous).unwrap())
++            .await
++            .unwrap();
++        harness.set_tab_settings(direct_tab()).await.unwrap();
++        let original = serde_json::to_value(store.models().await.unwrap()).unwrap();
++        let mut next = config();
++        next["tab"] = json!({"mode":"official","token":"test-only"});
++        let official = serde_json::to_vec(&next).unwrap();
++        apply_update(&store, &harness, &previous, &official)
++            .await
++            .unwrap();
++        assert_eq!(store.tab_settings().await.unwrap().mode, TabMode::Official);
++        assert_eq!(
++            serde_json::to_value(store.models().await.unwrap()).unwrap(),
++            original
++        );
++        next["models"][0]["name"] = json!("must not apply");
++        next["tab"] = json!({"mode":"custom","address":"file:///invalid"});
++        assert!(apply_update(
++            &store,
++            &harness,
++            &official,
++            &serde_json::to_vec(&next).unwrap()
++        )
++        .await
++        .is_err());
++        assert_eq!(store.tab_settings().await.unwrap().mode, TabMode::Official);
++        assert_eq!(
++            serde_json::to_value(store.models().await.unwrap()).unwrap(),
++            original
++        );
++        apply_update(&store, &harness, &official, &previous)
++            .await
++            .unwrap();
++        assert_eq!(store.tab_settings().await.unwrap().mode, TabMode::Direct);
++    }
++
 +    #[test]
 +    fn selected_model_first_and_route_preserved() {
-+        let models=catalogue(&serde_json::to_vec(&config()).unwrap()).unwrap();
-+        assert_eq!(models[0].model_id,"p/b");
-+        assert_eq!(models[1].context_window_tokens,Some(200000));
-+        assert_eq!(models[0].base_url,"http://127.0.0.1:3425/v1");
-+        assert_eq!(models[0].api_key,"test-only");
++        let models = catalogue(&serde_json::to_vec(&config()).unwrap()).unwrap();
++        assert_eq!(models[0].model_id, "p/b");
++        assert_eq!(models[1].context_window_tokens, Some(200000));
++        assert_eq!(models[0].base_url, "http://127.0.0.1:3425/v1");
++        assert_eq!(models[0].api_key, "test-only");
 +    }
 +    #[test]
 +    fn rejects_remote_and_duplicate_models() {
-+        let mut c=config();c["gateway"]=json!("http://evil.example/v1");assert!(catalogue(&serde_json::to_vec(&c).unwrap()).is_err());
-+        let mut c=config();c["models"]=json!([{"id":"p/b"},{"id":"p/b"}]);assert!(catalogue(&serde_json::to_vec(&c).unwrap()).is_err());
++        let mut c = config();
++        c["gateway"] = json!("http://evil.example/v1");
++        assert!(catalogue(&serde_json::to_vec(&c).unwrap()).is_err());
++        let mut c = config();
++        c["models"] = json!([{"id":"p/b"},{"id":"p/b"}]);
++        assert!(catalogue(&serde_json::to_vec(&c).unwrap()).is_err());
 +    }
 +    #[tokio::test]
 +    async fn catalogue_update_is_atomic_and_retains_last_valid_models() {
-+        let dir=tempfile::tempdir().unwrap();
-+        let store=Store::connect(&format!("sqlite://{}",dir.path().join("test.db").display())).await.unwrap();
-+        let inputs=catalogue(&serde_json::to_vec(&config()).unwrap()).unwrap();
++        let dir = tempfile::tempdir().unwrap();
++        let store = Store::connect(&format!(
++            "sqlite://{}",
++            dir.path().join("test.db").display()
++        ))
++        .await
++        .unwrap();
++        let inputs = catalogue(&serde_json::to_vec(&config()).unwrap()).unwrap();
 +        store.replace_bridge_models(&inputs).await.unwrap();
-+        let duplicate=vec![inputs[0].clone(),inputs[0].clone()];
++        let duplicate = vec![inputs[0].clone(), inputs[0].clone()];
 +        assert!(store.replace_bridge_models(&duplicate).await.is_err());
-+        assert_eq!(store.models().await.unwrap().len(),2);
-+        let mut invalid=inputs.clone();invalid[1].api_key="".into();
++        assert_eq!(store.models().await.unwrap().len(), 2);
++        let mut invalid = inputs.clone();
++        invalid[1].api_key = "".into();
 +        assert!(store.replace_bridge_models(&invalid).await.is_err());
-+        assert_eq!(store.models().await.unwrap().len(),2);
++        assert_eq!(store.models().await.unwrap().len(), 2);
 +        store.replace_bridge_models(&inputs[..1]).await.unwrap();
-+        assert_eq!(store.models().await.unwrap().len(),1);
++        assert_eq!(store.models().await.unwrap().len(), 1);
 +    }
 +    #[tokio::test]
 +    async fn lite_store_keeps_its_schema_in_shared_memory() {
-+        let store=Store::connect_lite().await.unwrap();
-+        let inputs=catalogue(&serde_json::to_vec(&config()).unwrap()).unwrap();
++        let store = Store::connect_lite().await.unwrap();
++        let inputs = catalogue(&serde_json::to_vec(&config()).unwrap()).unwrap();
 +        store.replace_bridge_models(&inputs).await.unwrap();
 +        // Two concurrent queries may use different pool connections; both must
 +        // see the same in-memory database and its migrated schema.
-+        let (a,b)=tokio::join!(store.models(),store.models());
-+        assert_eq!(a.unwrap().len(),2);
-+        assert_eq!(b.unwrap().len(),2);
++        let (a, b) = tokio::join!(store.models(), store.models());
++        assert_eq!(a.unwrap().len(), 2);
++        assert_eq!(b.unwrap().len(), 2);
 +        // The seeded service_settings row proves migrations ran in memory too.
 +        assert!(!store.detailed_logging().await.unwrap());
 +    }
@@ -1836,13 +2002,290 @@ index c882804..5851b8c 100644
 +    }
 +}
 diff --git a/server/src/local_app/mod.rs b/server/src/local_app/mod.rs
-index 7c50336..582da2b 100644
+index 7c50336..3e03340 100644
 --- a/server/src/local_app/mod.rs
 +++ b/server/src/local_app/mod.rs
-@@ -43,6 +43,13 @@ pub enum CaState {
-     Invalid,
- }
- 
+@@ -1,235 +1,267 @@
+-//! Exposes the local desktop application integration.
+-mod account;
+-mod ca;
+-mod process;
+-mod proxy;
+-mod settings;
+-
+-use std::{net::SocketAddr, sync::Arc};
+-
+-use parking_lot::RwLock;
+-use serde::{Deserialize, Serialize};
+-use tokio::sync::Mutex;
+-
+-use crate::{
+-    store::{Store, TabMode, TabSettings},
+-    Error, Result,
+-};
+-
+-use self::{ca::CaManager, proxy::ProxyRuntime};
+-
+-pub(crate) fn proxy_host_allowed(host: &str) -> bool {
+-    proxy::is_cursor_host(host)
+-}
+-
+-pub(crate) fn request_uses_local_cursor_token(headers: &axum::http::HeaderMap) -> bool {
+-    headers
+-        .get(axum::http::header::AUTHORIZATION)
+-        .and_then(|value| value.to_str().ok())
+-        .is_some_and(account::is_local_cursor_authorization)
+-}
+-
+-#[cfg(test)]
+-pub(crate) fn local_cursor_authorization() -> String {
+-    format!("Bearer {}", account::local_token().unwrap())
+-}
+-
+-#[derive(Clone, Debug, Serialize)]
+-#[serde(rename_all = "snake_case")]
+-pub enum CaState {
+-    Missing,
+-    Untrusted,
+-    Ready,
+-    Invalid,
+-}
+-
+-#[derive(Clone, Debug, Serialize)]
+-#[serde(rename_all = "snake_case")]
+-pub enum IntegrationState {
+-    Disabled,
+-    Enabled,
+-    Degraded,
+-}
+-
+-#[derive(Clone, Debug, Serialize)]
+-pub struct CursorHarnessStatus {
+-    pub platform: &'static str,
+-    pub ca: CaState,
+-    pub configured_models: usize,
+-    pub enabled_models: usize,
+-    pub integration: IntegrationState,
+-    pub settings_applied: bool,
+-    pub proxy_url: Option<String>,
+-    pub ca_install_command: Option<String>,
+-}
+-
+-#[derive(Clone, Copy, Debug, Deserialize)]
+-pub struct SetEnabled {
+-    pub enabled: bool,
+-}
+-
+-#[derive(Clone)]
+-pub struct CursorHarness {
+-    inner: Arc<Inner>,
+-}
+-
+-struct Inner {
+-    store: Store,
+-    ca: CaManager,
+-    ca_initialization: Mutex<()>,
+-    backend_addr: RwLock<Option<SocketAddr>>,
+-    tab_mode: Arc<RwLock<TabMode>>,
+-    proxy: Mutex<ProxyRuntime>,
+-}
+-
+-impl CursorHarness {
+-    pub fn new(store: Store) -> Result<Self> {
+-        Ok(Self {
+-            inner: Arc::new(Inner {
+-                store,
+-                ca: CaManager::managed()?,
+-                ca_initialization: Mutex::new(()),
+-                backend_addr: RwLock::new(None),
+-                tab_mode: Arc::new(RwLock::new(TabMode::default())),
+-                proxy: Mutex::new(ProxyRuntime::default()),
+-            }),
+-        })
+-    }
+-
+-    pub fn set_backend_addr(&self, addr: SocketAddr) {
+-        *self.inner.backend_addr.write() = Some(addr);
+-    }
+-
+-    pub async fn proxy_port(&self) -> Option<u16> {
+-        self.inner.proxy.lock().await.port()
+-    }
+-
+-    pub async fn cleanup_stale_settings(&self) -> Result<()> {
+-        settings::clear_stale_managed_settings()
+-    }
+-
+-    pub async fn status(&self) -> Result<CursorHarnessStatus> {
+-        let models = self.inner.store.models().await?;
+-        let configured_models = models.len();
+-        let enabled_models = configured_models;
+-        let ca = self.inner.ca.state()?;
+-        if self.inner.store.cursor_takeover_enabled().await?
+-            && matches!(ca, CaState::Ready)
+-            && self.inner.backend_addr.read().is_some()
+-        {
+-            self.enable().await?;
+-        }
+-        let proxy = self.inner.proxy.lock().await;
+-        let proxy_url = proxy.url();
+-        let settings_applied = proxy_url
+-            .as_deref()
+-            .map(settings::settings_match)
+-            .transpose()?
+-            .unwrap_or(false);
+-        let integration = match (proxy.running(), settings_applied) {
+-            (false, false) => IntegrationState::Disabled,
+-            (true, true) => IntegrationState::Enabled,
+-            _ => IntegrationState::Degraded,
+-        };
+-        Ok(CursorHarnessStatus {
+-            platform: std::env::consts::OS,
+-            ca,
+-            configured_models,
+-            enabled_models,
+-            integration,
+-            settings_applied,
+-            proxy_url,
+-            ca_install_command: self.inner.ca.install_command(),
+-        })
+-    }
+-
+-    pub async fn initialize_ca(&self) -> Result<CursorHarnessStatus> {
+-        let _initialization = self.inner.ca_initialization.lock().await;
+-        let manager = self.inner.ca.clone();
+-        tokio::task::spawn_blocking(move || manager.initialize_local())
+-            .await
+-            .map_err(|error| Error::Store(format!("CA initialization task failed: {error}")))??;
+-        self.status().await
+-    }
+-
+-    pub async fn set_enabled(&self, enabled: bool) -> Result<CursorHarnessStatus> {
+-        if enabled {
+-            self.inner.store.set_cursor_takeover_enabled(true).await?;
+-            self.enable().await?;
+-        } else {
+-            self.inner.store.set_cursor_takeover_enabled(false).await?;
+-            self.disable().await?;
+-        }
+-        self.status().await
+-    }
+-
+-    pub async fn set_tab_settings(&self, settings: TabSettings) -> Result<TabSettings> {
+-        let saved = self.inner.store.set_tab_settings(settings).await?;
+-        *self.inner.tab_mode.write() = saved.mode;
+-        Ok(saved)
+-    }
+-
+-    async fn enable(&self) -> Result<()> {
+-        if !matches!(self.inner.ca.state()?, CaState::Ready) {
+-            return Err(Error::Config(
+-                "initialize and trust the CA before enabling Cursor".into(),
+-            ));
+-        }
+-        let backend_addr = self
+-            .inner
+-            .backend_addr
+-            .read()
+-            .ok_or_else(|| Error::Config("desktop management server is not ready".into()))?;
+-        let mut proxy = self.inner.proxy.lock().await;
+-        let settings_applied = proxy
+-            .url()
+-            .as_deref()
+-            .map(settings::settings_match)
+-            .transpose()?
+-            .unwrap_or(false);
+-        if !settings_applied {
+-            // Terminating Cursor only makes the freshly written http.proxy take effect
+-            // sooner; it is optional, so a failed probe or kill must not block takeover.
+-            if let Err(error) = process::terminate_cursor().await {
+-                tracing::warn!(%error, "could not terminate Cursor before applying proxy settings");
+-            }
+-        }
+-        if proxy.running() {
+-            if let Some(url) = proxy.url() {
+-                apply_cursor_configuration(&url).await?;
+-            }
+-            return Ok(());
+-        }
+-        let ca = self.inner.ca.load()?;
+-        let requested_port = self.inner.store.port_settings().await?.proxy_port;
+-        *self.inner.tab_mode.write() = self.inner.store.tab_settings().await?.mode;
+-        let (url, actual_port) = proxy
+-            .start(
+-                backend_addr,
+-                ca,
+-                requested_port,
+-                self.inner.tab_mode.clone(),
+-            )
+-            .await?;
+-        if let Err(error) = self.inner.store.set_proxy_port(actual_port).await {
+-            proxy.stop().await;
+-            return Err(error);
+-        }
+-        if let Err(error) = apply_cursor_configuration(&url).await {
+-            proxy.stop().await;
+-            return Err(error);
+-        }
+-        Ok(())
+-    }
+-
+-    pub async fn disable(&self) -> Result<()> {
+-        settings::clear_proxy_settings()?;
+-        self.inner.proxy.lock().await.stop().await;
+-        Ok(())
+-    }
+-}
+-
+-async fn apply_cursor_configuration(proxy_url: &str) -> Result<()> {
+-    account::inject_if_missing().await?;
+-    settings::write_proxy_settings(proxy_url)
+-}
++//! Exposes the local desktop application integration.
++mod account;
++mod ca;
++mod process;
++mod proxy;
++mod settings;
++
++use std::{net::SocketAddr, sync::Arc};
++
++use parking_lot::RwLock;
++use serde::{Deserialize, Serialize};
++use tokio::sync::Mutex;
++
++use crate::{
++    store::{Store, TabMode, TabSettings},
++    Error, Result,
++};
++
++use self::{ca::CaManager, proxy::ProxyRuntime};
++
++pub(crate) fn proxy_host_allowed(host: &str) -> bool {
++    proxy::is_cursor_host(host)
++}
++
++pub(crate) fn request_uses_local_cursor_token(headers: &axum::http::HeaderMap) -> bool {
++    headers
++        .get(axum::http::header::AUTHORIZATION)
++        .and_then(|value| value.to_str().ok())
++        .is_some_and(account::is_local_cursor_authorization)
++}
++
++#[cfg(test)]
++pub(crate) fn local_cursor_authorization() -> String {
++    format!("Bearer {}", account::local_token().unwrap())
++}
++
++#[derive(Clone, Debug, Serialize)]
++#[serde(rename_all = "snake_case")]
++pub enum CaState {
++    Missing,
++    Untrusted,
++    Ready,
++    Invalid,
++}
++
 +/// Prepare the standalone bridge CA without opening a database or touching Cursor.
 +pub fn initialize_bridge_ca() -> Result<CaState> {
 +    let ca = CaManager::managed()?;
@@ -1850,13 +2293,63 @@ index 7c50336..582da2b 100644
 +    ca.state()
 +}
 +
- #[derive(Clone, Debug, Serialize)]
- #[serde(rename_all = "snake_case")]
- pub enum IntegrationState {
-@@ -100,6 +107,31 @@ impl CursorHarness {
-         *self.inner.backend_addr.write() = Some(addr);
-     }
- 
++#[derive(Clone, Debug, Serialize)]
++#[serde(rename_all = "snake_case")]
++pub enum IntegrationState {
++    Disabled,
++    Enabled,
++    Degraded,
++}
++
++#[derive(Clone, Debug, Serialize)]
++pub struct CursorHarnessStatus {
++    pub platform: &'static str,
++    pub ca: CaState,
++    pub configured_models: usize,
++    pub enabled_models: usize,
++    pub integration: IntegrationState,
++    pub settings_applied: bool,
++    pub proxy_url: Option<String>,
++    pub ca_install_command: Option<String>,
++}
++
++#[derive(Clone, Copy, Debug, Deserialize)]
++pub struct SetEnabled {
++    pub enabled: bool,
++}
++
++#[derive(Clone)]
++pub struct CursorHarness {
++    inner: Arc<Inner>,
++}
++
++struct Inner {
++    store: Store,
++    ca: CaManager,
++    ca_initialization: Mutex<()>,
++    backend_addr: RwLock<Option<SocketAddr>>,
++    tab_mode: Arc<RwLock<TabMode>>,
++    proxy: Mutex<ProxyRuntime>,
++}
++
++impl CursorHarness {
++    pub fn new(store: Store) -> Result<Self> {
++        Ok(Self {
++            inner: Arc::new(Inner {
++                store,
++                ca: CaManager::managed()?,
++                ca_initialization: Mutex::new(()),
++                backend_addr: RwLock::new(None),
++                tab_mode: Arc::new(RwLock::new(TabMode::default())),
++                proxy: Mutex::new(ProxyRuntime::default()),
++            }),
++        })
++    }
++
++    pub fn set_backend_addr(&self, addr: SocketAddr) {
++        *self.inner.backend_addr.write() = Some(addr);
++    }
++
 +    /// Run only the loopback proxy. The caller owns settings and process lifecycle.
 +    pub async fn start_proxy_only(&self) -> Result<String> {
 +        if !matches!(self.inner.ca.state()?, CaState::Ready) {
@@ -1866,7 +2359,7 @@ index 7c50336..582da2b 100644
 +            .ok_or_else(|| Error::Config("bridge backend is not ready".into()))?;
 +        let mut proxy = self.inner.proxy.lock().await;
 +        if let Some(url) = proxy.url() { return Ok(url); }
-+        *self.inner.tab_mode.write() = TabMode::Direct;
++        *self.inner.tab_mode.write() = self.inner.store.tab_settings().await?.mode;
 +        // Reuse the port persisted by a previous run so Cursor's `http.proxy`
 +        // keeps pointing at a live listener across bridge restarts.
 +        let requested_port = self.inner.store.port_settings().await?.proxy_port;
@@ -1882,9 +2375,139 @@ index 7c50336..582da2b 100644
 +        self.inner.proxy.lock().await.stop().await;
 +    }
 +
-     pub async fn proxy_port(&self) -> Option<u16> {
-         self.inner.proxy.lock().await.port()
-     }
++    pub async fn proxy_port(&self) -> Option<u16> {
++        self.inner.proxy.lock().await.port()
++    }
++
++    pub async fn cleanup_stale_settings(&self) -> Result<()> {
++        settings::clear_stale_managed_settings()
++    }
++
++    pub async fn status(&self) -> Result<CursorHarnessStatus> {
++        let models = self.inner.store.models().await?;
++        let configured_models = models.len();
++        let enabled_models = configured_models;
++        let ca = self.inner.ca.state()?;
++        if self.inner.store.cursor_takeover_enabled().await?
++            && matches!(ca, CaState::Ready)
++            && self.inner.backend_addr.read().is_some()
++        {
++            self.enable().await?;
++        }
++        let proxy = self.inner.proxy.lock().await;
++        let proxy_url = proxy.url();
++        let settings_applied = proxy_url
++            .as_deref()
++            .map(settings::settings_match)
++            .transpose()?
++            .unwrap_or(false);
++        let integration = match (proxy.running(), settings_applied) {
++            (false, false) => IntegrationState::Disabled,
++            (true, true) => IntegrationState::Enabled,
++            _ => IntegrationState::Degraded,
++        };
++        Ok(CursorHarnessStatus {
++            platform: std::env::consts::OS,
++            ca,
++            configured_models,
++            enabled_models,
++            integration,
++            settings_applied,
++            proxy_url,
++            ca_install_command: self.inner.ca.install_command(),
++        })
++    }
++
++    pub async fn initialize_ca(&self) -> Result<CursorHarnessStatus> {
++        let _initialization = self.inner.ca_initialization.lock().await;
++        let manager = self.inner.ca.clone();
++        tokio::task::spawn_blocking(move || manager.initialize_local())
++            .await
++            .map_err(|error| Error::Store(format!("CA initialization task failed: {error}")))??;
++        self.status().await
++    }
++
++    pub async fn set_enabled(&self, enabled: bool) -> Result<CursorHarnessStatus> {
++        if enabled {
++            self.inner.store.set_cursor_takeover_enabled(true).await?;
++            self.enable().await?;
++        } else {
++            self.inner.store.set_cursor_takeover_enabled(false).await?;
++            self.disable().await?;
++        }
++        self.status().await
++    }
++
++    pub async fn set_tab_settings(&self, settings: TabSettings) -> Result<TabSettings> {
++        let saved = self.inner.store.set_tab_settings(settings).await?;
++        *self.inner.tab_mode.write() = saved.mode;
++        Ok(saved)
++    }
++
++    async fn enable(&self) -> Result<()> {
++        if !matches!(self.inner.ca.state()?, CaState::Ready) {
++            return Err(Error::Config(
++                "initialize and trust the CA before enabling Cursor".into(),
++            ));
++        }
++        let backend_addr = self
++            .inner
++            .backend_addr
++            .read()
++            .ok_or_else(|| Error::Config("desktop management server is not ready".into()))?;
++        let mut proxy = self.inner.proxy.lock().await;
++        let settings_applied = proxy
++            .url()
++            .as_deref()
++            .map(settings::settings_match)
++            .transpose()?
++            .unwrap_or(false);
++        if !settings_applied {
++            // Terminating Cursor only makes the freshly written http.proxy take effect
++            // sooner; it is optional, so a failed probe or kill must not block takeover.
++            if let Err(error) = process::terminate_cursor().await {
++                tracing::warn!(%error, "could not terminate Cursor before applying proxy settings");
++            }
++        }
++        if proxy.running() {
++            if let Some(url) = proxy.url() {
++                apply_cursor_configuration(&url).await?;
++            }
++            return Ok(());
++        }
++        let ca = self.inner.ca.load()?;
++        let requested_port = self.inner.store.port_settings().await?.proxy_port;
++        *self.inner.tab_mode.write() = self.inner.store.tab_settings().await?.mode;
++        let (url, actual_port) = proxy
++            .start(
++                backend_addr,
++                ca,
++                requested_port,
++                self.inner.tab_mode.clone(),
++            )
++            .await?;
++        if let Err(error) = self.inner.store.set_proxy_port(actual_port).await {
++            proxy.stop().await;
++            return Err(error);
++        }
++        if let Err(error) = apply_cursor_configuration(&url).await {
++            proxy.stop().await;
++            return Err(error);
++        }
++        Ok(())
++    }
++
++    pub async fn disable(&self) -> Result<()> {
++        settings::clear_proxy_settings()?;
++        self.inner.proxy.lock().await.stop().await;
++        Ok(())
++    }
++}
++
++async fn apply_cursor_configuration(proxy_url: &str) -> Result<()> {
++    account::inject_if_missing().await?;
++    settings::write_proxy_settings(proxy_url)
++}
 diff --git a/server/src/store/models.rs b/server/src/store/models.rs
 index 6d29d3c..f47ac3e 100644
 --- a/server/src/store/models.rs
@@ -1976,3 +2599,449 @@ index 1403cf8..a5d7844 100644
          migrations::run(&pool, &database_path).await?;
          Ok(Self {
              pool,
+diff --git a/server/src/store/settings.rs b/server/src/store/settings.rs
+index 1a2673c..ac4e024 100644
+--- a/server/src/store/settings.rs
++++ b/server/src/store/settings.rs
+@@ -65,13 +65,17 @@ pub enum TabMode {
+     #[default]
+     Public,
+     Direct,
++    Official,
+     Custom,
+ }
+
+ #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+ pub struct TabSettings {
+     pub mode: TabMode,
++    #[serde(default)]
+     pub address: String,
++    #[serde(default)]
++    pub token: String,
+ }
+
+ #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+@@ -96,10 +100,46 @@ fn default_true() -> bool {
+ }
+
+ impl TabSettings {
++    pub fn validate(&self) -> Result<()> {
++        if self.mode == TabMode::Official && !self.token.trim().is_empty() {
++            let token = self.token.trim();
++            let value = if token
++                .get(..7)
++                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("bearer "))
++            {
++                token.to_owned()
++            } else {
++                format!("Bearer {token}")
++            };
++            value
++                .parse::<axum::http::HeaderValue>()
++                .map_err(|_| crate::Error::Config("invalid Tab token header".into()))?;
++        }
++        if self.mode == TabMode::Custom {
++            let parsed = url::Url::parse(self.address.trim()).map_err(|error| {
++                crate::Error::Config(format!("invalid TAB service address: {error}"))
++            })?;
++            if !matches!(parsed.scheme(), "http" | "https") {
++                return Err(crate::Error::Config(
++                    "TAB service address must use http or https".into(),
++                ));
++            }
++            if parsed.host_str().is_none()
++                || parsed.query().is_some()
++                || parsed.fragment().is_some()
++            {
++                return Err(crate::Error::Config(
++                    "TAB service address must be a base URL without a query or fragment".into(),
++                ));
++            }
++        }
++        Ok(())
++    }
++
+     pub fn service_url(&self) -> Option<&str> {
+         match self.mode {
+             TabMode::Public => Some(PUBLIC_TAB_SERVICE_URL),
+-            TabMode::Direct => None,
++            TabMode::Direct | TabMode::Official => None,
+             TabMode::Custom => Some(&self.address),
+         }
+     }
+@@ -338,24 +378,7 @@ impl Store {
+
+     pub async fn set_tab_settings(&self, mut settings: TabSettings) -> Result<TabSettings> {
+         settings.address = settings.address.trim().trim_end_matches('/').to_owned();
+-        if settings.mode == TabMode::Custom {
+-            let parsed = url::Url::parse(&settings.address).map_err(|error| {
+-                crate::Error::Config(format!("invalid TAB service address: {error}"))
+-            })?;
+-            if !matches!(parsed.scheme(), "http" | "https") {
+-                return Err(crate::Error::Config(
+-                    "TAB service address must use http or https".into(),
+-                ));
+-            }
+-            if parsed.host_str().is_none()
+-                || parsed.query().is_some()
+-                || parsed.fragment().is_some()
+-            {
+-                return Err(crate::Error::Config(
+-                    "TAB service address must be a base URL without a query or fragment".into(),
+-                ));
+-            }
+-        }
++        settings.validate()?;
+         let value_json = serde_json::to_string(&settings)?;
+         let _write = self.writes.lock().await;
+         sqlx::query("INSERT INTO service_settings(setting_key, value_json, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms")
+diff --git a/server/src/cursor/services/tab.rs b/server/src/cursor/services/tab.rs
+index 6e06ee9..b0f2ce5 100644
+--- a/server/src/cursor/services/tab.rs
++++ b/server/src/cursor/services/tab.rs
+@@ -38,14 +38,116 @@ pub fn router() -> Router<TransportRegistry> {
+     })
+ }
+
++pub fn upstream_target_for_tab(path: &str) -> Option<&'static str> {
++    match path {
++        "/aiserver.v1.AiService/StreamCpp"
++        | "/aiserver.v1.AiService/StreamNextCursorPrediction"
++        | "/aiserver.v1.AiService/GetCppEditClassification"
++        | "/aiserver.v1.AiService/CppConfig"
++        | "/aiserver.v1.FileSyncService/FSSyncFile"
++        | "/aiserver.v1.FileSyncService/FSIsEnabledForUser"
++        | "/aiserver.v1.FileSyncService/FSConfig"
++        | "/aiserver.v1.FileSyncService/FSUploadFile" => Some("https://api4.cursor.sh:443"),
++        "/aiserver.v1.AiService/RefreshTabContext"
++        | "/aiserver.v1.AiService/CppEditHistoryStatus"
++        | "/aiserver.v1.CppService/RecordCppFate"
++        | "/aiserver.v1.AiService/ReportAiCodeChangeMetrics"
++        | "/aiserver.v1.AiService/WriteGitBranchName" => Some("https://api2.cursor.sh:443"),
++        "/aiserver.v1.AiService/CppAppend"
++        | "/aiserver.v1.AiService/CppEditHistoryAppend"
++        | "/aiserver.v1.CppService/AvailableModels" => Some("https://api3.cursor.sh:443"),
++        _ => None,
++    }
++}
++
++pub fn build_cursor_checksum(authorization: &str) -> String {
++    let now_ms = std::time::SystemTime::now()
++        .duration_since(std::time::UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_millis() as u64;
++    checksum_at(authorization, now_ms)
++}
++
++fn checksum_at(authorization: &str, now_ms: u64) -> String {
++    use base64::Engine;
++    use sha2::{Digest, Sha256};
++    let timestamp = (now_ms / 1_000_000).to_be_bytes();
++    let mut bytes = [0u8; 6];
++    let mut seed = 165u8;
++    for (index, byte) in bytes.iter_mut().enumerate() {
++        *byte = (timestamp[index + 2] ^ seed).wrapping_add(index as u8);
++        seed = *byte;
++    }
++    let prefix = base64::engine::general_purpose::STANDARD.encode(bytes);
++    let digest = hex::encode(Sha256::digest(authorization.trim().as_bytes()));
++    format!("{prefix}{}", &digest[..32])
++}
++
+ async fn forward(
+     State(registry): State<TransportRegistry>,
+     Extension(upstream): Extension<proxy::CursorProxy>,
+     request: Request<Body>,
+ ) -> Result<Response<Body>> {
+     let settings = registry.store().tab_settings().await?;
++    if settings.mode == crate::store::TabMode::Official {
++        let target = upstream_target_for_tab(request.uri().path())
++            .ok_or_else(|| crate::Error::Protocol("unknown Tab endpoint".into()))?;
++        return proxy::forward_tab_official(&upstream, request, target, &settings.token).await;
++    }
+     match settings.service_url() {
+         Some(service_url) => proxy::forward_to_service(&upstream, request, service_url).await,
+         None => proxy::forward(Extension(upstream), request).await,
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn tab_official_routes_cover_every_tab_endpoint_and_exclude_agent_routes() {
++        for path in TAB_PATHS {
++            assert!(upstream_target_for_tab(path).is_some(), "{path}");
++        }
++        assert_eq!(
++            upstream_target_for_tab("/aiserver.v1.AiService/StreamCpp"),
++            Some("https://api4.cursor.sh:443")
++        );
++        assert_eq!(
++            upstream_target_for_tab("/aiserver.v1.AiService/RefreshTabContext"),
++            Some("https://api2.cursor.sh:443")
++        );
++        assert_eq!(
++            upstream_target_for_tab("/aiserver.v1.CppService/AvailableModels"),
++            Some("https://api3.cursor.sh:443")
++        );
++        for path in [
++            "/aiserver.v1.AiService/WriteGitCommitMessage",
++            "/aiserver.v1.DashboardService/GetUsage",
++            "/agent.v1.AgentService/RunSSE",
++        ] {
++            assert!(!is_tab_path(path));
++            assert_eq!(upstream_target_for_tab(path), None);
++        }
++    }
++
++    #[test]
++    fn tab_checksum_matches_fixed_vectors_and_changes_with_time_and_authorization() {
++        assert_eq!(
++            checksum_at("Bearer test-only", 0),
++            "paaoq6+0b9e9802f1a89ba045de92ee2dc02c9cc"
++        );
++        assert_eq!(
++            checksum_at("Bearer test-only", 1_700_000_000_000),
++            "paaotEjtb9e9802f1a89ba045de92ee2dc02c9cc"
++        );
++        assert_ne!(
++            checksum_at("Bearer test-only", 0),
++            checksum_at("Bearer test-only", 1_000_000)
++        );
++        assert_ne!(
++            checksum_at("Bearer other", 0),
++            checksum_at("Bearer test-only", 0)
++        );
++    }
++}
+diff --git a/server/src/api/cursor/proxy.rs b/server/src/api/cursor/proxy.rs
+index 6463fe3..57217ec 100644
+--- a/server/src/api/cursor/proxy.rs
++++ b/server/src/api/cursor/proxy.rs
+@@ -73,6 +73,44 @@ pub(crate) async fn forward_to_service(
+     forward_request(proxy, request, Some(service_url)).await
+ }
+
++/// Forward the original Tab stream with official authentication and checksum.
++pub(crate) async fn forward_tab_official(
++    proxy: &CursorProxy,
++    mut request: Request<Body>,
++    target_origin: &str,
++    token: &str,
++) -> Result<Response<Body>> {
++    let token = token.trim();
++    if !token.is_empty() {
++        let authorization = if token
++            .get(..7)
++            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("bearer "))
++        {
++            token.to_owned()
++        } else {
++            format!("Bearer {token}")
++        };
++        request.headers_mut().insert(
++            header::AUTHORIZATION,
++            authorization
++                .parse()
++                .map_err(|_| crate::Error::Config("invalid Tab token header".into()))?,
++        );
++    }
++    if let Some(authorization) = request
++        .headers()
++        .get(header::AUTHORIZATION)
++        .and_then(|value| value.to_str().ok())
++    {
++        let checksum = crate::cursor::services::tab::build_cursor_checksum(authorization);
++        request.headers_mut().insert(
++            "x-cursor-checksum",
++            checksum.parse().expect("checksum is ASCII"),
++        );
++    }
++    forward_request(proxy, request, Some(target_origin)).await
++}
++
+ async fn forward_request(
+     proxy: &CursorProxy,
+     request: Request<Body>,
+@@ -225,3 +263,82 @@ fn remove_hop_by_hop_headers(headers: &mut axum::http::HeaderMap) {
+     }
+     headers.remove("keep-alive");
+ }
++
++#[cfg(test)]
++mod tab_tests {
++    use super::*;
++
++    #[tokio::test]
++    async fn tab_official_forwards_auth_checksum_query_and_stream_to_mock_upstream() {
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let origin = format!("http://{}", listener.local_addr().unwrap());
++        let app = axum::Router::new().fallback(|request: Request<Body>| async move {
++            assert!(!request.headers().contains_key(UPSTREAM_URL_HEADER));
++            assert!(!request.headers().contains_key("x-remove-me"));
++            let auth = request.headers()[header::AUTHORIZATION].clone();
++            let checksum = request.headers()["x-cursor-checksum"].clone();
++            let uri = request.uri().to_string();
++            let body = to_bytes(request.into_body(), 1024).await.unwrap();
++            Response::builder()
++                .status(206)
++                .header("x-seen-auth", auth)
++                .header("x-seen-checksum", checksum)
++                .header("x-seen-uri", uri)
++                .body(Body::from(body))
++                .unwrap()
++        });
++        let server = tokio::spawn(async move {
++            axum::serve(listener, app).await.unwrap();
++        });
++        let store = crate::store::Store::connect_lite().await.unwrap();
++        let proxy = CursorProxy::cursor(crate::network::NetworkClients::new(store));
++        for (token, expected) in [
++            ("test-only", "Bearer test-only"),
++            ("bEaReR other", "bEaReR other"),
++            ("", "Bearer original"),
++        ] {
++            let request = Request::builder()
++                .method("POST")
++                .uri("/aiserver.v1.AiService/StreamCpp?query=kept")
++                .header(header::AUTHORIZATION, "Bearer original")
++                .header(UPSTREAM_URL_HEADER, "https://api2.cursor.sh/unused")
++                .header(header::CONNECTION, "x-remove-me")
++                .header("x-remove-me", "private-hop")
++                .body(Body::from_stream(futures_util::stream::iter([
++                    Ok::<_, std::io::Error>(Bytes::from_static(b"first")),
++                    Ok(Bytes::from_static(b"second")),
++                ])))
++                .unwrap();
++            let response = tokio::time::timeout(
++                std::time::Duration::from_secs(10),
++                forward_tab_official(&proxy, request, &origin, token),
++            )
++            .await
++            .unwrap()
++            .unwrap();
++            assert_eq!(response.status(), 206);
++            assert_eq!(response.headers()["x-seen-auth"], expected);
++            assert_eq!(
++                response.headers()["x-seen-uri"],
++                "/aiserver.v1.AiService/StreamCpp?query=kept"
++            );
++            use sha2::{Digest, Sha256};
++            let digest = hex::encode(Sha256::digest(expected.as_bytes()));
++            assert_eq!(
++                &response.headers()["x-seen-checksum"].to_str().unwrap()[8..],
++                &digest[..32]
++            );
++            assert_eq!(
++                to_bytes(response.into_body(), 1024).await.unwrap(),
++                "firstsecond"
++            );
++        }
++        let request = Request::builder().body(Body::empty()).unwrap();
++        assert!(
++            forward_tab_official(&proxy, request, &origin, "invalid\r\ntoken")
++                .await
++                .is_err()
++        );
++        server.abort();
++    }
++}
+diff --git a/server/src/local_app/proxy.rs b/server/src/local_app/proxy.rs
+index fda8ce0..cadbb5a 100644
+--- a/server/src/local_app/proxy.rs
++++ b/server/src/local_app/proxy.rs
+@@ -106,12 +106,8 @@ struct CursorRelay {
+     tab_mode: Arc<RwLock<TabMode>>,
+ }
+
+-impl HttpHandler for CursorRelay {
+-    async fn handle_request(
+-        &mut self,
+-        _ctx: &HttpContext,
+-        mut request: Request<Body>,
+-    ) -> RequestOrResponse {
++impl CursorRelay {
++    fn route_request(&self, mut request: Request<Body>) -> Request<Body> {
+         let original = request.uri().clone();
+         let locally_routed = should_route_locally(original.path(), *self.tab_mode.read());
+         if is_cursor_host(original.host().unwrap_or_default()) && locally_routed {
+@@ -126,7 +122,17 @@ impl HttpHandler for CursorRelay {
+                 *request.uri_mut() = uri;
+             }
+         }
+-        request.into()
++        request
++    }
++}
++
++impl HttpHandler for CursorRelay {
++    async fn handle_request(
++        &mut self,
++        _ctx: &HttpContext,
++        request: Request<Body>,
++    ) -> RequestOrResponse {
++        self.route_request(request).into()
+     }
+
+     async fn should_intercept_connect(
+@@ -199,6 +205,58 @@ fn should_route_locally(path: &str, tab_mode: TabMode) -> bool {
+ mod tests {
+     use super::*;
+
++    #[tokio::test]
++    async fn tab_mode_hot_update_changes_shared_proxy_route_without_restart() {
++        use crate::{
++            local_app::CursorHarness,
++            store::{Store, TabSettings},
++        };
++        let store = Store::connect_lite().await.unwrap();
++        let harness = CursorHarness::new(store.clone()).unwrap();
++        let relay = CursorRelay {
++            backend: "127.0.0.1:32100".parse().unwrap(),
++            tab_mode: harness.inner.tab_mode.clone(),
++        };
++        let original = "https://api2.cursor.sh/aiserver.v1.AiService/StreamCpp";
++        for mode in [TabMode::Direct, TabMode::Official, TabMode::Direct] {
++            harness
++                .set_tab_settings(TabSettings {
++                    mode,
++                    ..Default::default()
++                })
++                .await
++                .unwrap();
++            let request = Request::builder()
++                .uri(original)
++                .body(Body::empty())
++                .unwrap();
++            let routed = relay.route_request(request);
++            assert_eq!(store.tab_settings().await.unwrap().mode, mode);
++            assert_eq!(*relay.tab_mode.read(), mode);
++            assert_eq!(
++                routed.uri().host(),
++                Some(if mode == TabMode::Direct {
++                    "api2.cursor.sh"
++                } else {
++                    "127.0.0.1"
++                })
++            );
++            assert!(should_route_locally("/agent.v1.AgentService/RunSSE", mode));
++            assert!(should_route_locally(
++                "/aiserver.v1.AiService/WriteGitCommitMessage",
++                mode
++            ));
++        }
++        let invalid = TabSettings {
++            mode: TabMode::Custom,
++            address: "file:///invalid".into(),
++            ..Default::default()
++        };
++        assert!(harness.set_tab_settings(invalid).await.is_err());
++        assert_eq!(*relay.tab_mode.read(), TabMode::Direct);
++        assert_eq!(store.tab_settings().await.unwrap().mode, TabMode::Direct);
++    }
++
+     #[test]
+     fn cursor_cli_transport_and_model_metadata_routes_stay_local() {
+         for path in [

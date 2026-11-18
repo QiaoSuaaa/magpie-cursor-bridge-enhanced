@@ -5,11 +5,12 @@ import http from 'node:http';
 import {execFile, spawn} from 'node:child_process';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, settingsFile} from '../lib/bridge-settings.js';
+import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, tabModes, publicSettings, settingsFile} from '../lib/bridge-settings.js';
+import {resolveDataDir, databasePath, migrateStorage} from '../lib/storage.js';
 import {atomic, restoreProxy} from '../lib/settings.js';
 import {cursorCompatibility, compareVersions} from '../lib/compatibility.js';
 import {version} from '../version.js';
-import {readDatabase, readRecentCalls, cleanDatabase} from './database.js';
+import {readDatabase, readRecentCalls, cleanDatabase, extractCursorAuthToken} from './database.js';
 import {tailFile, redact, classify} from './diagnostics.js';
 import {runSelfTest} from './selftest.js';
 import platform from '../lib/platform.js';
@@ -39,14 +40,16 @@ export function paths(repoRoot) {
   // Magpie may write the agent connection to a different file on Windows or
   // Linux; `connections` lists the same candidates the supervisor reads.
   const connections = platform.current.connectionFiles(home);
+  const data = resolveDataDir(root);
+  const database = databasePath(data);
   return {
     home,
     root,
     share,
-    data: path.join(root, 'data'),
-    database: path.join(root, 'data/bridge.db'),
-    databaseWal: path.join(root, 'data/bridge.db-wal'),
-    databaseShm: path.join(root, 'data/bridge.db-shm'),
+    data,
+    database,
+    databaseWal: `${database}-wal`,
+    databaseShm: `${database}-shm`,
     plist: layout.plist,
     systemdUnit: layout.systemdUnit || null,
     autostart: layout.autostart || null,
@@ -59,7 +62,7 @@ export function paths(repoRoot) {
     engineLog: path.join(root, 'engine.log'),
     supervisorLog: path.join(root, 'supervisor.log'),
     supervisorError: path.join(root, 'supervisor-error.log'),
-    diagnostics: path.join(root, 'data', 'diagnostics'),
+    diagnostics: path.join(data, 'diagnostics'),
     settings: settingsFile(root),
     setup: path.join(repoRoot, 'setup.command'),
     repo: repoRoot
@@ -111,11 +114,11 @@ async function commandOf(pid) {
   return result.ok ? result.stdout.trim() : '';
 }
 
-async function stopProcess(pid, marker, graceMs) {
+async function stopProcess(pid, marker, graceMs, {force = true} = {}) {
   if (!alive(pid)) return false;
   const command = await commandOf(pid);
   if (!command.includes(marker)) return false;
-  for (const signal of ['SIGTERM', 'SIGKILL']) {
+  for (const signal of force ? ['SIGTERM', 'SIGKILL'] : ['SIGTERM']) {
     try { process.kill(pid, signal); } catch { return false; }
     const until = Date.now() + graceMs;
     while (Date.now() < until) {
@@ -328,6 +331,7 @@ async function overview(repoRoot, port) {
     launchAgent: agent,
     platform: platform.platform,
     serviceSupported: platform.serviceSupported,
+    tabSupported: platform.engineSupportsTab(repoRoot),
     connection: safeConnection(repoRoot),
     cursor: (() => {
       const version = platform.current.cursorVersion(p.home);
@@ -336,7 +340,7 @@ async function overview(repoRoot, port) {
     database: stat(p.database),
     retention: readJson(p.retention),
     settings: {
-      values: readBridgeSettings(p.root),
+      values: publicSettings(readBridgeSettings(p.root)),
       defaults: bridgeDefaults,
       rules: bridgeRules,
       modes: bridgeModes,
@@ -345,6 +349,7 @@ async function overview(repoRoot, port) {
     },
     paths: {
       configDir: p.root,
+      dataDir: p.data,
       installDir: p.share,
       plist: p.plist,
       systemdUnit: p.systemdUnit,
@@ -458,7 +463,15 @@ function runStatus(repoRoot) {
 async function stopBridge(repoRoot) {
   const p = paths(repoRoot);
   if (platform.IS_WIN) {
-    await run('schtasks', ['/End', '/TN', platform.serviceName], {timeout: 15000});
+    // Windows process.kill(SIGTERM) is not graceful. Ask the supervisor to
+    // finish retention and close the engine before it releases its lock.
+    const pid = readPid(p.supervisorPid);
+    if (pid && alive(pid)) {
+      atomic(path.join(p.root, 'stop-request.json'), JSON.stringify({pid}));
+      const until = Date.now() + 15000;
+      while (alive(pid) && Date.now() < until) await wait(150);
+      if (alive(pid)) throw new Error('后台仍在处理数据，请稍后重试');
+    }
   } else if (platform.IS_LINUX) {
     const systemctl = platform.current.systemctl();
     if (systemctl) await run(systemctl, ['--user', 'stop', LABEL], {timeout: 30000});
@@ -466,10 +479,15 @@ async function stopBridge(repoRoot) {
     await run('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`], {timeout: 15000});
   }
   const supervisorPid = readPid(p.supervisorPid);
-  if (supervisorPid) await stopProcess(supervisorPid, 'bridge.js', 10000);
+  if (supervisorPid && !platform.IS_WIN) await stopProcess(supervisorPid, 'bridge.js', 10000, {force: false});
+  if (supervisorPid && alive(supervisorPid)) throw new Error('后台仍在处理数据，请稍后重试');
   const runtime = readJson(p.status);
   const enginePid = Number(runtime?.pid) || null;
   if (enginePid) await stopProcess(enginePid, 'cursor-magpie-bridge', 5000);
+  if ((supervisorPid && alive(supervisorPid)) || (enginePid && alive(enginePid))) {
+    throw new Error('后台进程尚未停止，已取消数据操作');
+  }
+  restoreProxy(path.join(p.root, 'settings-journal.json'));
 }
 
 function sendJson(res, status, body) {
@@ -517,7 +535,7 @@ function readBody(req) {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-export function createControlServer({repoRoot, port, log = console.log, connectAgent = runMagpieConnect}) {
+export function createControlServer({repoRoot, port, log = console.log, connectAgent = runMagpieConnect, stop = stopBridge, start = runSetup}) {
   const token = randomBytes(32).toString('hex');
   const repoUrl = repositoryUrl(repoRoot);
   const htmlFile = path.join(here, 'ui.html');
@@ -533,6 +551,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
   let databaseCache = {at: 0, data: null, deep: false};
   let databasePending = null;
   let databaseEpoch = 0;
+  const callReads = new Set();
   const DATABASE_CACHE_MS = 20000;
   // /api/status is polled every five seconds per open console, and each miss
   // spawns ps/launchctl. A two-second cache collapses concurrent panels into
@@ -581,9 +600,9 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
       ok: true,
       generated: new Date().toISOString(),
       platform: {platform: process.platform, arch: process.arch, release: os.release()},
-      versions: {plugin: snapshot.version, engine: integrity?.engineVersion || null},
+      versions: {plugin: snapshot.version, engine: integrity?.engineVersions?.[`${process.platform}-${process.arch}`] || integrity?.engineVersion || null},
       overview: snapshot,
-      settings: readBridgeSettings(p.root),
+      settings: publicSettings(readBridgeSettings(p.root)),
       logs,
       hints: [...hints.values()],
       retention: readJson(p.retention)
@@ -709,7 +728,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
 
       if (req.method === 'GET' && url.pathname === '/api/settings') {
         const p = paths(repoRoot);
-        return sendJson(res, 200, {ok: true, settings: readBridgeSettings(p.root), defaults: bridgeDefaults, rules: bridgeRules, modes: bridgeModes, subagentModes: bridgeSubagentModes, file: p.settings});
+        return sendJson(res, 200, {ok: true, settings: publicSettings(readBridgeSettings(p.root)), defaults: bridgeDefaults, rules: bridgeRules, modes: bridgeModes, subagentModes: bridgeSubagentModes, tabModes, file: p.settings});
       }
 
       if (req.method === 'POST' && url.pathname === '/api/settings') {
@@ -723,9 +742,12 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
             // current file so one form never resets the other's values, while
             // an explicitly posted {} still clears a list.
             const root = paths(repoRoot).root;
-            const saved = writeBridgeSettings(root, {...readBridgeSettings(root), ...body});
-            log(`bridge settings saved: ${JSON.stringify(saved)}`);
-            return {status: 200, body: {ok: true, settings: saved}};
+            const input = {...readBridgeSettings(root), ...body};
+            if (input.tabMode !== 'direct' && !platform.engineSupportsTab(repoRoot)) throw new Error('当前平台尚未打包支持 Tab 接管的新引擎，请先构建该平台引擎');
+            const saved = writeBridgeSettings(root, input);
+            log(`bridge settings saved: ${JSON.stringify(publicSettings(saved))}`);
+            overviewCache = {at: 0, data: null, pending: null};
+            return {status: 200, body: {ok: true, settings: publicSettings(saved)}};
           } catch (error) {
             return {status: 400, body: {ok: false, error: String(error.message || error)}};
           }
@@ -735,14 +757,27 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         return sendJson(res, result.status, result.body);
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/tab/token/extract') {
+        try {
+          return sendJson(res, 200, {ok: true, ...(await extractCursorAuthToken(paths(repoRoot).home))});
+        } catch (error) {
+          return sendJson(res, 400, {ok: false, error: String(error.message || error)});
+        }
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/calls') {
+        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
         const p = paths(repoRoot);
         const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 25));
         const errorsOnly = url.searchParams.get('errors') === '1';
+        const pending = readRecentCalls(p.database, {limit, errorsOnly});
+        callReads.add(pending);
         try {
-          return sendJson(res, 200, {ok: true, ...(await readRecentCalls(p.database, {limit, errorsOnly}))});
+          return sendJson(res, 200, {ok: true, ...(await pending)});
         } catch (error) {
           return sendJson(res, 500, {ok: false, error: `读取调用记录失败：${error.message}`});
+        } finally {
+          callReads.delete(pending);
         }
       }
 
@@ -766,6 +801,9 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
               return sendJson(res, 200, {ok: true, database: databaseCache.data, cached: true});
             }
           }
+          // A request queued behind another scan must not start a new read
+          // after a migration has already begun waiting for that first scan.
+          if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
           if (!databasePending) {
             const epoch = databaseEpoch;
             const promise = readDatabase(p.database, {deep})
@@ -856,6 +894,40 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         }
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/storage/migrate') {
+        const body = await readBody(req);
+        if (typeof body.targetDir !== 'string' || !path.isAbsolute(body.targetDir.trim())) {
+          return sendJson(res, 400, {ok: false, error: '请填写数据目录的绝对路径'});
+        }
+        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
+        const p = paths(repoRoot);
+        const runtime = readJson(p.status);
+        const wasRunning = alive(Number(runtime?.pid)) || alive(readPid(p.supervisorPid));
+        busy = '数据目录迁移';
+        let result = null;
+        let failure = '';
+        let restart = null;
+        try {
+          await Promise.allSettled([...(databasePending ? [databasePending.promise] : []), ...callReads]);
+          if (wasRunning) await stop(repoRoot);
+          result = await migrateStorage(p.root, body.targetDir.trim());
+          log(`storage ${result.mode}: ${p.data} -> ${result.dataDir}`);
+        } catch (error) {
+          failure = String(error.message || error);
+        } finally {
+          if (wasRunning) {
+            try { restart = await start(repoRoot); }
+            catch (error) { restart = {ok: false, error: String(error.message || error)}; }
+          }
+          databaseEpoch += 1;
+          databaseCache = {at: 0, data: null, deep: false};
+          overviewCache = {at: 0, data: null, pending: null};
+          busy = null;
+        }
+        if (failure) return sendJson(res, 500, {ok: false, error: `迁移失败：${failure}`, restart});
+        return sendJson(res, 200, {ok: true, ...result, restart});
+      }
+
       if (req.method === 'GET' && url.pathname === '/api/logs') {
         const p = paths(repoRoot);
         const names = {engine: p.engineLog, supervisor: p.supervisorLog, error: p.supervisorError};
@@ -909,12 +981,16 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         // The control page runs in a WebView where a Blob download may not be
         // wired up; writing the bundle locally and returning its path works on
         // every platform and keeps the text out of the browser.
-        const data = await buildDiagnostics();
-        const p = paths(repoRoot);
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const file = path.join(p.diagnostics, `diagnostics-${stamp}.json`);
-        atomic(file, JSON.stringify(data, null, 2) + '\n');
-        return sendJson(res, 200, {ok: true, file, generated: data.generated, hints: data.hints});
+        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
+        busy = '导出诊断包';
+        try {
+          const data = await buildDiagnostics();
+          const p = paths(repoRoot);
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const file = path.join(p.diagnostics, `diagnostics-${stamp}.json`);
+          atomic(file, JSON.stringify(data, null, 2) + '\n');
+          return sendJson(res, 200, {ok: true, file, generated: data.generated, hints: data.hints});
+        } finally { busy = null; }
       }
 
       if (req.method === 'GET' && url.pathname === '/api/update') {

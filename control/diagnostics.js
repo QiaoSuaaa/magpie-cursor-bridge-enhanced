@@ -53,8 +53,8 @@ export function redact(text) {
     .replace(/(authorization\s*:\s*bearer\s+)[^\s"',}]+/gi, '$1[redacted]')
     .replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/=-]{8,}/gi, '$1[redacted]')
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[redacted]')
-    .replace(/"(api[_-]?key|access[_-]?token|token|secret|password|key)"\s*:\s*"[^"]*"/gi, '"$1":"[redacted]"')
-    .replace(/\b(api[_-]?key|access[_-]?token|token|secret|password|key)\b\s*[:=]\s*([^\s"',}]+)/gi, '$1=[redacted]');
+    .replace(/"(api[_-]?key|access[_-]?token|tab[_-]?token|token|secret|password|key)"\s*:\s*"[^"]*"/gi, '"$1":"[redacted]"')
+    .replace(/\b(api[_-]?key|access[_-]?token|tab[_-]?token|token|secret|password|key)\b\s*[:=]\s*([^\s"',}]+)/gi, '$1=[redacted]');
 }
 
 const HINTS = [

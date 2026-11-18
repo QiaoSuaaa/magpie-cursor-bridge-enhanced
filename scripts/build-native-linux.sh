@@ -61,16 +61,14 @@ if command -v "$strip_bin" >/dev/null 2>&1; then
   "$strip_bin" "$bridge_package/bin/linux-$bridge_arch/cursor-magpie-bridge.new" || true
 fi
 mv "$bridge_package/bin/linux-$bridge_arch/cursor-magpie-bridge.new" "$bridge_package/bin/linux-$bridge_arch/cursor-magpie-bridge"
-python3 - "$bridge_package" "$bridge_arch" "$rust_target" <<'PY'
-import hashlib,json,pathlib,subprocess,sys
-p=pathlib.Path(sys.argv[1]);arch=sys.argv[2];rust_target=sys.argv[3] if len(sys.argv)>3 else ''
-manifest=json.loads((p/'package.json').read_text())
+python3 - "$bridge_package" "$bridge_arch" "$rust_target" "$bridge_build/source" <<'PY'
+import hashlib,json,pathlib,re,subprocess,sys
+p=pathlib.Path(sys.argv[1]);arch=sys.argv[2];rust_target=sys.argv[3];source=pathlib.Path(sys.argv[4]);key=f'linux-{arch}'
+manifest=json.loads((p/'package.json').read_text(encoding='utf-8'))
 binary=p/f'bin/linux-{arch}/cursor-magpie-bridge'
-data=json.loads((p/'integrity.json').read_text())
-# The engine is rebuilt only when its sources change, so the package version
-# and the engine version can legitimately differ; engineVersion pins the
-# binary's own --version output.
-engine_version=data.get('engineVersion') or data['version']
+data=json.loads((p/'integrity.json').read_text(encoding='utf-8'))
+# Read the rebuilt engine contract from its pinned source, then record it per platform.
+engine_version=re.search(r'println!\("(\d+\.\d+\.\d+)"\)',(source/'server/src/bin/cursor-magpie-bridge.rs').read_text(encoding='utf-8')).group(1)
 if rust_target:
     # A cross-compiled binary cannot run here; read the verbatim version
     # constant the --version branch prints.
@@ -80,6 +78,8 @@ else:
     reported=subprocess.check_output([str(binary),'--version'],text=True).strip()
     assert reported==engine_version, f'expected engine {engine_version}, got {reported}'
 data['version']=manifest['version']
-data.setdefault('platforms',{})[f'linux-{arch}']=hashlib.sha256(binary.read_bytes()).hexdigest()
+data.setdefault('engineVersions',{})[key]=engine_version
+data.setdefault('platforms',{})[key]=hashlib.sha256(binary.read_bytes()).hexdigest()
+data['tabPlatforms']=sorted(set(data.get('tabPlatforms',[]))|{key})
 (p/'integrity.json').write_text(json.dumps(data,indent=2)+'\n')
 PY

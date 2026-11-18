@@ -160,6 +160,19 @@ test('a display-name change hot-swaps the catalogue without restarting',async()=
   assert.equal(h.state.effective[1].models[0].name,'Opus');
 });
 
+test('Tab changes hot-swap configuration within one loop without restarting',async()=>{
+  let calls=0;
+  const h=harness({
+    maxTicks:2,
+    configure:()=>({...BASE_SETTINGS,tabMode:++calls===1?'direct':'official',tabToken:'test-token'}),
+    wait:async()=>{},
+    catalogue:async(connection,config)=>({models:[{id:'m'}],tab:{mode:config.tabMode,token:config.tabToken}})
+  });
+  await h.supervisor.run();
+  assert.equal(h.state.spawns.length,1);
+  assert.deepEqual(h.state.effective.map(entry=>entry.tab.mode),['direct','official']);
+});
+
 test('an external proxy change pauses and restores Cursor settings',async()=>{
   const h=harness({
     isEnding:(state)=>state.publishes.some(entry=>entry.state==='paused'),
@@ -223,6 +236,26 @@ test('retention runs in the background without blocking the engine',async()=>{
   assert.equal(h.state.spawns.length,1,'the engine still starts while retention runs');
   assert.equal(pruned[0].calls,3);
   assert.equal(pruned[0].tracesDays,7);
+});
+
+test('shutdown waits for an in-flight retention writer before releasing the engine',async()=>{
+  let release;
+  const pending=new Promise(resolve=>{release=resolve;});
+  const h=harness({
+    maxTicks:1,
+    retentionInitialDelayMs:0,
+    configure:()=>({...BASE_SETTINGS,tracesRetentionDays:7}),
+    pruneDatabase:()=>pending
+  });
+  let finished=false;
+  const run=h.supervisor.run().then(()=>{finished=true;});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(finished,false);
+  assert.equal(h.state.publishes.some(entry=>entry.state==='stopped'),false);
+  release({calls:0});
+  await run;
+  assert.equal(finished,true);
+  assert.equal(h.state.publishes.at(-1).state,'stopped');
 });
 
 test('retention is skipped in lite mode',async()=>{

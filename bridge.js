@@ -5,7 +5,8 @@ import {fileURLToPath} from 'node:url';
 import {spawn,execFileSync} from 'node:child_process';
 import {atomic,applyProxy,restoreProxy} from './lib/settings.js';
 import {gatewayModels} from './lib/config.js';
-import {read as readBridgeSettings,applyModelPreferences} from './lib/bridge-settings.js';
+import {read as readBridgeSettings,applyModelPreferences,tabConfig} from './lib/bridge-settings.js';
+import {resolveDataDir,databasePath} from './lib/storage.js';
 import platform from './lib/platform.js';
 import {createSupervisor} from './lib/supervisor.js';
 import {pruneDatabase} from './control/database.js';
@@ -90,7 +91,13 @@ if(command==='status') {
     fs.rmSync(lock,{recursive:true,force:true}); fs.mkdirSync(lock);
   }
   fs.writeFileSync(path.join(lock,'pid'),String(process.pid));
+  const stopRequest=file('stop-request.json');
+  fs.rmSync(stopRequest,{force:true});
   let ending=false;
+  const isEnding=()=>{
+    if(ending) return true;
+    try {return JSON.parse(fs.readFileSync(stopRequest,'utf8')).pid===process.pid;} catch {return false;}
+  };
   // Lite mode starts from an empty in-memory database, so the proxy port cannot
   // be read back from SQLite. Carry the last port across restarts: Cursor does
   // not re-read http.proxy until it restarts.
@@ -98,13 +105,17 @@ if(command==='status') {
   try {const last=JSON.parse(fs.readFileSync(file('status.json'),'utf8'));const url=new URL(last.proxy);if(url.port) preferredProxyPort=url.port;} catch {}
   const supervisor=createSupervisor({
     initialProxyPort:preferredProxyPort,
-    readSettings:()=>readBridgeSettings(root),
+    readSettings:()=>{
+      const config=readBridgeSettings(root);
+      if(config.tabMode!=='direct'&&!platform.engineSupportsTab(packageDir)) throw new Error('当前平台引擎不支持 Tab 接管，请先构建新引擎或使用 direct 模式');
+      return config;
+    },
     readConnection:connectionText,
     // gatewayModels returns the whole connection object; only its models array
     // takes the display-name and order overrides.
     fetchCatalogue:async(connection,config)=>{
       const catalogue=await gatewayModels(connection);
-      return {...catalogue,models:applyModelPreferences(catalogue.models,{modelNames:config.modelNames,modelOrder:config.modelOrder,modelHidden:config.modelHidden,keep:connection.model})};
+      return {...catalogue,tab:tabConfig(config),models:applyModelPreferences(catalogue.models,{modelNames:config.modelNames,modelOrder:config.modelOrder,modelHidden:config.modelHidden,keep:connection.model})};
     },
     writeEffective:text=>atomic(file('effective.json'),text),
     // status.json always advertises the configured mode, so the control panel
@@ -114,20 +125,21 @@ if(command==='status') {
     restoreProxy:()=>restoreProxy(file('settings-journal.json')),
     // Automatic retention runs in this process, online: it batches deletes and
     // never stops the engine or vacuums. The result is kept for the console.
-    pruneDatabase:({tracesDays,sessionsDays})=>pruneDatabase(file('data/bridge.db'),{tracesDays,sessionsDays}),
+    pruneDatabase:({tracesDays,sessionsDays})=>pruneDatabase(databasePath(resolveDataDir(root)),{tracesDays,sessionsDays}),
     onPrune:result=>atomic(file('retention.json'),JSON.stringify(result,null,2)),
     spawnEngine:({mode,subagentMode,preferredProxyPort:port})=>spawn(platform.enginePathFor(packageDir),[file('effective.json')],{
-      env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
+      env:{...process.env,CURSOR_BYOK_DATA_DIR:resolveDataDir(root),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
     }),
     // Native diagnostics can contain request information; keep them in a private local file.
     onEngineStderr:appendEngineLog,
     wait,
-    isEnding:()=>ending
+    isEnding
   });
   for(const signal of ['SIGTERM','SIGINT']) process.on(signal,()=>{ending=true;});
   try {
     await supervisor.run();
   } finally {
+    fs.rmSync(stopRequest,{force:true});
     fs.rmSync(lock,{recursive:true,force:true});
   }
 } else {throw new Error('usage: node bridge.js status|supervise|restore');}

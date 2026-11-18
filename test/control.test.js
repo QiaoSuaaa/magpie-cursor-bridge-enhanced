@@ -7,6 +7,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createControlServer, paths, readConnection} from '../control/server.js';
 import platformModule from '../lib/platform.js';
+import {defaults, publicSettings} from '../lib/bridge-settings.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -266,10 +267,10 @@ test('control settings validate and are written to the bridge root', async (t) =
   assert.equal(badName.status, 400);
   assert.match(badName.body, /80 个字符/);
 
-  const expected = {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6, tracesRetentionDays: 14, sessionsRetentionDays: 30, modelNames: {'group/opus': 'Opus 4.5'}, modelOrder: ['group/sonnet', 'group/opus'], modelHidden: ['group/sonnet']};
+  const expected = {...defaults, runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6, tracesRetentionDays: 14, sessionsRetentionDays: 30, modelNames: {'group/opus': 'Opus 4.5'}, modelOrder: ['group/sonnet', 'group/opus'], modelHidden: ['group/sonnet']};
   const good = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify(expected)});
   assert.equal(good.status, 200);
-  assert.deepEqual(JSON.parse(good.body).settings, expected);
+  assert.deepEqual(JSON.parse(good.body).settings, publicSettings(expected));
   const file = paths(repoRoot).settings;
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), expected);
   if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);

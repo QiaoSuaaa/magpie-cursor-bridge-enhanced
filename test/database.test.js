@@ -7,8 +7,9 @@ import path from 'node:path';
 import platform from '../lib/platform.js';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {readDatabase, readRecentCalls, cleanDatabase, pruneDatabase} from '../control/database.js';
+import {readDatabase, readRecentCalls, cleanDatabase, pruneDatabase, extractCursorAuthToken} from '../control/database.js';
 import {createControlServer} from '../control/server.js';
+import {migrateStorage, resolveDataDir, databasePath} from '../lib/storage.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SQLITE = platform.current.sqlite3();
@@ -102,6 +103,29 @@ INSERT INTO service_settings VALUES ('setting', '{"value":1}');
 `);
   return {home, dbPath};
 }
+
+test('migrated SQLite data retains sessions, content and integrity', {skip: SKIP}, async (t) => {
+  const {home, dbPath} = fakeDatabase(t);
+  const root = path.dirname(path.dirname(dbPath));
+  const destination = path.join(home, 'portable-data');
+  const before = query(dbPath, 'SELECT conversation_id FROM conversations ORDER BY conversation_id;');
+  await migrateStorage(root, destination);
+  const migrated = databasePath(resolveDataDir(root));
+  assert.equal(query(migrated, 'SELECT conversation_id FROM conversations ORDER BY conversation_id;'), before);
+  assert.equal(query(migrated, 'SELECT hex(data) AS content FROM blobs ORDER BY blob_id;'), query(dbPath, 'SELECT hex(data) AS content FROM blobs ORDER BY blob_id;'));
+  assert.equal(execFileSync(SQLITE, ['-readonly', migrated, 'PRAGMA quick_check;'], {encoding: 'utf8'}).trim(), 'ok');
+  assert.ok(fs.existsSync(dbPath), 'source database is retained');
+});
+
+test('Cursor Tab auth reads only the access token from the isolated profile', {skip: SKIP}, async (t) => {
+  const {home} = fakeDatabase(t);
+  const state = path.join(path.dirname(platform.current.cursorSettings(home)), 'globalStorage', 'state.vscdb');
+  fs.mkdirSync(path.dirname(state), {recursive: true});
+  sql(state, "CREATE TABLE ItemTable(key TEXT PRIMARY KEY, value TEXT); INSERT INTO ItemTable VALUES ('cursorAuth/refreshToken', 'refresh-only-test');");
+  await assert.rejects(extractCursorAuthToken(home), /Access Token/);
+  sql(state, "INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', 'access-only-test'), ('cursorAuth/cachedEmail', 'test@example.com');");
+  assert.deepEqual(await extractCursorAuthToken(home), {token: 'access-only-test', email: 'test@example.com'});
+});
 
 test('database overview groups tables and reports content sizes', {skip: SKIP}, async (t) => {
   const {dbPath} = fakeDatabase(t);
