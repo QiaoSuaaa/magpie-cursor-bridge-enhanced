@@ -1,10 +1,13 @@
 {
   "version": "0.2.32",
   "engineVersion": "0.2.15",
+  "engineVersions": {
+    "win32-x64": "0.2.16"
+  },
   "engine": "c021fa6cfc4a01fc8567597bbd8ec096a4eb2261e5173e2f3875ea89faf2d6fc",
   "platforms": {
     "darwin-arm64": "c021fa6cfc4a01fc8567597bbd8ec096a4eb2261e5173e2f3875ea89faf2d6fc",
-    "win32-x64": "118c175946e28405f29620af9b5088d82c1f2a2f275a705c857d1eb5eabb0075",
+    "win32-x64": "4903cee70faea46054058527f1fc3d0d29315063af4cf20754efea5133321efc",
     "linux-x64": "55540d2d8ca51c26a6f22ab0c0a502eaafc9aabb5de272bdc67a2f7eee137528",
     "linux-arm64": "91a7b1da97482b2153b92c3e212be609ca900bdb6a3e105490cec14bf8e67c00",
     "darwin-x64": "92a28e12bb3a51d94888b5b9b1509c25fd0c7adaba53b69553087c9e656592ad"
