@@ -395,14 +395,30 @@
     finally { $('tabExtract').disabled = false; }
   }
 
-  async function migrateData(event) {
+  function beginStorageMigration(event) {
     event.preventDefault();
     if (busy) return;
+    const form = $('storageForm');
+    if (!form.reportValidity()) return;
     const targetDir = $('storageTarget').value.trim();
-    if (!targetDir || !window.confirm(`将数据目录切换至：\n${targetDir}\n\n期间暂停桥接；空目录复制数据，已有数据库直接切换，原目录保留。继续？`)) return;
+    if (!targetDir) return;
+    $('storageConfirmText').textContent = `将数据目录切换至：${targetDir}。迁移期间会暂停桥接；空目录会复制数据，有效数据库目录会直接切换，原目录保留。`;
+    $('storageConfirm').hidden = false;
+    $('storageHint').textContent = '请确认目标目录后继续。';
+    tellSize();
+  }
+
+  async function migrateData() {
+    if (busy) return;
+    const targetDir = $('storageTarget').value.trim();
+    if (!targetDir) {
+      $('storageHint').textContent = '请先填写目标目录。';
+      return;
+    }
     busy = 'storage';
     setBusy(true);
-    $('storageHint').textContent = '正在暂停桥接并处理数据，请保持页面打开…';
+    $('storageConfirm').hidden = true;
+    $('storageHint').textContent = `正在迁移到 ${targetDir}：暂停桥接并处理数据，请保持页面打开…`;
     try {
       const result = await api('/api/storage/migrate', {method: 'POST', body: {targetDir}});
       dbData = null;
@@ -415,13 +431,17 @@
       $('dbState').textContent = '目录已切换，重新统计以读取';
       $('callsBody').replaceChildren();
       $('storageHint').textContent = result.restart?.ok === false
-        ? `目录已切换，但启动失败：${result.restart.error || result.restart.stderr || '请查看日志'}`
+        ? `目录已切换至 ${result.dataDir}，但后台启动失败：${result.restart.error || result.restart.stderr || '请展开「日志与诊断」查看原因'}`
         : `已${result.mode === 'copied' ? '复制并切换' : '切换'}至 ${result.dataDir}；原目录保留`;
-    } catch (error) { $('storageHint').textContent = error.message; }
-    finally {
+      $('storageTarget').value = '';
+    } catch (error) {
+      $('storageHint').textContent = `迁移失败：${error.message}`;
+      notice(`数据目录迁移失败：${error.message}`, 'error');
+    } finally {
       busy = null;
       setBusy(false);
       await loadStatus({quiet: true});
+      tellSize();
     }
   }
 
@@ -1267,7 +1287,13 @@
     });
     $('tabCard').addEventListener('toggle', tellSize);
     $('storageCard').addEventListener('toggle', tellSize);
-    $('storageForm').addEventListener('submit', migrateData);
+    $('storageMigrate').addEventListener('click', beginStorageMigration);
+    $('storageConfirmGo').addEventListener('click', migrateData);
+    $('storageConfirmCancel').addEventListener('click', () => {
+      $('storageConfirm').hidden = true;
+      $('storageHint').textContent = '';
+      tellSize();
+    });
     $('saveModelNames').addEventListener('click', saveModelNames);
     $('modelNamesCard').addEventListener('toggle', () => {
       if ($('modelNamesCard').open && lastOverview) loadModelNames(lastOverview);

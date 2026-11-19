@@ -117,7 +117,14 @@
       <p class="hint">当前目录：<span id="currentDataDir" class="mono"></span></p>
       <label><span class="label">目标目录</span><span class="field"><input id="storageTarget" type="text" placeholder="填写绝对路径" autocomplete="off" spellcheck="false" required></span></label>
       <p class="hint mode-hint">空目录会复制当前数据库、证书、备份和诊断文件；已有 bridge.db 的目录会直接切换。迁移期间暂停桥接，完成后恢复原运行状态，当前对话可能中断。轻量模式的内存会话不会迁移。原目录保留。</p>
-      <div class="form-actions"><button id="storageMigrate" type="submit">迁移 / 切换</button><span id="storageHint" class="hint"></span></div>
+      <div class="form-actions"><button id="storageMigrate" type="button">迁移 / 切换</button><span id="storageHint" class="hint" role="status" aria-live="polite"></span></div>
+      <div id="storageConfirm" class="confirm" hidden>
+        <p id="storageConfirmText"></p>
+        <div class="confirm-actions">
+          <button id="storageConfirmGo" class="primary" type="button">确认迁移</button>
+          <button id="storageConfirmCancel" class="ghost" type="button">取消</button>
+        </div>
+      </div>
     </form>
   </details>
 
