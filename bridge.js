@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn,execFileSync} from 'node:child_process';
@@ -127,9 +128,17 @@ if(command==='status') {
     // never stops the engine or vacuums. The result is kept for the console.
     pruneDatabase:({tracesDays,sessionsDays})=>pruneDatabase(databasePath(resolveDataDir(root)),{tracesDays,sessionsDays}),
     onPrune:result=>atomic(file('retention.json'),JSON.stringify(result,null,2)),
-    spawnEngine:({mode,subagentMode,preferredProxyPort:port})=>spawn(platform.enginePathFor(packageDir),[file('effective.json')],{
-      env:{...process.env,CURSOR_BYOK_DATA_DIR:resolveDataDir(root),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
-    }),
+    onLifecycle:entry=>appendEngineLog(Buffer.from(`[bridge-lifecycle] ${JSON.stringify(entry)}\n`)),
+    spawnEngine:({mode,subagentMode,preferredProxyPort:port})=>{
+      const enginePath=platform.enginePathFor(packageDir);
+      const sha256=createHash('sha256').update(fs.readFileSync(enginePath)).digest('hex');
+      const engineVersion=execFileSync(enginePath,['--version'],{encoding:'utf8',timeout:5000,windowsHide:true}).trim();
+      const engine=spawn(enginePath,[file('effective.json')],{
+        env:{...process.env,CURSOR_BYOK_DATA_DIR:resolveDataDir(root),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
+      });
+      engine.bridgeIdentity={engineVersion,sha256,pluginVersion:version};
+      return engine;
+    },
     // Native diagnostics can contain request information; keep them in a private local file.
     onEngineStderr:appendEngineLog,
     wait,

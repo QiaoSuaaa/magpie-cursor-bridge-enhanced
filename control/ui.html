@@ -54,6 +54,12 @@
 
   <section class="grid" id="overview" aria-live="polite"></section>
 
+  <details class="card" id="lifecycleCard">
+    <summary><h2>引擎运行记录</h2><span class="hint">最近 20 条 · 完整记录见 engine.log</span></summary>
+    <p class="hint">记录当前后台监视器生命周期中的启停原因；未连接上游时，无法判断 ACP 会话复用情况。</p>
+    <div id="lifecycleEntries" role="log" aria-live="polite"></div>
+  </details>
+
   <section id="updateCard" class="card" hidden>
     <div class="card-head"><h2>版本更新</h2><span class="hint" id="updateVersion"></span></div>
     <p class="hint" id="updateHint"></p>

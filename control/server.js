@@ -289,6 +289,23 @@ async function runMagpieConnect(model) {
   }
 }
 
+export function runtimeVersions({manifest, integrity, installation, runtime, engineAlive, key = `${process.platform}-${process.arch}`}) {
+  const identity = engineAlive && runtime?.runtime?.pid === Number(runtime?.pid) ? runtime.runtime : null;
+  const expectedHash = integrity?.platforms?.[key] || null;
+  const needsRestart = engineAlive && identity?.sha256 && expectedHash
+    ? identity.sha256 !== expectedHash || identity.pluginVersion !== manifest?.version
+    : null;
+  return {
+    availablePlugin: manifest?.version || null,
+    installedPlugin: installation?.version || null,
+    runningPlugin: engineAlive ? identity?.pluginVersion || runtime?.version || null : null,
+    availableEngine: integrity?.engineVersions?.[key] || integrity?.engineVersion || null,
+    runningEngine: identity?.engineVersion || null,
+    needsRestart,
+    state: !engineAlive ? 'stopped' : needsRestart === true ? 'restart_required' : needsRestart === false ? 'current' : 'unknown'
+  };
+}
+
 async function overview(repoRoot, port) {
   const p = paths(repoRoot);
   const installation = readJson(p.installation);
@@ -298,7 +315,13 @@ async function overview(repoRoot, port) {
   const enginePid = Number(runtime?.pid) || null;
   const engineCommand = enginePid ? await commandOf(enginePid) : '';
   const agent = await launchAgentState(repoRoot);
+  const integrity = readJson(path.join(repoRoot, 'integrity.json'));
+  const manifest = readJson(path.join(repoRoot, 'package.json'));
+  const key = `${process.platform}-${process.arch}`;
+  const engineAlive = !!enginePid && alive(enginePid) && engineCommand.includes('cursor-magpie-bridge');
+  const identity = engineAlive && runtime?.runtime?.pid === enginePid ? runtime.runtime : null;
   return {
+    versions: runtimeVersions({manifest, integrity, installation, runtime, engineAlive, key}),
     now: new Date().toISOString(),
     version: typeof installation?.version === 'string' ? installation.version : null,
     installation: installation ? {
@@ -316,7 +339,14 @@ async function overview(repoRoot, port) {
       pid: Number(runtime.pid) || null,
       updated: runtime.updated || null,
       warning: runtime.warning || null,
-      reason: runtime.reason || null
+      reason: runtime.reason || null,
+      mode: runtime.mode || null,
+      engineMode: runtime.engineMode || null,
+      identity,
+      lifecycle: Array.isArray(runtime.lifecycle) ? runtime.lifecycle.slice(-20).map(entry => ({
+        at: entry.at, event: entry.event, reason: entry.reason, pid: entry.pid,
+        code: entry.code, signal: entry.signal
+      })) : []
     } : null,
     supervisor: {
       pid: supervisorPid,
@@ -600,7 +630,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
       ok: true,
       generated: new Date().toISOString(),
       platform: {platform: process.platform, arch: process.arch, release: os.release()},
-      versions: {plugin: snapshot.version, engine: integrity?.engineVersions?.[`${process.platform}-${process.arch}`] || integrity?.engineVersion || null},
+      versions: {plugin: snapshot.version, engine: integrity?.engineVersions?.[`${process.platform}-${process.arch}`] || integrity?.engineVersion || null, ...snapshot.versions},
       overview: snapshot,
       settings: publicSettings(readBridgeSettings(p.root)),
       logs,

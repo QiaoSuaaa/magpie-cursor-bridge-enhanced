@@ -49,6 +49,7 @@ function harness(options={}) {
         exitEarly:options.exitEarly??false,
         onKill:(signal)=>{events.push(['kill',signal]);state.kills.push(signal);}
       });
+      child.bridgeIdentity = {engineVersion: '0.2.16', sha256: 'test-hash', pluginVersion: '0.2.32'};
       state.children.push(child);
       state.spawns.push(spawn);
       return child;
@@ -70,6 +71,7 @@ function harness(options={}) {
     pruneDatabase:options.pruneDatabase,
     onPrune:options.onPrune,
     onEngineStderr:()=>{},
+    onLifecycle:options.onLifecycle,
     wait:async(ms)=>{
       if(ms===1) loopTicks+=1;
       if(options.wait) await options.wait(ms,state,{advance:(delta)=>{clock+=delta;}});
@@ -98,10 +100,24 @@ test('a valid connection starts the engine and publishes the proxy',async()=>{
   assert.equal(connected.proxy,'http://127.0.0.1:58160');
   assert.equal(connected.backend,'http://127.0.0.1:53902');
   assert.equal(connected.pid,4242);
+  assert.equal(connected.runtime.engineVersion, '0.2.16');
+  assert.equal(connected.runtime.reason, 'initial_start');
+  assert.deepEqual(connected.lifecycle.map(entry => entry.event), ['starting', 'ready']);
+  assert.ok(!JSON.stringify(connected.lifecycle).includes('test-only'));
   // start() writes the proxy and the loop re-applies it every pass; the real
   // applyProxy() makes the second call a no-op, so only the value matters.
   assert.deepEqual([...new Set(h.state.proxies)],['http://127.0.0.1:58160']);
   assert.deepEqual(h.state.effective,[{models:[{id:'m'}]}]);
+});
+
+test('lifecycle log callback receives shutdown events without credentials',async()=>{
+  const entries=[];
+  const h=harness({maxTicks:1,onLifecycle:entry=>entries.push(entry)});
+  await h.supervisor.run();
+  assert.deepEqual(entries.map(entry=>entry.event),['starting','ready','stopping','exited']);
+  assert.equal(entries[2].reason,'shutdown');
+  assert.equal(entries[3].reason,'requested_stop');
+  assert.ok(!JSON.stringify(entries).includes('test-only'));
 });
 
 test('an inactive connection never starts the engine',async()=>{
@@ -145,6 +161,9 @@ test('a run-mode change restarts the engine once and carries the proxy port',asy
   assert.deepEqual(h.state.spawns.map(entry=>[entry.mode,entry.preferredProxyPort]),[['default','5555'],['lite','58160']]);
   assert.equal(h.state.children[0].kills.length,1,'the old engine stops before the new one starts');
   assert.equal(h.state.effective.length,2);
+  const second = h.state.publishes.filter(entry => entry.state === 'connected').at(-1);
+  assert.equal(second.runtime.reason, 'run_mode_changed');
+  assert.ok(second.lifecycle.some(entry => entry.event === 'exited' && entry.reason === 'requested_stop'));
 });
 
 test('a display-name change hot-swaps the catalogue without restarting',async()=>{

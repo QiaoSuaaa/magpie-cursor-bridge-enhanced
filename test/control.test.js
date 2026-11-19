@@ -39,7 +39,8 @@ function fakeHome(t) {
   fs.writeFileSync(path.join(root, 'status.json'), JSON.stringify({
     version: '9.9.9', state: 'connected', model: 'group/opus', models: 4,
     proxy: 'http://127.0.0.1:58160', backend: 'http://127.0.0.1:53902',
-    pid: process.pid, updated: '2026-01-01T00:00:01.000Z'
+    pid: process.pid, updated: '2026-01-01T00:00:01.000Z', mode: 'default', engineMode: 'lite',
+    lifecycle: [{at: '2026-01-01T00:00:00.000Z', event: 'exited', reason: 'unexpected_exit', pid: 42, code: 1, ignoredSecret: 'omit-this'}]
   }));
   fs.writeFileSync(path.join(root, 'connection.json'), JSON.stringify({
     enabled: true, gateway: 'http://127.0.0.1:3425/v1', key: 'secret-gateway-key',
@@ -103,6 +104,11 @@ test('control console serves a tokenised page and guards /api', async (t) => {
   const overview = JSON.parse(ok.body).overview;
   assert.equal(overview.version, '9.9.9');
   assert.equal(overview.runtime.state, 'connected');
+  assert.equal(overview.runtime.engineMode, 'lite');
+  assert.equal(overview.versions.installedPlugin, '9.9.9');
+  assert.equal(overview.runtime.lifecycle[0].reason, 'unexpected_exit');
+  assert.equal(overview.runtime.lifecycle[0].code, 1);
+  assert.doesNotMatch(ok.body, /omit-this/);
   assert.equal(overview.connection.gateway, 'http://127.0.0.1:3425/v1');
   assert.doesNotMatch(ok.body, /secret-gateway-key/);
 

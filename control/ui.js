@@ -247,6 +247,13 @@
     return wrap;
   }
 
+  const lifecycleReasons = {
+    initial_start: '首次启动', engine_recovery: '引擎退出后恢复', run_mode_changed: '运行模式变更',
+    subagent_mode_changed: '子代理模式变更', disconnected: '断开模型连接', proxy_changed: '代理设置被修改',
+    supervisor_error: '后台监视器异常', shutdown: '停止后台', unexpected_exit: '意外退出', requested_stop: '按要求停止'
+  };
+  const lifecycleEvents = {starting: '启动中', ready: '已就绪', stopping: '停止中', exited: '已退出', error: '发生异常'};
+
   function render(overview, {quiet = false} = {}) {
     lastOverview = overview;
     const runtime = overview.runtime;
@@ -299,7 +306,11 @@
 
     const grid = $('overview');
     grid.replaceChildren(
-      item('版本', overview.version || overview.installation?.version || '—', {mono: true}),
+      item('插件版本（可用 / 已安装）', `${overview.versions?.availablePlugin || '未知'} / ${overview.versions?.installedPlugin || '未安装'}`, {mono: true}),
+      item('引擎版本（可用 / 运行中）', `${overview.versions?.availableEngine || '未知'} / ${overview.versions?.runningEngine || '未知'}`, {mono: true}),
+      item('更新生效状态', ({current: '已生效', restart_required: '待重启 · 请点击重启', stopped: '引擎未运行', unknown: '未知 · 重启后可确认'})[overview.versions?.state] || '未知', {tone: overview.versions?.state === 'current' ? 'ok' : 'warn'}),
+      item('本次引擎启动', timeText(runtime?.identity?.startedAt)),
+      item('本次启动原因', lifecycleReasons[runtime?.identity?.reason] || '未知'),
       item('Cursor', cursorText, {tone: cursor?.version && !cursor.tested ? 'warn' : '', title: cursor?.hint || ''}),
       item('运行模式', `${engineModeText}${switching ? ' · 切换中' : ''}`, {tone: switching ? 'warn' : ''}),
       item('数据库', databaseText, {tone: engineMode === 'lite' ? 'ok' : ''}),
@@ -330,6 +341,16 @@
       item('release', overview.installation?.release ? shorten(overview.installation.release) : '—', {mono: true, title: overview.installation?.release || ''}),
       item('控制服务', `PID ${overview.control.pid} · ${overview.control.uptime}s`, {mono: true})
     );
+
+    const entries = $('lifecycleEntries');
+    entries.replaceChildren();
+    for (const entry of [...(runtime?.lifecycle || [])].reverse()) {
+      const row = document.createElement('p');
+      row.className = 'hint';
+      row.textContent = `${timeText(entry.at)} · ${lifecycleEvents[entry.event] || entry.event} · ${lifecycleReasons[entry.reason] || entry.reason}${entry.pid ? ` · PID ${entry.pid}` : ''}${entry.code != null ? ` · 退出码 ${entry.code}` : ''}${entry.signal ? ` · ${entry.signal}` : ''}`;
+      entries.append(row);
+    }
+    if (!entries.childNodes.length) entries.textContent = '暂无运行记录；更新后重启桥接即可开始记录。';
 
     if (!settingsFilled && overview.settings?.values) {
       fillSettings(overview.settings.values);
