@@ -1,6 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {runtimeVersions} from '../control/server.js';
+import {runtimeVersions, runtimeStatus} from '../control/server.js';
+
+test('stale connected status is invalidated only when both processes are gone', () => {
+  const runtime = {state: 'connected', pid: 42, model: 'm'};
+  const failed = runtimeStatus(runtime, {supervisorAlive: false, engineAlive: false});
+  assert.equal(failed.state, 'error');
+  assert.match(failed.reason, /上次连接状态已失效/);
+  assert.equal(runtime.state, 'connected');
+  for (const health of [{supervisorAlive: true, engineAlive: false}, {supervisorAlive: false, engineAlive: true}, {supervisorAlive: true, engineAlive: true}]) {
+    assert.equal(runtimeStatus(runtime, health), runtime);
+  }
+  assert.equal(runtimeStatus(null, {supervisorAlive: false, engineAlive: false}), null);
+  const stopped = {state: 'stopped'};
+  assert.equal(runtimeStatus(stopped, {supervisorAlive: false, engineAlive: false}), stopped);
+});
 
 const fixture = () => ({
   manifest: {version: '0.2.32'}, installation: {version: '0.2.31'},

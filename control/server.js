@@ -306,19 +306,28 @@ export function runtimeVersions({manifest, integrity, installation, runtime, eng
   };
 }
 
+export function runtimeStatus(runtime, {supervisorAlive, engineAlive}) {
+  if (runtime?.state === 'connected' && !supervisorAlive && !engineAlive) {
+    return {...runtime, state: 'error', reason: '后台监视器和引擎已退出；上次连接状态已失效，请点击启动。'};
+  }
+  return runtime;
+}
+
 async function overview(repoRoot, port) {
   const p = paths(repoRoot);
   const installation = readJson(p.installation);
-  const runtime = readJson(p.status);
+  const savedRuntime = readJson(p.status);
   const supervisorPid = readPid(p.supervisorPid);
   const supervisorCommand = supervisorPid ? await commandOf(supervisorPid) : '';
-  const enginePid = Number(runtime?.pid) || null;
+  const enginePid = Number(savedRuntime?.pid) || null;
   const engineCommand = enginePid ? await commandOf(enginePid) : '';
   const agent = await launchAgentState(repoRoot);
   const integrity = readJson(path.join(repoRoot, 'integrity.json'));
   const manifest = readJson(path.join(repoRoot, 'package.json'));
   const key = `${process.platform}-${process.arch}`;
   const engineAlive = !!enginePid && alive(enginePid) && engineCommand.includes('cursor-magpie-bridge');
+  const supervisorAlive = !!supervisorPid && alive(supervisorPid) && supervisorCommand.includes('bridge.js') && supervisorCommand.includes('supervise');
+  const runtime = runtimeStatus(savedRuntime, {supervisorAlive, engineAlive});
   const identity = engineAlive && runtime?.runtime?.pid === enginePid ? runtime.runtime : null;
   return {
     versions: runtimeVersions({manifest, integrity, installation, runtime, engineAlive, key}),

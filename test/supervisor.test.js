@@ -120,6 +120,18 @@ test('lifecycle log callback receives shutdown events without credentials',async
   assert.ok(!JSON.stringify(entries).includes('test-only'));
 });
 
+test('settings read errors are reported and recovered without losing the supervisor',async()=>{
+ let calls=0;
+ const h=harness({
+   configure:()=>{if(calls++===0) throw new Error('settings temporarily unavailable');return {...BASE_SETTINGS};},
+   isEnding:state=>state.publishes.some(entry=>entry.state==='connected')
+ });
+ await h.supervisor.run();
+ assert.match(h.state.publishes.find(entry=>entry.state==='error').reason,/settings temporarily unavailable/);
+ assert.equal(h.state.spawns.length,1);
+ assert.ok(h.state.publishes.some(entry=>entry.state==='connected'));
+});
+
 test('an inactive connection never starts the engine',async()=>{
   const h=harness({connection:()=>'{}',maxTicks:1});
   await h.supervisor.run();

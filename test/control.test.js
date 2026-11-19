@@ -103,7 +103,8 @@ test('control console serves a tokenised page and guards /api', async (t) => {
   assert.equal(ok.status, 200);
   const overview = JSON.parse(ok.body).overview;
   assert.equal(overview.version, '9.9.9');
-  assert.equal(overview.runtime.state, 'connected');
+  assert.equal(overview.runtime.state, 'error');
+  assert.match(overview.runtime.reason, /上次连接状态已失效/);
   assert.equal(overview.runtime.engineMode, 'lite');
   assert.equal(overview.versions.installedPlugin, '9.9.9');
   assert.equal(overview.runtime.lifecycle[0].reason, 'unexpected_exit');

@@ -210,11 +210,31 @@ test('windows activation writes a Startup launcher and starts the supervisor onc
  assert.match(text,/, 0, False/);
  assert.equal(fs.readFileSync(path.join(p.root,'supervisor.lock/pid'),'utf8'),String(process.pid));
 });
+test('Windows background survives launcher exit and captures both output streams',{skip:!IS_WIN,timeout:20000},async t=>{
+ const root=temp(t);
+ const release=path.join(root,"release with spaces and 'quote");
+ fs.mkdirSync(release,{recursive:true});
+ fs.writeFileSync(path.join(release,'bridge.js'),`setTimeout(()=>{console.log('SURVIVED');console.error('ERROR_CAPTURED');},1000);`);
+ const moduleUrl=new URL('../lib/install.js',import.meta.url).href;
+ const script=`import {launchWindowsSupervisor} from ${JSON.stringify(moduleUrl)}; launchWindowsSupervisor(${JSON.stringify(release)},${JSON.stringify(process.execPath)},${JSON.stringify(root)});`;
+ const result=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8',timeout:15000,windowsHide:true});
+ assert.equal(result.status,0,result.stderr);
+ let output='',errors='';
+ for(let attempt=0;attempt<60;attempt++) {
+   try {output=fs.readFileSync(path.join(root,'supervisor.log'),'utf8');errors=fs.readFileSync(path.join(root,'supervisor-error.log'),'utf8');} catch {}
+   if(output.includes('SURVIVED')&&errors.includes('ERROR_CAPTURED')) break;
+   await new Promise(resolve=>setTimeout(resolve,50));
+ }
+ assert.match(output,/SURVIVED/);
+ assert.match(errors,/ERROR_CAPTURED/);
+});
 test('windows launcher hides the console window and doubles embedded quotes',()=>{
- const script=windowsLauncherScript('C:\\Users\\u\\releases\\v','C:\\Program Files\\magpie\\runtime.exe');
+ const script=windowsLauncherScript('C:\\Users\\u\\releases\\v','C:\\Program Files\\magpie\\runtime.exe','C:\\Users\\u\\config');
  assert.match(script,/CreateObject\("WScript\.Shell"\)\.Run/);
  assert.match(script,/""C:\\Program Files\\magpie\\runtime\.exe""/);
- assert.match(script,/supervise", 0, False/);
+ assert.match(script,/supervise >>/);
+ assert.match(script,/supervisor-error\.log/);
+ assert.match(script,/, 0, False/);
 });
 test('failed activation restores previous launch configuration and restarts previous release',{skip:!IS_DARWIN,timeout:15000},async t=>{
  const p=fakePaths(t);fs.mkdirSync(path.dirname(p.plist),{recursive:true});fs.writeFileSync(p.plist,'previous');
