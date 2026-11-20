@@ -8,7 +8,8 @@ import {fileURLToPath} from 'node:url';
 import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, settingsFile} from '../lib/bridge-settings.js';
 import {atomic, restoreProxy} from '../lib/settings.js';
 import {cursorCompatibility, compareVersions} from '../lib/compatibility.js';
-import {agentStatus, installWrapper, removeWrapper, installShellHook, removeShellHook} from '../lib/cursor-agent.js';
+import {agentStatus, installWrapper, removeWrapper, installShellHook, removeShellHook, installEntry, removeEntry} from '../lib/cursor-agent.js';
+import {orcaStatus, injectOrca, removeOrca} from '../lib/orca.js';
 import {version} from '../version.js';
 import {readDatabase, readRecentCalls, cleanDatabase} from './database.js';
 import {tailFile, redact, classify} from './diagnostics.js';
@@ -1090,7 +1091,8 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
             home: p.home,
             proxy: snapshot.runtime?.proxy || null,
             caPath: fs.existsSync(caPath) ? caPath : null
-          })
+          }),
+          orca: orcaStatus({root: p.root, home: p.home})
         });
       }
 
@@ -1116,6 +1118,28 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
           if (body.action === 'hook-remove') {
             const result = removeShellHook({home: p.home});
             log(`cursor-agent shell hook removed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'entry-install') {
+            const result = installEntry({root: p.root, home: p.home});
+            log(`cursor-agent entry installed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'entry-remove') {
+            const result = removeEntry({home: p.home});
+            log(`cursor-agent entry restored: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'orca-install') {
+            const result = injectOrca({root: p.root, home: p.home});
+            if (!result.ok) return sendJson(res, result.reason === 'running' ? 409 : 400, {ok: false, reason: result.reason, error: result.reason === 'running' ? 'Orca 正在运行，请退出 Orca 后再启用' : 'Orca 配置不可写'});
+            log(`orca cursor override installed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'orca-remove') {
+            const result = removeOrca({root: p.root, home: p.home});
+            if (!result.ok) return sendJson(res, result.reason === 'running' ? 409 : 400, {ok: false, reason: result.reason, error: result.reason === 'running' ? 'Orca 正在运行，请退出 Orca 后再关闭' : 'Orca 配置不可写'});
+            log(`orca cursor override removed: ${result.path}`);
             return sendJson(res, 200, {ok: true, ...result});
           }
           return sendJson(res, 400, {ok: false, error: '未知操作'});

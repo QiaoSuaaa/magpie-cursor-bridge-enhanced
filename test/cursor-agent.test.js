@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {spawnSync} from 'node:child_process';
 import {
   MARKER,
   WRAPPER_NAME,
@@ -18,6 +19,9 @@ import {
   shellHookStatus,
   installShellHook,
   removeShellHook,
+  entryStatus,
+  installEntry,
+  removeEntry,
   agentExecutable,
   agentStatus
 } from '../lib/cursor-agent.js';
@@ -124,6 +128,43 @@ test('agentExecutable finds cursor-agent on PATH', (t) => {
   fs.writeFileSync(executable, '#!/bin/sh\necho 2026.11.19-f005e9d\n');
   fs.chmodSync(executable, 0o755);
   assert.equal(agentExecutable({home, environment: {PATH: bin}}), executable);
+});
+
+test('installEntry replaces the official cursor-agent entry and removeEntry restores it', (t) => {
+  if (process.platform === 'win32') return;
+  const {base, home} = workspace(t);
+  const bin = path.join(home, '.local', 'bin');
+  fs.mkdirSync(bin, {recursive: true});
+  const officialTarget = path.join(base, 'official.js');
+  fs.writeFileSync(officialTarget, '#!/bin/sh\necho official\n');
+  fs.chmodSync(officialTarget, 0o755);
+  const entry = path.join(bin, 'cursor-agent');
+  fs.symlinkSync(officialTarget, entry);
+  const root = path.join(base, 'root');
+
+  const installed = installEntry({root, home, environment: {}});
+  assert.equal(installed.installed, true);
+  assert.equal(installed.changed, true);
+  assert.match(fs.readFileSync(entry, 'utf8'), /Managed by Cursor Bridge/);
+  assert.equal(fs.readlinkSync(path.join(bin, 'cursor-agent-official')), officialTarget);
+  assert.equal(entryStatus({home, environment: {}}).installed, true);
+
+  // Idempotent re-run.
+  assert.equal(installEntry({root, home, environment: {}}).changed, false);
+
+  // The wrapper execs the preserved official launcher.
+  const run = spawnSync('/bin/sh', [entry], {encoding: 'utf8'});
+  assert.match(run.stdout, /official/);
+
+  // A CLI self-update recreates the symlink; setup repairs it by moving the
+  // new target aside and reinstalling the wrapper.
+  fs.rmSync(entry);
+  fs.symlinkSync(officialTarget, entry);
+  assert.equal(installEntry({root, home, environment: {}}).changed, true);
+
+  const removed = removeEntry({home, environment: {}});
+  assert.equal(removed.removed, true);
+  assert.equal(fs.readlinkSync(entry), officialTarget);
 });
 
 test('agentStatus reports a missing CLI without throwing', (t) => {

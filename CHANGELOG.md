@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.34（Orca 聊天接管与官方入口接管）
+
+- 新增官方入口接管：setup 将 `~/.local/bin/cursor-agent` 替换为桥接包装器，官方入口保留为 `cursor-agent-official`；Orca 聊天、终端、脚本等所有直接调用 `cursor-agent` 的入口统一走桥接。控制台新增「官方入口」状态与「接管官方入口 / 恢复官方入口」按钮，`/api/cursor-agent` 新增 `entry` 状态与 `entry-install` / `entry-remove` 动作。
+- 根因：Orca 的「启动聊天」直接 spawn `cursor-agent --list-models` / `cursor-agent acp`，不经过登录 shell，且忽略 Orca 自己的 `agentDefaultEnv` / `agentCmdOverrides`（实测其 ACP 进程只带 `CURSOR_CONFIG_DIR`，无 `HTTPS_PROXY`）。
+- 新增 `lib/orca.js`：检测 `orca-data.json` 并写入 Orca 配置作为兜底（不会覆盖用户已有的自定义命令；Orca 运行中则跳过）。uninstall 同时恢复官方入口并清理 Orca 配置。
+- 官方 CLI 自更新会重建 `cursor-agent` 入口；重跑 setup 或点控制台「接管官方入口」即可修复。Orca 的模型目录会持久缓存旧列表，接管后若仍显示官方模型，重启一次 Orca 即可。
+- 测试：新增入口替换与 Orca 用例；全量 113 项，108 通过、5 项按平台跳过。
+- 版本号升至 0.2.34；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.33（Cursor CLI 接管）
 
 - 新增 Cursor CLI（`cursor-agent`）接管：CLI 与 IDE 使用同一套 `agent.v1` / `BidiAppend` 协议，共用原生桥接与 Magpie 模型目录，无需改动引擎。

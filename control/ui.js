@@ -943,12 +943,12 @@
   // the console only manages the small wrapper that injects HTTPS_PROXY.
   async function loadAgentCli({force = false} = {}) {
     if (agentCli.loading) return;
-    if (!force && agentCli.data && Date.now() - agentCli.at < 15000) return renderAgentCli(agentCli.data);
+    if (!force && agentCli.data && Date.now() - agentCli.at < 15000) return renderAgentCli(agentCli.data, agentCli.orca);
     agentCli.loading = true;
     try {
       const data = await api('/api/cursor-agent');
-      agentCli = {at: Date.now(), data: data.agent, loading: false};
-      renderAgentCli(data.agent);
+      agentCli = {at: Date.now(), data: data.agent, orca: data.orca, loading: false};
+      renderAgentCli(data.agent, data.orca);
     } catch (error) {
       agentCli.loading = false;
       $('agentCliState').textContent = '读取失败';
@@ -956,7 +956,7 @@
     }
   }
 
-  function renderAgentCli(agent) {
+  function renderAgentCli(agent, orca = {}) {
     const compat = agent.compatibility || {};
     const hook = agent.shellHook || {};
     const versionText = agent.version
@@ -969,12 +969,30 @@
       item('包装器', agent.wrapperInstalled ? `已安装${agent.wrapperOnPath ? '' : ' · 不在 PATH'}` : '未安装',
         {tone: agent.wrapperInstalled && agent.wrapperOnPath ? 'ok' : 'warn', title: agent.wrapperFile}),
       item('直接接管', hook.supported ? (hook.installed ? '已启用' : '未启用') : '当前平台不支持',
-        {tone: hook.installed ? 'ok' : (hook.supported ? '' : 'warn'), title: hook.path || 'Windows 请使用 cursor-agent-bridge'})
+        {tone: hook.installed ? 'ok' : (hook.supported ? '' : 'warn'), title: hook.path || 'Windows 请使用 cursor-agent-bridge'}),
+      item('官方入口', !agent.entry?.entryPresent
+        ? '未检测到'
+        : (agent.entry.installed ? '已接管' : '未接管'), {
+        tone: agent.entry?.installed ? 'ok' : 'warn',
+        title: agent.entry?.entry || ''
+      }),
+      item('Orca 聊天', !orca.installed
+        ? '未检测到 Orca'
+        : (orca.injected
+          ? '已接管'
+          : (orca.foreignOverride ? '已有自定义命令' : (orca.running ? 'Orca 运行中' : '未接管（入口已覆盖）'))), {
+        tone: orca.injected || agent.entry?.installed ? 'ok' : 'warn',
+        title: orca.path || ''
+      })
     );
     $('agentCliSummary').hidden = false;
     $('agentCliState').textContent = agent.wrapperInstalled || hook.installed ? '已启用' : (agent.installed ? '可启用' : '未检测到');
     $('agentCliInstall').disabled = !agent.installed;
     $('agentCliRemove').disabled = !agent.wrapperInstalled;
+    $('agentCliEntryInstall').disabled = !agent.entry?.supported || !agent.entry?.entryPresent || agent.entry?.installed;
+    $('agentCliEntryRemove').disabled = !agent.entry?.installed;
+    $('agentCliOrcaInstall').disabled = !orca.installed || orca.running || orca.injected || orca.foreignOverride;
+    $('agentCliOrcaRemove').disabled = !orca.injected || orca.running;
     $('agentCliCopy').disabled = !agent.command;
     // The primary switch lives in the editable settings card; this keeps its
     // value in sync with the rc file the server actually sees.
@@ -999,7 +1017,11 @@
       install: '包装器已安装',
       remove: '包装器已移除',
       'hook-install': '已启用直接接管，重新打开终端或执行 source ~/.zshrc 后生效',
-      'hook-remove': '已停用直接接管'
+      'hook-remove': '已停用直接接管',
+      'entry-install': '已接管官方 cursor-agent 入口：Orca 聊天等直接调用会走桥接',
+      'entry-remove': '已恢复官方 cursor-agent 入口',
+      'orca-install': '已让 Orca 的 Cursor 聊天走桥接，重新打开聊天后生效',
+      'orca-remove': '已取消 Orca 接管'
     };
     try {
       const data = await api('/api/cursor-agent', {method: 'POST', body: {action}});
@@ -1253,6 +1275,10 @@
     });
     $('agentCliInstall').addEventListener('click', () => changeAgentCli('install'));
     $('agentCliRemove').addEventListener('click', () => changeAgentCli('remove'));
+    $('agentCliEntryInstall').addEventListener('click', () => changeAgentCli('entry-install'));
+    $('agentCliEntryRemove').addEventListener('click', () => changeAgentCli('entry-remove'));
+    $('agentCliOrcaInstall').addEventListener('click', () => changeAgentCli('orca-install'));
+    $('agentCliOrcaRemove').addEventListener('click', () => changeAgentCli('orca-remove'));
     $('agentCliCopy').addEventListener('click', copyAgentCli);
     $('agentTakeover').addEventListener('change', toggleAgentTakeover);
     $('callsRefresh').addEventListener('click', loadCalls);

@@ -257,8 +257,12 @@
       <div id="agentCliSummary" class="grid db-grid" aria-live="polite" hidden></div>
       <div class="db-toolbar">
         <span class="hint" id="agentCliHint">接管不会修改官方 Cursor CLI：包装器只注入 HTTPS_PROXY 与证书路径。</span>
-        <button id="agentCliInstall" class="primary" type="button">安装包装器</button>
+        <button id="agentCliEntryInstall" class="primary" type="button">接管官方入口</button>
+        <button id="agentCliEntryRemove" class="ghost" type="button">恢复官方入口</button>
+        <button id="agentCliInstall" class="ghost" type="button">安装包装器</button>
         <button id="agentCliRemove" class="ghost" type="button">移除包装器</button>
+        <button id="agentCliOrcaInstall" class="ghost" type="button">接管 Orca 聊天</button>
+        <button id="agentCliOrcaRemove" class="ghost" type="button">取消 Orca 接管</button>
         <button id="agentCliCopy" class="ghost" type="button">复制启动命令</button>
       </div>
       <pre id="agentCliCommand" class="output" hidden></pre>
