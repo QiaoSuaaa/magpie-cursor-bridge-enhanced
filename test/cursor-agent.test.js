@@ -74,6 +74,9 @@ test('wrapperText for Windows calls the CMD env file', () => {
 });
 
 test('installWrapper prefers ~/.local/bin when it is on PATH', (t) => {
+  // Windows has no user-writable bin convention and writes a .cmd wrapper
+  // into the install root; that path is covered by the wrapperText test.
+  if (process.platform === 'win32') return;
   const {home, root} = workspace(t);
   const localBin = path.join(home, '.local', 'bin');
   fs.mkdirSync(localBin, {recursive: true});
@@ -84,6 +87,7 @@ test('installWrapper prefers ~/.local/bin when it is on PATH', (t) => {
 });
 
 test('installWrapper falls back to the install root when no PATH directory is usable', (t) => {
+  if (process.platform === 'win32') return;
   const {home, root} = workspace(t);
   const result = installWrapper({root, home, environment: {PATH: ''}});
   assert.equal(result.path, path.join(root, 'bin', WRAPPER_NAME));
@@ -144,9 +148,11 @@ test('shell config prefers an existing bashrc when SHELL is unset', (t) => {
   const {home} = workspace(t);
   fs.mkdirSync(home, {recursive: true});
   fs.writeFileSync(path.join(home, '.bashrc'), '');
-  assert.equal(shellConfigFor({home, plat: 'darwin', environment: {}}), path.join(home, '.bashrc'));
+  // shellConfigFor builds POSIX paths for any non-win32 platform, so the
+  // expectation must use posix.join even when the test runs on Windows.
+  assert.equal(shellConfigFor({home, plat: 'darwin', environment: {}}), path.posix.join(home, '.bashrc'));
   fs.writeFileSync(path.join(home, '.zshrc'), '');
-  assert.equal(shellConfigFor({home, plat: 'darwin', environment: {}}), path.join(home, '.zshrc'));
+  assert.equal(shellConfigFor({home, plat: 'darwin', environment: {}}), path.posix.join(home, '.zshrc'));
 });
 
 test("shell hook is idempotent and keeps the user's rc content", (t) => {
