@@ -30,6 +30,7 @@
   let agentModels = {at: 0, models: null};
   let pendingClean = null;
   let cleaning = false;
+  let agentCli = {at: 0, data: null, loading: false};
 
   function applyTheme() {
     const params = new URLSearchParams(location.search);
@@ -487,6 +488,9 @@
     try {
       const data = await api('/api/status');
       render(data.overview, {quiet});
+      // Non-blocking: the switch in the settings card needs the hook state,
+      // but a slow `cursor-agent --version` must not delay the status render.
+      loadAgentCli();
     } catch (error) {
       if (!quiet) notice(`读取状态失败：${error.message}`, 'error');
       $('dot').dataset.state = 'error';
@@ -935,6 +939,107 @@
     }
   }
 
+  // cursor-agent speaks the same protocol as the IDE but ignores settings.json;
+  // the console only manages the small wrapper that injects HTTPS_PROXY.
+  async function loadAgentCli({force = false} = {}) {
+    if (agentCli.loading) return;
+    if (!force && agentCli.data && Date.now() - agentCli.at < 15000) return renderAgentCli(agentCli.data);
+    agentCli.loading = true;
+    try {
+      const data = await api('/api/cursor-agent');
+      agentCli = {at: Date.now(), data: data.agent, loading: false};
+      renderAgentCli(data.agent);
+    } catch (error) {
+      agentCli.loading = false;
+      $('agentCliState').textContent = '读取失败';
+      notice(`读取 Cursor CLI 状态失败：${error.message}`, 'error');
+    }
+  }
+
+  function renderAgentCli(agent) {
+    const compat = agent.compatibility || {};
+    const hook = agent.shellHook || {};
+    const versionText = agent.version
+      ? `${agent.version}${compat.tested ? ' · 已实测' : ' · 未验证'}`
+      : '未检测到';
+    $('agentCliSummary').replaceChildren(
+      item('Cursor CLI', versionText, {tone: compat.tested ? 'ok' : 'warn', title: compat.hint || agent.executable || ''}),
+      item('代理端口', agent.proxy || '未连接', {mono: true, tone: agent.proxy ? 'ok' : 'warn'}),
+      item('环境文件', agent.envReady ? '已写入' : '未写入', {tone: agent.envReady ? 'ok' : 'warn', title: agent.envFile}),
+      item('包装器', agent.wrapperInstalled ? `已安装${agent.wrapperOnPath ? '' : ' · 不在 PATH'}` : '未安装',
+        {tone: agent.wrapperInstalled && agent.wrapperOnPath ? 'ok' : 'warn', title: agent.wrapperFile}),
+      item('直接接管', hook.supported ? (hook.installed ? '已启用' : '未启用') : '当前平台不支持',
+        {tone: hook.installed ? 'ok' : (hook.supported ? '' : 'warn'), title: hook.path || 'Windows 请使用 cursor-agent-bridge'})
+    );
+    $('agentCliSummary').hidden = false;
+    $('agentCliState').textContent = agent.wrapperInstalled || hook.installed ? '已启用' : (agent.installed ? '可启用' : '未检测到');
+    $('agentCliInstall').disabled = !agent.installed;
+    $('agentCliRemove').disabled = !agent.wrapperInstalled;
+    $('agentCliCopy').disabled = !agent.command;
+    // The primary switch lives in the editable settings card; this keeps its
+    // value in sync with the rc file the server actually sees.
+    const takeover = $('agentTakeover');
+    takeover.value = hook.installed ? 'on' : 'off';
+    takeover.disabled = !hook.supported;
+    takeover.title = hook.supported ? (hook.path || '') : '当前平台不支持，请使用 cursor-agent-bridge';
+    $('agentCliHint').textContent = !agent.installed
+      ? (compat.hint || '未检测到 Cursor CLI。')
+      : (agent.wrapperInstalled
+        ? '用 cursor-agent-bridge 启动即可接管；官方 Cursor CLI 保持原样。'
+        : '安装后可用 cursor-agent-bridge 启动；也可以直接使用下方一次性命令。');
+    const command = $('agentCliCommand');
+    command.textContent = agent.wrapperInstalled
+      ? `${agent.command} --list-models`
+      : (agent.oneShot ? `${agent.oneShot} --list-models` : '');
+    command.hidden = !command.textContent;
+  }
+
+  async function changeAgentCli(action) {
+    const labels = {
+      install: '包装器已安装',
+      remove: '包装器已移除',
+      'hook-install': '已启用直接接管，重新打开终端或执行 source ~/.zshrc 后生效',
+      'hook-remove': '已停用直接接管'
+    };
+    try {
+      const data = await api('/api/cursor-agent', {method: 'POST', body: {action}});
+      notice(data.path ? `${labels[action]}：${data.path}` : (labels[action] || '操作完成'), 'ok');
+      await loadAgentCli({force: true});
+    } catch (error) {
+      $('agentCliHint').textContent = String(error.message);
+      notice(`操作失败：${error.message}`, 'error');
+    }
+  }
+
+  async function toggleAgentTakeover() {
+    const select = $('agentTakeover');
+    const enable = select.value === 'on';
+    select.disabled = true;
+    try {
+      const data = await api('/api/cursor-agent', {method: 'POST', body: {action: enable ? 'hook-install' : 'hook-remove'}});
+      notice(enable
+        ? `已开启直接接管，重新打开终端后生效${data.path ? `：${data.path}` : ''}`
+        : '已关闭直接接管', 'ok');
+      await loadAgentCli({force: true});
+    } catch (error) {
+      select.value = enable ? 'off' : 'on';
+      notice(`切换接管失败：${error.message}`, 'error');
+    } finally {
+      select.disabled = !(agentCli.data?.shellHook?.supported ?? false);
+    }
+  }
+
+  async function copyAgentCli() {
+    const text = $('agentCliCommand').textContent || '';
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      notice('启动命令已复制', 'ok');
+    } catch {
+      notice('复制失败，请手动选择命令行文本', 'error');
+    }
+  }
+
   async function loadCalls() {
     const limit = $('callsLimit').value;
     const errors = $('callsErrors').checked ? '1' : '0';
@@ -1143,6 +1248,13 @@
     $('callsCard').addEventListener('toggle', () => {
       if ($('callsCard').open) loadCalls();
     });
+    $('agentCliCard').addEventListener('toggle', () => {
+      if ($('agentCliCard').open) loadAgentCli();
+    });
+    $('agentCliInstall').addEventListener('click', () => changeAgentCli('install'));
+    $('agentCliRemove').addEventListener('click', () => changeAgentCli('remove'));
+    $('agentCliCopy').addEventListener('click', copyAgentCli);
+    $('agentTakeover').addEventListener('change', toggleAgentTakeover);
     $('callsRefresh').addEventListener('click', loadCalls);
     $('callsErrors').addEventListener('change', loadCalls);
     $('callsLimit').addEventListener('change', loadCalls);

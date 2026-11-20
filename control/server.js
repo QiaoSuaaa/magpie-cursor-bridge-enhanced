@@ -8,6 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, settingsFile} from '../lib/bridge-settings.js';
 import {atomic, restoreProxy} from '../lib/settings.js';
 import {cursorCompatibility, compareVersions} from '../lib/compatibility.js';
+import {agentStatus, installWrapper, removeWrapper, installShellHook, removeShellHook} from '../lib/cursor-agent.js';
 import {version} from '../version.js';
 import {readDatabase, readRecentCalls, cleanDatabase} from './database.js';
 import {tailFile, redact, classify} from './diagnostics.js';
@@ -1075,6 +1076,51 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
           return sendJson(res, 500, {ok: false, error: String(error.message || error)});
         } finally {
           busy = null;
+        }
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/cursor-agent') {
+        const p = paths(repoRoot);
+        const snapshot = await cachedOverview();
+        const caPath = path.join(p.data, 'ca/ca.crt');
+        return sendJson(res, 200, {
+          ok: true,
+          agent: agentStatus({
+            root: p.root,
+            home: p.home,
+            proxy: snapshot.runtime?.proxy || null,
+            caPath: fs.existsSync(caPath) ? caPath : null
+          })
+        });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/cursor-agent') {
+        const body = await readBody(req);
+        const p = paths(repoRoot);
+        try {
+          if (body.action === 'install') {
+            const result = installWrapper({root: p.root, home: p.home});
+            log(`cursor-agent wrapper installed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'remove') {
+            const result = removeWrapper({root: p.root, home: p.home});
+            log(`cursor-agent wrapper removed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'hook-install') {
+            const result = installShellHook({root: p.root, home: p.home});
+            log(`cursor-agent shell hook installed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'hook-remove') {
+            const result = removeShellHook({home: p.home});
+            log(`cursor-agent shell hook removed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          return sendJson(res, 400, {ok: false, error: '未知操作'});
+        } catch (error) {
+          return sendJson(res, 400, {ok: false, error: String(error.message || error)});
         }
       }
 

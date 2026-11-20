@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.33（Cursor CLI 接管）
+
+- 新增 Cursor CLI（`cursor-agent`）接管：CLI 与 IDE 使用同一套 `agent.v1` / `BidiAppend` 协议，共用原生桥接与 Magpie 模型目录，无需改动引擎。
+- 新增 `lib/cursor-agent.js`：CLI 探测、`--version` 解析、`agent-env` 环境文件与 `cursor-agent-bridge` 包装器的生成/安装/移除；同名但非桥接生成的文件不会被覆盖或删除。
+- supervisor 随 `status.json` 同步维护 `agent-env`：代理端口变化时原子重写，断开/停止时删除，包装器自动退回直连。
+- 控制台新增「Cursor CLI 接管」卡片：CLI 版本与已实测标记、代理端口、环境文件、包装器状态，支持安装/移除包装器与复制启动命令；新增 `GET/POST /api/cursor-agent`。
+- 「可编辑参数」新增「接管 Cursor CLI」开关（即时生效，**默认开启**）：在 `~/.zshrc` / `~/.bashrc` 写入带标记的同名 shell 函数，交互式 shell 直接输入 `cursor-agent` 即注入代理；仅替换标记块，可随时停用，Windows 不支持。setup 默认写入，uninstall 移除；折叠卡片保留详细状态与包装器操作。
+- 新增 cursor-agent 独立版本门禁：已实测 `2026.11.19`，低于/高于范围分别提示升级或先验证。
+- setup 自动安装包装器（优先 `~/.local/bin`），uninstall 仅移除带标记的包装器。
+- 端到端实测：`--list-models` 返回 Magpie 模型、`-p` 对话、文件写入与 shell 工具回环均走本地引擎；调研与复现命令见 `docs/cursor-agent-takeover.md`。
+- 测试：新增 13 项 cursor-agent 用例；全量 101 项，96 通过、5 项按平台跳过。
+- 版本号升至 0.2.33；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.32（Cursor 3.31.3 兼容）
 
 - Cursor 已实测范围更新为 3.28.x–3.31.3；控制台对 3.31.3 显示「已实测」，超出范围仍标记「未验证」。

@@ -9,6 +9,7 @@ import {read as readBridgeSettings,applyModelPreferences} from './lib/bridge-set
 import platform from './lib/platform.js';
 import {createSupervisor} from './lib/supervisor.js';
 import {pruneDatabase} from './control/database.js';
+import {writeAgentEnv,removeAgentEnv} from './lib/cursor-agent.js';
 import {version} from './version.js';
 
 const packageDir=path.dirname(fileURLToPath(import.meta.url));
@@ -16,7 +17,17 @@ const root=process.env.CURSOR_BRIDGE_ROOT||platform.current.paths().config;
 const settings=process.env.CURSOR_BRIDGE_SETTINGS||platform.current.cursorSettings();
 const file=name=>path.join(root,name);
 let lastStatus='';
-const status=(state,extra={})=>{const signature=JSON.stringify({version,state,...extra});if(signature!==lastStatus){atomic(file('status.json'),JSON.stringify({version,state,...extra,updated:new Date().toISOString()},null,2));lastStatus=signature;}};
+// cursor-agent cannot read Cursor's settings.json, so its injection point is a
+// sourced environment file. Keeping it in lockstep with status.json means the
+// port is always current and a stopped/error bridge never leaves the CLI
+// pointing at a dead proxy.
+function syncAgentEnv(extra) {
+  const proxy=typeof extra.proxy==='string'&&extra.proxy?extra.proxy:null;
+  if(!proxy) { removeAgentEnv(root); return; }
+  const caPath=file('data/ca/ca.crt');
+  writeAgentEnv(root,{proxy,caPath:fs.existsSync(caPath)?caPath:null});
+}
+const status=(state,extra={})=>{const signature=JSON.stringify({version,state,...extra});if(signature!==lastStatus){atomic(file('status.json'),JSON.stringify({version,state,...extra,updated:new Date().toISOString()},null,2));lastStatus=signature;syncAgentEnv(extra);}};
 // On Windows Magpie's agent sandbox writes connection.json to its own
 // fallback path (see connectionFilesFor); accept the first file that exists.
 // A rooted install (tests, portable copies) must not fall back to the real

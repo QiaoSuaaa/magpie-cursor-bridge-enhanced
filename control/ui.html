@@ -76,6 +76,10 @@
         <option value="async">异步后台（默认）</option>
         <option value="sync">同步阻塞</option>
       </select></span></label>
+      <label><span class="label">接管 Cursor CLI</span><span class="field select"><select id="agentTakeover" disabled>
+        <option value="off">关闭</option>
+        <option value="on">开启（直接接管）</option>
+      </select></span></label>
       <label><span class="label">模型目录同步间隔</span><span class="field"><input id="refreshSeconds" type="number" min="5" max="300" step="1" inputmode="numeric"><span class="unit">秒</span></span></label>
       <label><span class="label">网关断线容错</span><span class="field"><input id="gatewayGraceSeconds" type="number" min="10" max="600" step="1" inputmode="numeric"><span class="unit">秒</span></span></label>
       <label><span class="label">引擎日志上限</span><span class="field"><input id="logLimitMB" type="number" min="1" max="64" step="1" inputmode="numeric"><span class="unit">MB</span></span></label>
@@ -88,6 +92,7 @@
       </div>
       <p class="hint mode-hint">轻量模式把 SQLite 放在引擎进程内存：bridge.db 不再写入，引擎重启后会话历史清空；切换模式会自动重启引擎，当前对话可能中断一次。</p>
       <p class="hint mode-hint">子代理模式：异步后台为默认，子代理在后台运行，完成后由桥接唤醒父代理继续；同步阻塞会强制 Task 以 run_in_background=false 执行，父代理等待子代理返回结果。切换同样会在数秒内重启引擎。</p>
+      <p class="hint mode-hint">「接管 Cursor CLI」即时生效：开启后向 <code>~/.zshrc</code> / <code>~/.bashrc</code> 写入带标记的函数块，重新打开终端后直接输入 <code>cursor-agent</code> 即走桥接；关闭只移除该标记块，不影响官方 CLI。Windows 请使用下方卡片中的 <code>cursor-agent-bridge</code>。</p>
       <p class="hint mode-hint">自动清理在后台分批删除过期数据，不中断对话、不执行 VACUUM；0 表示不自动清理。调用日志默认保留 7 天，历史会话默认关闭；需要立即回收磁盘空间请使用下方「数据库管理」的手动清理。</p>
     </form>
   </section>
@@ -240,6 +245,25 @@
       </div>
       <div id="diagHints" class="diag-hints"></div>
       <pre id="diagOutput" class="output" hidden></pre>
+    </div>
+  </details>
+
+  <details id="agentCliCard" class="card db-card">
+    <summary>
+      <span class="db-title"><h2>Cursor CLI 接管</h2><span class="hint">命令行版共用同一套桥接与模型</span></span>
+      <span class="hint db-state" id="agentCliState">展开时检测</span>
+    </summary>
+    <div class="db-body">
+      <div id="agentCliSummary" class="grid db-grid" aria-live="polite" hidden></div>
+      <div class="db-toolbar">
+        <span class="hint" id="agentCliHint">接管不会修改官方 Cursor CLI：包装器只注入 HTTPS_PROXY 与证书路径。</span>
+        <button id="agentCliInstall" class="primary" type="button">安装包装器</button>
+        <button id="agentCliRemove" class="ghost" type="button">移除包装器</button>
+        <button id="agentCliCopy" class="ghost" type="button">复制启动命令</button>
+      </div>
+      <pre id="agentCliCommand" class="output" hidden></pre>
+      <p class="hint mode-hint">Cursor CLI 不读取 Cursor 的 settings.json，只能通过环境变量进入代理。安装包装器后会生成 <code>cursor-agent-bridge</code>：它先载入桥接写出的环境文件，再启动官方 cursor-agent。桥接断开时环境文件会被删除，包装器自动退回直连。首次使用建议先执行一次简短对话验证。CLI 首次运行会改写 <code>~/.cursor/cli-config.json</code> 的默认模型，属正常行为，可用 <code>/model</code> 切回。</p>
+      <p class="hint mode-hint">若后台被强制终止（SIGKILL、系统休眠被杀）而来不及删除环境文件，CLI 可能提示代理不可达：重新启动后台或删除 <code>agent-env</code> 即可恢复。</p>
     </div>
   </details>
 
