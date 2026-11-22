@@ -69,6 +69,8 @@ function harness(options={}) {
     restoreProxy:()=>{events.push(['restore']);state.restores+=1;if(options.restoreProxy) options.restoreProxy(state);},
     pruneDatabase:options.pruneDatabase,
     onPrune:options.onPrune,
+    reconcileOrca:options.reconcileOrca,
+    orcaIntervalMs:options.orcaIntervalMs??30*1000,
     onEngineStderr:()=>{},
     wait:async(ms)=>{
       if(ms===1) loopTicks+=1;
@@ -195,6 +197,31 @@ test('an engine crash is restarted on the next tick',async()=>{
   await h.supervisor.run();
   assert.equal(h.state.spawns.length,2);
   assert.equal(h.state.children[0].kills.length,0,'an already exited engine is not killed again');
+});
+
+test('orca takeover applies the saved setting immediately and on change',async()=>{
+  const calls=[];
+  let reads=0;
+  const h=harness({
+    maxTicks:4,
+    configure:()=>({...BASE_SETTINGS,orcaTakeover:reads++<2?'on':'off'}),
+    reconcileOrca:async({takeover})=>{calls.push(takeover);}
+  });
+  await h.supervisor.run();
+  await new Promise((resolve)=>setImmediate(resolve));
+  assert.deepEqual(calls,['on','off']);
+});
+
+test('orca takeover is retried on the configured interval',async()=>{
+  const calls=[];
+  const h=harness({
+    maxTicks:4,
+    orcaIntervalMs:30000,
+    reconcileOrca:async({takeover})=>{calls.push(takeover);}
+  });
+  await h.supervisor.run();
+  await new Promise((resolve)=>setImmediate(resolve));
+  assert.deepEqual(calls,['on','on']);
 });
 
 test('stop restores Cursor settings before terminating the engine',async()=>{

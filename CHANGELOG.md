@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.35（Orca 接管改为持久配置）
+
+- 修复包装器身份依赖进程 PATH 的问题：后台服务（launchd/systemd）与控制台/setup 的 PATH 不同，会把桥接自己写入的 override 误判为用户自定义命令（关闭失效），或补写一个从未安装的 `<root>/bin/cursor-agent-bridge`。现改为按磁盘上带标记的包装器文件识别与实际安装位置，身份不再随进程环境漂移；包装器未安装时跳过注入，不写死路径。
+- 修复 Orca 配置写入的跨进程临时文件冲突：临时文件名加入进程号，setup、控制台与 supervisor 并发写入不再互相截断或改名。
+- 测试脚本 `manual-lifecycle.mjs` 使用 `CURSOR_BRIDGE_HOME` 隔离 Orca 配置，避免 live 测试改写真实用户目录。
+- 「可编辑参数」改为四组多行布局（运行与引擎 / 接管与集成 / 模型与日志 / 数据保留）；9 项说明从常驻文字改为 `?` 悬浮提示，点击可固定、点击外部或 Esc 关闭，触屏同样可读。
+- 「可编辑参数」新增「接管 Orca 聊天」下拉（开启=自动维持 / 关闭，默认开启），写入 `bridge-settings.json` 的 `orcaTakeover`；下方「Cursor CLI 接管」卡片的两个按钮同步回写同一意图，两处状态不再分叉。
+- Orca 运行中切换不再报错：意图立即保存，`lib/orca.js` 新增 `reconcileOrca`，由 supervisor 在 Orca 退出后自动补写或移除 `agentCmdOverrides.cursor`（设置变更立即执行，其余每 30 秒重试一次）；实际写入或移除只记录一次日志。
+- setup 读取同一设置：关闭后重跑 setup 不再无条件写回兜底配置；Orca 已配置自定义 cursor 命令时始终跳过。
+- 关闭只停用 Orca 配置兜底，「官方入口」接管保持独立；控制台「Orca 聊天」状态会如实区分「已接管 / 等待 Orca 退出 / 已关闭 · 官方入口仍接管」。
+- 测试：新增设置校验、`reconcileOrca` 分支与 supervisor 调度用例；全量 122 项，117 通过、5 项按平台跳过。
+- 版本号升至 0.2.35；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.34（Orca 聊天接管与官方入口接管）
 
 - 新增官方入口接管：setup 将 `~/.local/bin/cursor-agent` 替换为桥接包装器，官方入口保留为 `cursor-agent-official`；Orca 聊天、终端、脚本等所有直接调用 `cursor-agent` 的入口统一走桥接。控制台新增「官方入口」状态与「接管官方入口 / 恢复官方入口」按钮，`/api/cursor-agent` 新增 `entry` 状态与 `entry-install` / `entry-remove` 动作。

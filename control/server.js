@@ -5,11 +5,11 @@ import http from 'node:http';
 import {execFile, spawn} from 'node:child_process';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, settingsFile} from '../lib/bridge-settings.js';
+import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, takeoverModes as bridgeTakeoverModes, settingsFile} from '../lib/bridge-settings.js';
 import {atomic, restoreProxy} from '../lib/settings.js';
 import {cursorCompatibility, compareVersions} from '../lib/compatibility.js';
 import {agentStatus, installWrapper, removeWrapper, installShellHook, removeShellHook, installEntry, removeEntry} from '../lib/cursor-agent.js';
-import {orcaStatus, injectOrca, removeOrca} from '../lib/orca.js';
+import {orcaStatus, reconcileOrca} from '../lib/orca.js';
 import {version} from '../version.js';
 import {readDatabase, readRecentCalls, cleanDatabase} from './database.js';
 import {tailFile, redact, classify} from './diagnostics.js';
@@ -711,7 +711,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
 
       if (req.method === 'GET' && url.pathname === '/api/settings') {
         const p = paths(repoRoot);
-        return sendJson(res, 200, {ok: true, settings: readBridgeSettings(p.root), defaults: bridgeDefaults, rules: bridgeRules, modes: bridgeModes, subagentModes: bridgeSubagentModes, file: p.settings});
+        return sendJson(res, 200, {ok: true, settings: readBridgeSettings(p.root), defaults: bridgeDefaults, rules: bridgeRules, modes: bridgeModes, subagentModes: bridgeSubagentModes, takeoverModes: bridgeTakeoverModes, file: p.settings});
       }
 
       if (req.method === 'POST' && url.pathname === '/api/settings') {
@@ -724,10 +724,18 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
             // preferences; each posts only its own fields. Merge over the
             // current file so one form never resets the other's values, while
             // an explicitly posted {} still clears a list.
-            const root = paths(repoRoot).root;
-            const saved = writeBridgeSettings(root, {...readBridgeSettings(root), ...body});
+            const p = paths(repoRoot);
+            const saved = writeBridgeSettings(p.root, {...readBridgeSettings(p.root), ...body});
+            // The saved intent takes effect immediately; when Orca is open the
+            // result is "pending" and the supervisor retries after it exits.
+            let orca = null;
+            try {
+              orca = reconcileOrca({home: p.home, root: p.root, takeover: saved.orcaTakeover});
+            } catch (error) {
+              orca = {ok: false, reason: 'error', error: String(error.message || error)};
+            }
             log(`bridge settings saved: ${JSON.stringify(saved)}`);
-            return {status: 200, body: {ok: true, settings: saved}};
+            return {status: 200, body: {ok: true, settings: saved, orca}};
           } catch (error) {
             return {status: 400, body: {ok: false, error: String(error.message || error)}};
           }
@@ -1084,6 +1092,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         const p = paths(repoRoot);
         const snapshot = await cachedOverview();
         const caPath = path.join(p.data, 'ca/ca.crt');
+        const takeover = readBridgeSettings(p.root).orcaTakeover;
         return sendJson(res, 200, {
           ok: true,
           agent: agentStatus({
@@ -1092,7 +1101,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
             proxy: snapshot.runtime?.proxy || null,
             caPath: fs.existsSync(caPath) ? caPath : null
           }),
-          orca: orcaStatus({root: p.root, home: p.home})
+          orca: orcaStatus({root: p.root, home: p.home, takeover})
         });
       }
 
@@ -1130,16 +1139,19 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
             log(`cursor-agent entry restored: ${result.path}`);
             return sendJson(res, 200, {ok: true, ...result});
           }
-          if (body.action === 'orca-install') {
-            const result = injectOrca({root: p.root, home: p.home});
-            if (!result.ok) return sendJson(res, result.reason === 'running' ? 409 : 400, {ok: false, reason: result.reason, error: result.reason === 'running' ? 'Orca 正在运行，请退出 Orca 后再启用' : 'Orca 配置不可写'});
-            log(`orca cursor override installed: ${result.path}`);
-            return sendJson(res, 200, {ok: true, ...result});
-          }
-          if (body.action === 'orca-remove') {
-            const result = removeOrca({root: p.root, home: p.home});
-            if (!result.ok) return sendJson(res, result.reason === 'running' ? 409 : 400, {ok: false, reason: result.reason, error: result.reason === 'running' ? 'Orca 正在运行，请退出 Orca 后再关闭' : 'Orca 配置不可写'});
-            log(`orca cursor override removed: ${result.path}`);
+          if (body.action === 'orca-install' || body.action === 'orca-remove') {
+            const want = body.action === 'orca-install' ? 'on' : 'off';
+            const status = orcaStatus({home: p.home, root: p.root, takeover: want});
+            // A command the user configured themselves is never replaced, and
+            // their intent is not overwritten either.
+            if (status.foreignOverride) {
+              return sendJson(res, 409, {ok: false, reason: 'foreign-override', error: 'Orca 已配置自定义 cursor 命令；请先清空该设置再接管'});
+            }
+            // Persist the intent before touching Orca's file: while Orca runs
+            // the panel reports "pending" and the supervisor finishes later.
+            const saved = writeBridgeSettings(p.root, {...readBridgeSettings(p.root), orcaTakeover: want});
+            const result = reconcileOrca({home: p.home, root: p.root, running: status.running, takeover: saved.orcaTakeover});
+            log(`orca cursor override ${want === 'on' ? 'requested' : 'removal requested'}: ${result.path}`);
             return sendJson(res, 200, {ok: true, ...result});
           }
           return sendJson(res, 400, {ok: false, error: '未知操作'});

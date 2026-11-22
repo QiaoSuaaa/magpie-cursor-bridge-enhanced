@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn,execFileSync} from 'node:child_process';
@@ -10,6 +11,7 @@ import platform from './lib/platform.js';
 import {createSupervisor} from './lib/supervisor.js';
 import {pruneDatabase} from './control/database.js';
 import {writeAgentEnv,removeAgentEnv} from './lib/cursor-agent.js';
+import {reconcileOrca} from './lib/orca.js';
 import {version} from './version.js';
 
 const packageDir=path.dirname(fileURLToPath(import.meta.url));
@@ -42,6 +44,25 @@ function connectionText() {
   return '{}';
 }
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
+// The Orca reconcile runs every 30 seconds and usually has nothing to do.
+// Log only when its outcome changes, so a pending retry while Orca stays open
+// does not fill supervisor.log.
+let lastOrcaLog='';
+function applyOrcaTakeover(takeover) {
+  let result;
+  const home=process.env.CURSOR_BRIDGE_HOME||os.homedir();
+  try { result=reconcileOrca({root,home,takeover}); }
+  catch(error) { result={ok:false,reason:'error',error:String(error?.message||error)}; }
+  const signature=JSON.stringify({takeover,ok:result.ok,changed:!!result.changed,pending:result.pending||'',reason:result.reason||''});
+  if(signature===lastOrcaLog) return;
+  lastOrcaLog=signature;
+  if(result.reason==='missing') return;
+  if(result.reason==='wrapper-missing') { console.error('orca cursor override skipped: cursor-agent wrapper is not installed'); return; }
+  if(result.reason==='foreign-override') { console.error('orca cursor override skipped: a custom cursor command is configured'); return; }
+  if(result.reason==='error') { console.error(`orca cursor override failed: ${result.error}`); return; }
+  if(result.pending==='running') { console.log(`orca cursor override ${takeover==='on'?'install':'removal'} deferred until Orca exits`); return; }
+  if(result.changed) console.log(`orca cursor override ${takeover==='on'?'installed':'removed'}: ${result.path}`);
+}
 // Native diagnostics stay local: 0600 file next to the other bridge state,
 // rotated at the size the control panel configured (default 4 MiB). Writes go
 // through a descriptor so rotation happens while the supervisor runs; a stream
@@ -127,6 +148,7 @@ if(command==='status') {
     // never stops the engine or vacuums. The result is kept for the console.
     pruneDatabase:({tracesDays,sessionsDays})=>pruneDatabase(file('data/bridge.db'),{tracesDays,sessionsDays}),
     onPrune:result=>atomic(file('retention.json'),JSON.stringify(result,null,2)),
+    reconcileOrca:({takeover})=>applyOrcaTakeover(takeover),
     spawnEngine:({mode,subagentMode,preferredProxyPort:port})=>spawn(platform.enginePathFor(packageDir),[file('effective.json')],{
       env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
     }),

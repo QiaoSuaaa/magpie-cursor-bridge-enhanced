@@ -343,6 +343,7 @@
   function fillSettings(values) {
     if (values?.runMode !== undefined) $('runMode').value = values.runMode;
     if (values?.subagentMode !== undefined) $('subagentMode').value = values.subagentMode;
+    if (values?.orcaTakeover !== undefined) $('orcaTakeover').value = values.orcaTakeover;
     for (const key of ['refreshSeconds', 'gatewayGraceSeconds', 'logLimitMB', 'tracesRetentionDays', 'sessionsRetentionDays']) {
       if (values?.[key] !== undefined) $(key).value = values[key];
     }
@@ -556,6 +557,7 @@
     const body = {
       runMode: $('runMode').value,
       subagentMode: $('subagentMode').value,
+      orcaTakeover: $('orcaTakeover').value,
       refreshSeconds: Number($('refreshSeconds').value),
       gatewayGraceSeconds: Number($('gatewayGraceSeconds').value),
       logLimitMB: Number($('logLimitMB').value),
@@ -575,11 +577,57 @@
       const retentionHint = beforeTraces !== result.settings.tracesRetentionDays || beforeSessions !== result.settings.sessionsRetentionDays
         ? '保留策略已更新，下一轮后台清理生效；'
         : '';
-      $('settingsHint').textContent = `已保存：${modeHint}${subagentHint}${retentionHint}同步间隔与容错下一轮生效，日志上限下次后台启动生效`;
+      const orcaHint = result.orca?.pending === 'running'
+        ? `Orca 正在运行，${result.settings.orcaTakeover === 'on' ? '接管' : '取消接管'}将在其退出后自动完成；`
+        : (result.orca?.reason === 'foreign-override'
+          ? 'Orca 已配置自定义 cursor 命令，兜底接管未改动；'
+          : (result.orca?.reason === 'error'
+            ? `Orca 配置写入失败：${result.orca.error || '未知错误'}；`
+            : (result.orca?.reason === 'wrapper-missing'
+              ? '未安装 cursor-agent 包装器，已跳过 Orca 兜底接管；'
+              : (result.orca?.reason === 'missing'
+                ? '未检测到 Orca，接管意图已记录；'
+                : (result.orca?.changed
+                  ? `Orca 配置已${result.settings.orcaTakeover === 'on' ? '写入' : '移除'}；`
+                  : '')))));
+      $('settingsHint').textContent = `已保存：${modeHint}${subagentHint}${retentionHint}${orcaHint}同步间隔与容错下一轮生效，日志上限下次后台启动生效`;
       loadStatus({quiet: true});
+      loadAgentCli({force: true});
     } catch (error) {
       $('settingsHint').textContent = `保存失败：${error.message}`;
     }
+  }
+
+  // Help text lives in data-tip attributes: CSS shows it on hover/focus, and
+  // a click pins it for touch screens. Only one tip stays open at a time so
+  // the grouped card never turns into a pile of overlapping bubbles.
+  function initSettingTips() {
+    const form = $('settingsForm');
+    const close = () => {
+      for (const tip of form.querySelectorAll('.tip.open')) tip.classList.remove('open');
+    };
+    form.addEventListener('click', (event) => {
+      const tip = event.target.closest?.('.tip');
+      if (!tip) { close(); return; }
+      event.preventDefault();
+      const open = !tip.classList.contains('open');
+      close();
+      if (open) tip.classList.add('open');
+    });
+    form.addEventListener('keydown', (event) => {
+      const tip = event.target.closest?.('.tip');
+      if (!tip) return;
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        tip.click();
+      } else if (event.key === 'Escape') {
+        tip.classList.remove('open');
+        tip.blur();
+      }
+    });
+    document.addEventListener('click', (event) => {
+      if (!event.target.closest?.('.settings .tip')) close();
+    });
   }
 
   // Menu preferences live beside the other bridge settings, so every save
@@ -956,9 +1004,31 @@
     }
   }
 
+  // The switch reflects intent (bridge-settings.json), while injected/running
+  // describe the file Orca will read next. Showing both keeps "saved but
+  // waiting for Orca to exit" from looking like a failed switch.
+  function orcaView(orca, entry) {
+    if (!orca.installed) return {text: '未检测到 Orca', tone: 'warn'};
+    if (orca.foreignOverride) return {text: '已有自定义命令', tone: 'warn'};
+    const wanted = orca.takeover !== 'off';
+    if (orca.injected) {
+      if (!orca.wrapperInstalled) return {text: '已接管 · 包装器缺失', tone: 'warn'};
+      // The file still carries the override while the saved intent is off:
+      // either Orca is open (it rewrites the file on exit) or the supervisor
+      // has not run yet. Both are "pending", not "failed".
+      if (!wanted) return {text: orca.running ? '已接管 · 退出后取消' : '已接管 · 待取消', tone: 'warn'};
+      return {text: '已接管', tone: 'ok'};
+    }
+    if (!orca.wrapperInstalled) return {text: wanted ? '未安装包装器' : '已关闭', tone: wanted ? 'warn' : ''};
+    if (orca.running) return {text: wanted ? '等待 Orca 退出后接管' : '已关闭', tone: wanted ? 'warn' : ''};
+    if (wanted) return {text: entry?.installed ? '入口已接管 · 配置待写入' : '未接管', tone: entry?.installed ? 'ok' : 'warn'};
+    return {text: entry?.installed ? '已关闭 · 官方入口仍接管' : '已关闭', tone: entry?.installed ? 'warn' : ''};
+  }
+
   function renderAgentCli(agent, orca = {}) {
     const compat = agent.compatibility || {};
     const hook = agent.shellHook || {};
+    const orcaState = orcaView(orca, agent.entry);
     const versionText = agent.version
       ? `${agent.version}${compat.tested ? ' · 已实测' : ' · 未验证'}`
       : '未检测到';
@@ -976,12 +1046,8 @@
         tone: agent.entry?.installed ? 'ok' : 'warn',
         title: agent.entry?.entry || ''
       }),
-      item('Orca 聊天', !orca.installed
-        ? '未检测到 Orca'
-        : (orca.injected
-          ? '已接管'
-          : (orca.foreignOverride ? '已有自定义命令' : (orca.running ? 'Orca 运行中' : '未接管（入口已覆盖）'))), {
-        tone: orca.injected || agent.entry?.installed ? 'ok' : 'warn',
+      item('Orca 聊天', orcaState.text, {
+        tone: orcaState.tone,
         title: orca.path || ''
       })
     );
@@ -991,8 +1057,12 @@
     $('agentCliRemove').disabled = !agent.wrapperInstalled;
     $('agentCliEntryInstall').disabled = !agent.entry?.supported || !agent.entry?.entryPresent || agent.entry?.installed;
     $('agentCliEntryRemove').disabled = !agent.entry?.installed;
-    $('agentCliOrcaInstall').disabled = !orca.installed || orca.running || orca.injected || orca.foreignOverride;
-    $('agentCliOrcaRemove').disabled = !orca.injected || orca.running;
+    // Both buttons reflect the saved intent, not the file's momentary state:
+    // an Orca that is still running leaves the switch "on" with a pending
+    // write, so the buttons stay usable while the file catches up.
+    const orcaWanted = orca.takeover !== 'off';
+    $('agentCliOrcaInstall').disabled = !orca.installed || orca.foreignOverride || orcaWanted;
+    $('agentCliOrcaRemove').disabled = !orca.installed || orca.foreignOverride || !orcaWanted;
     $('agentCliCopy').disabled = !agent.command;
     // The primary switch lives in the editable settings card; this keeps its
     // value in sync with the rc file the server actually sees.
@@ -1020,12 +1090,24 @@
       'hook-remove': '已停用直接接管',
       'entry-install': '已接管官方 cursor-agent 入口：Orca 聊天等直接调用会走桥接',
       'entry-remove': '已恢复官方 cursor-agent 入口',
-      'orca-install': '已让 Orca 的 Cursor 聊天走桥接，重新打开聊天后生效',
-      'orca-remove': '已取消 Orca 接管'
+      'orca-install': '已开启 Orca 自动接管',
+      'orca-remove': '已关闭 Orca 兜底接管（官方入口不受影响）'
     };
     try {
       const data = await api('/api/cursor-agent', {method: 'POST', body: {action}});
-      notice(data.path ? `${labels[action]}：${data.path}` : (labels[action] || '操作完成'), 'ok');
+      const label = labels[action] || '操作完成';
+      const pending = data.pending === 'running' ? '；Orca 退出后自动生效' : '';
+      const missing = data.reason === 'missing' ? '（未检测到 Orca，安装后自动生效）' : '';
+      const noWrapper = data.reason === 'wrapper-missing' ? '（未安装 cursor-agent 包装器，已跳过）' : '';
+      notice(`${label}${pending}${missing}${noWrapper}${data.path ? `：${data.path}` : ''}`, 'ok');
+      // The two Orca controls share one stored intent. Keep the editable
+      // parameter in step with the button, otherwise a later "save" in the
+      // other form would post the stale value and silently undo this action.
+      if (action === 'orca-install' || action === 'orca-remove') {
+        const value = action === 'orca-install' ? 'on' : 'off';
+        $('orcaTakeover').value = value;
+        if (lastOverview?.settings?.values) lastOverview.settings.values.orcaTakeover = value;
+      }
       await loadAgentCli({force: true});
     } catch (error) {
       $('agentCliHint').textContent = String(error.message);
@@ -1308,6 +1390,7 @@
       updateDbControls();
     });
     $('settingsForm').addEventListener('submit', saveSettings);
+    initSettingTips();
     $('saveModelNames').addEventListener('click', saveModelNames);
     $('modelNamesCard').addEventListener('toggle', () => {
       if ($('modelNamesCard').open && lastOverview) loadModelNames(lastOverview);
@@ -1357,7 +1440,7 @@
       if (button) saveModelRow(button.dataset.saveModel);
     });
     $('resetSettings').addEventListener('click', () => {
-      const defaults = lastOverview?.settings?.defaults || {runMode: 'default', subagentMode: 'async', refreshSeconds: 15, gatewayGraceSeconds: 60, logLimitMB: 4, tracesRetentionDays: 7, sessionsRetentionDays: 0};
+      const defaults = lastOverview?.settings?.defaults || {runMode: 'default', subagentMode: 'async', orcaTakeover: 'on', refreshSeconds: 15, gatewayGraceSeconds: 60, logLimitMB: 4, tracesRetentionDays: 7, sessionsRetentionDays: 0};
       fillSettings(defaults);
       $('settingsHint').textContent = '已填入默认值，点击「保存」后生效';
     });

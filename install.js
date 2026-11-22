@@ -6,7 +6,8 @@ import {fileURLToPath} from 'node:url';
 import {atomic,restoreProxy} from './lib/settings.js';
 import {paths,run,verifyPackage,initializeCertificate,stage,activate,stopJob,pruneReleases} from './lib/install.js';
 import {installWrapper,removeWrapper,installShellHook,removeShellHook,installEntry,removeEntry} from './lib/cursor-agent.js';
-import {injectOrca,removeOrca} from './lib/orca.js';
+import {removeOrca,reconcileOrca} from './lib/orca.js';
+import {read as readBridgeSettings} from './lib/bridge-settings.js';
 import platform from './lib/platform.js';
 const source=path.dirname(fileURLToPath(import.meta.url));
 const manifest=JSON.parse(fs.readFileSync(path.join(source,'package.json'),'utf8'));
@@ -132,8 +133,13 @@ try {
         else if(entry.reason==='missing') console.log('未找到 ~/.local/bin/cursor-agent（可能尚未安装 Cursor CLI），跳过入口接管。');
         // Keep Orca's native settings as a best-effort fallback for versions
         // that do honour them; the entry above covers the ones that do not.
-        const orca=injectOrca({root:p.root});
-        if(orca.ok&&orca.changed) console.log(`同时写入 Orca 的 Cursor 启动配置：${orca.path}`);
+        // The console stores the user's choice in bridge-settings.json, so a
+        // re-run of setup must not silently turn a disabled takeover back on.
+        const orcaTakeover=readBridgeSettings(p.root).orcaTakeover;
+        const orca=reconcileOrca({root:p.root,takeover:orcaTakeover});
+        if(orca.reason==='foreign-override') console.log('Orca 已配置自定义 cursor 命令，跳过兜底接管。');
+        else if(orca.pending==='running') console.log(`Orca 正在运行，已记录${orcaTakeover==='on'?'接管':'取消接管'}意图，退出 Orca 后自动生效。`);
+        else if(orca.changed) console.log(`${orcaTakeover==='on'?'同时写入':'已按设置移除'} Orca 的 Cursor 启动配置：${orca.path}`);
       }
     } finally {fs.rmdirSync(lock);}
   }

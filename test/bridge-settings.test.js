@@ -21,7 +21,18 @@ test('missing or malformed bridge settings fall back to defaults', (t) => {
 test('out-of-range values fall back per key when read', (t) => {
   const root = setup(t);
   fs.writeFileSync(settingsFile(root), JSON.stringify({refreshSeconds: 30, gatewayGraceSeconds: 9999, logLimitMB: 8}));
-  assert.deepEqual(read(root), {runMode: 'default', subagentMode: 'async', refreshSeconds: 30, gatewayGraceSeconds: defaults.gatewayGraceSeconds, logLimitMB: 8, tracesRetentionDays: defaults.tracesRetentionDays, sessionsRetentionDays: defaults.sessionsRetentionDays, modelNames: {}, modelOrder: [], modelHidden: []});
+  assert.deepEqual(read(root), {runMode: 'default', subagentMode: 'async', orcaTakeover: 'on', refreshSeconds: 30, gatewayGraceSeconds: defaults.gatewayGraceSeconds, logLimitMB: 8, tracesRetentionDays: defaults.tracesRetentionDays, sessionsRetentionDays: defaults.sessionsRetentionDays, modelNames: {}, modelOrder: [], modelHidden: []});
+});
+
+test('orca takeover defaults to on and is validated strictly', (t) => {
+  const root = setup(t);
+  assert.equal(defaults.orcaTakeover, 'on');
+  assert.equal(normalize({}).orcaTakeover, 'on');
+  fs.writeFileSync(settingsFile(root), JSON.stringify({orcaTakeover: 'sometimes'}));
+  assert.equal(read(root).orcaTakeover, 'on', 'a malformed value falls back on read');
+  assert.throws(() => write(root, {orcaTakeover: 'sometimes'}), /接管 Orca 需为 on 或 off/);
+  assert.equal(write(root, {orcaTakeover: 'off'}).orcaTakeover, 'off');
+  assert.equal(read(root).orcaTakeover, 'off');
 });
 
 test('run mode falls back when read and is rejected strictly', (t) => {
@@ -44,7 +55,7 @@ test('writes validate strictly, round-trip and keep the file private', (t) => {
   const root = setup(t);
   assert.throws(() => write(root, {refreshSeconds: 1}), /5–300/);
   const saved = write(root, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8});
-  assert.deepEqual(saved, {runMode: 'lite', subagentMode: 'sync', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8, tracesRetentionDays: defaults.tracesRetentionDays, sessionsRetentionDays: defaults.sessionsRetentionDays, modelNames: {}, modelOrder: [], modelHidden: []});
+  assert.deepEqual(saved, {runMode: 'lite', subagentMode: 'sync', orcaTakeover: 'on', refreshSeconds: 30, gatewayGraceSeconds: 120, logLimitMB: 8, tracesRetentionDays: defaults.tracesRetentionDays, sessionsRetentionDays: defaults.sessionsRetentionDays, modelNames: {}, modelOrder: [], modelHidden: []});
   assert.deepEqual(read(root), saved);
   if (process.platform !== 'win32') assert.equal(fs.statSync(settingsFile(root)).mode & 0o777, 0o600);
   assert.deepEqual(normalize({}), defaults);
