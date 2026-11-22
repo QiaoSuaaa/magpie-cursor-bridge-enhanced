@@ -77,6 +77,21 @@ test('wrapperText for Windows calls the CMD env file', () => {
   assert.match(text, /cursor-agent %\*/);
 });
 
+test('the Windows wrapper marker is recognised as bridge-managed', (t) => {
+  // Windows writes `rem Managed by Cursor Bridge`; the shared marker check
+  // must still treat it as ours, otherwise install shows "not installed" and
+  // remove leaves the file behind. The POSIX layout is used to place the text
+  // so this stays runnable on macOS/Linux CI too.
+  if (process.platform === 'win32') return;
+  const {home, root} = workspace(t);
+  const target = wrapperPathFor(root, home, 'darwin', {PATH: ''});
+  fs.mkdirSync(path.dirname(target), {recursive: true});
+  fs.writeFileSync(target, wrapperText({root, plat: 'win32'}));
+  const status = agentStatus({root, home, plat: 'darwin', environment: {PATH: ''}});
+  assert.equal(status.wrapperInstalled, true);
+  assert.equal(status.wrapperFile, target);
+});
+
 test('installWrapper prefers ~/.local/bin when it is on PATH', (t) => {
   // Windows has no user-writable bin convention and writes a .cmd wrapper
   // into the install root; that path is covered by the wrapperText test.

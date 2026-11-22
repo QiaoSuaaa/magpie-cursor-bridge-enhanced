@@ -2,6 +2,7 @@
 
 ## 0.2.35（Orca 接管改为持久配置）
 
+- 修复 Windows 包装器标记识别：Windows 版包装器以 `rem Managed by Cursor Bridge` 写入，此前标记检查只认 POSIX 的 `# Managed by Cursor Bridge`，导致安装后显示「未安装」且无法移除；现两种注释形式都按桥接管理处理。
 - 修复包装器身份依赖进程 PATH 的问题：后台服务（launchd/systemd）与控制台/setup 的 PATH 不同，会把桥接自己写入的 override 误判为用户自定义命令（关闭失效），或补写一个从未安装的 `<root>/bin/cursor-agent-bridge`。现改为按磁盘上带标记的包装器文件识别与实际安装位置，身份不再随进程环境漂移；包装器未安装时跳过注入，不写死路径。
 - 修复 Orca 配置写入的跨进程临时文件冲突：临时文件名加入进程号，setup、控制台与 supervisor 并发写入不再互相截断或改名。
 - 测试脚本 `manual-lifecycle.mjs` 使用 `CURSOR_BRIDGE_HOME` 隔离 Orca 配置，避免 live 测试改写真实用户目录。
