@@ -104,8 +104,11 @@ a.link-button:hover { border-color: var(--magpie-muted, var(--muted)); backgroun
 .settings .tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: 3px; border: 1px solid color-mix(in srgb, var(--magpie-muted, var(--muted)) 50%, transparent); border-radius: 50%; font-size: 9px; line-height: 1; color: var(--magpie-muted, var(--muted)); cursor: help; user-select: none; }
 .settings .tip:hover, .settings .tip:focus-visible, .settings .tip.open { color: var(--magpie-accent, var(--accent)); border-color: var(--magpie-accent, var(--accent)); }
 /* Hover/focus previews the text; a click pins it so touch devices can read it. */
-.settings .tip::after { content: attr(data-tip); position: absolute; left: -6px; bottom: calc(100% + 9px); width: max-content; max-width: min(340px, 70vw); padding: 8px 10px; border: 1px solid var(--magpie-line, var(--line)); border-radius: 8px; background: var(--magpie-card, var(--card)); color: var(--magpie-fg, var(--fg)); font-size: 11.5px; font-weight: 400; line-height: 1.55; letter-spacing: 0; white-space: normal; text-align: left; box-shadow: 0 8px 22px color-mix(in srgb, #000 16%, transparent); opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .12s; z-index: 40; }
-.settings .tip:hover::after, .settings .tip:focus-visible::after, .settings .tip.open::after { opacity: 1; visibility: visible; }
+/* Hidden tooltips must not keep a layout box: a max-content bubble counts
+   towards horizontal overflow even while invisible and forces a scrollbar on
+   narrow panels. Toggle the box instead of only hiding paint. */
+.settings .tip::after { content: attr(data-tip); position: absolute; left: -6px; bottom: calc(100% + 9px); width: max-content; max-width: min(340px, 70vw); padding: 8px 10px; border: 1px solid var(--magpie-line, var(--line)); border-radius: 8px; background: var(--magpie-card, var(--card)); color: var(--magpie-fg, var(--fg)); font-size: 11.5px; font-weight: 400; line-height: 1.55; letter-spacing: 0; white-space: normal; text-align: left; box-shadow: 0 8px 22px color-mix(in srgb, #000 16%, transparent); display: none; pointer-events: none; z-index: 40; }
+.settings .tip:hover::after, .settings .tip:focus-visible::after, .settings .tip.open::after { display: block; }
 
 input[type="number"], input[type="text"], select { height: 30px; font: 12.5px var(--magpie-code, var(--code)); color: var(--magpie-fg, var(--fg)); background: var(--magpie-card, var(--card)); border: 1px solid var(--magpie-line, var(--line)); border-radius: 7px; padding: 0 9px; transition: border-color .12s, box-shadow .12s; }
 input[type="number"] { width: 74px; -moz-appearance: textfield; appearance: textfield; }
@@ -116,13 +119,18 @@ input[type="number"]:focus, input[type="text"]:focus, select:focus { outline: no
 .field.select { position: relative; }
 .field.select select { min-width: 116px; padding: 0 30px 0 10px; cursor: pointer; appearance: none; -webkit-appearance: none; }
 .field.select::after { content: ""; position: absolute; right: 12px; top: 50%; width: 6px; height: 6px; margin-top: -4px; border-right: 1.5px solid var(--magpie-muted, var(--muted)); border-bottom: 1.5px solid var(--magpie-muted, var(--muted)); border-radius: 1px; transform: rotate(45deg); pointer-events: none; }
-.model-names-card { padding: 0; }
-.model-names-card > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; cursor: pointer; list-style: none; }
-.model-names-card > summary::-webkit-details-marker { display: none; }
-.model-names-card > summary::after { content: ""; width: 7px; height: 7px; margin-left: 2px; border-right: 1.5px solid var(--magpie-muted, var(--muted)); border-bottom: 1.5px solid var(--magpie-muted, var(--muted)); transform: rotate(45deg); transition: transform .15s; flex-shrink: 0; }
-.model-names-card[open] > summary::after { transform: rotate(-135deg); }
-.model-names-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
-.model-names-state { flex-shrink: 0; margin-left: auto; white-space: nowrap; font-family: var(--magpie-code, var(--code)); }
+/* Collapsible cards share one shell: the body pads itself, so the summary can
+   span the full card width and the state text stays aligned with the arrow. */
+:is(.model-names-card, .db-card, .settings-card) { padding: 0; }
+:is(.model-names-card, .db-card, .settings-card) > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; cursor: pointer; list-style: none; }
+:is(.model-names-card, .db-card, .settings-card) > summary::-webkit-details-marker { display: none; }
+:is(.model-names-card, .db-card, .settings-card) > summary::after { content: ""; width: 7px; height: 7px; margin-left: 2px; border-right: 1.5px solid var(--magpie-muted, var(--muted)); border-bottom: 1.5px solid var(--magpie-muted, var(--muted)); transform: rotate(45deg); transition: transform .15s; flex-shrink: 0; }
+:is(.model-names-card, .db-card, .settings-card)[open] > summary::after { transform: rotate(-135deg); }
+:is(.model-names-card, .db-card, .settings-card) > summary:focus-visible { outline: 2px solid var(--magpie-accent, var(--accent)); outline-offset: -2px; border-radius: 8px; }
+:is(.model-names-title, .db-title, .settings-title) { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
+:is(.model-names-state, .db-state, .settings-state) { flex-shrink: 0; margin-left: auto; white-space: nowrap; font-family: var(--magpie-code, var(--code)); }
+.settings-card > form { padding: 0 14px 14px; }
+.settings-intro { margin: 0; }
 .model-names-body { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 14px; }
 .model-names-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .model-names-actions button { height: 30px; padding: 0 14px; }
@@ -156,13 +164,6 @@ input[type="number"]:focus, input[type="text"]:focus, select:focus { outline: no
 .links { display: flex; gap: 8px; flex-wrap: wrap; }
 .links button { font-size: 12px; }
 
-.db-card { padding: 0; }
-.db-card > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; cursor: pointer; list-style: none; }
-.db-card > summary::-webkit-details-marker { display: none; }
-.db-card > summary::after { content: ""; width: 7px; height: 7px; margin-left: 2px; border-right: 1.5px solid var(--magpie-muted, var(--muted)); border-bottom: 1.5px solid var(--magpie-muted, var(--muted)); transform: rotate(45deg); transition: transform .15s; flex-shrink: 0; }
-.db-card[open] > summary::after { transform: rotate(-135deg); }
-.db-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
-.db-state { flex-shrink: 0; margin-left: auto; white-space: nowrap; font-family: var(--magpie-code, var(--code)); }
 .db-body { display: flex; flex-direction: column; gap: 10px; padding: 0 14px 14px; }
 .db-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .diag-toolbar { flex-wrap: wrap; }
@@ -213,5 +214,5 @@ code { font: 11.5px var(--magpie-code, var(--code)); }
   .bar .right { margin-left: 0; }
   .cleanup-row { align-items: flex-start; flex-direction: column; }
   .cleanup-controls { width: 100%; }
-  .db-card > summary { align-items: flex-start; }
+  :is(.db-card, .settings-card) > summary { align-items: flex-start; }
 }

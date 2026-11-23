@@ -65,22 +65,26 @@
     </div>
   </section>
 
-  <section class="card">
-    <div class="card-head"><h2>可编辑参数</h2><span class="hint">写入 bridge-settings.json · 悬浮或点击 ? 查看说明</span></div>
+  <details id="settingsCard" class="card settings-card">
+    <summary>
+      <span class="settings-title"><h2>可编辑参数</h2><span class="hint">写入 bridge-settings.json</span></span>
+      <span id="settingsState" class="hint settings-state">展开后编辑</span>
+    </summary>
     <form id="settingsForm" class="settings settings-grouped">
+      <p class="hint settings-intro">悬浮或点击 ? 查看每项说明；保存后的生效时机见各项提示。</p>
       <div class="settings-group">
         <div class="settings-group-head"><span>运行与引擎</span></div>
         <div class="settings-row">
           <div class="setting">
             <span class="label">运行模式<span class="tip" role="button" tabindex="0" aria-label="运行模式说明" data-tip="「默认模式」把会话历史写入 bridge.db；「轻量模式」把 SQLite 放在引擎进程内存，bridge.db 不再写入，引擎重启后会话历史清空。切换模式会自动重启引擎，当前对话可能中断一次。">?</span></span>
-            <label class="field select" for="runMode"><select id="runMode">
+            <label class="field select" for="runMode"><select id="runMode" aria-label="运行模式">
               <option value="default">默认模式</option>
               <option value="lite">轻量模式</option>
             </select></label>
           </div>
           <div class="setting">
             <span class="label">子代理模式<span class="tip" role="button" tabindex="0" aria-label="子代理模式说明" data-tip="「异步后台」为默认：子代理在后台运行，完成后由桥接唤醒父代理继续；「同步阻塞」强制 Task 以 run_in_background=false 执行，父代理等待子代理返回结果。切换会在数秒内重启引擎。">?</span></span>
-            <label class="field select" for="subagentMode"><select id="subagentMode">
+            <label class="field select" for="subagentMode"><select id="subagentMode" aria-label="子代理模式">
               <option value="async">异步后台（默认）</option>
               <option value="sync">同步阻塞</option>
             </select></label>
@@ -93,14 +97,14 @@
         <div class="settings-row">
           <div class="setting">
             <span class="label">接管 Cursor CLI<span class="tip" role="button" tabindex="0" aria-label="接管 Cursor CLI 说明" data-tip="即时生效：开启后向 ~/.zshrc 或 ~/.bashrc 写入带标记的函数块，重新打开终端后直接输入 cursor-agent 即走桥接；关闭只移除该标记块，不影响官方 CLI。Windows 请使用下方卡片中的 cursor-agent-bridge。">?</span></span>
-            <label class="field select" for="agentTakeover"><select id="agentTakeover" disabled>
+            <label class="field select" for="agentTakeover"><select id="agentTakeover" aria-label="接管 Cursor CLI" disabled>
               <option value="off">关闭</option>
               <option value="on">开启（直接接管）</option>
             </select></label>
           </div>
           <div class="setting">
             <span class="label">接管 Orca 聊天<span class="tip" role="button" tabindex="0" aria-label="接管 Orca 聊天说明" data-tip="随「保存」生效：写入 Orca 的 cursor 启动命令作为兜底，并由后台在 Orca 退出后自动重新应用（Orca 退出时会重写自己的配置文件）；Orca 运行中切换会在其退出后自动完成。关闭只停用这层兜底，「官方入口」接管保持独立。">?</span></span>
-            <label class="field select" for="orcaTakeover"><select id="orcaTakeover">
+            <label class="field select" for="orcaTakeover"><select id="orcaTakeover" aria-label="接管 Orca 聊天">
               <option value="on">开启（自动维持）</option>
               <option value="off">关闭</option>
             </select></label>
@@ -113,15 +117,15 @@
         <div class="settings-row">
           <div class="setting">
             <span class="label">模型目录同步间隔<span class="tip" role="button" tabindex="0" aria-label="模型目录同步间隔说明" data-tip="supervisor 每隔多少秒重新读取 Magpie 模型目录。下一轮循环生效。">?</span></span>
-            <label class="field" for="refreshSeconds"><input id="refreshSeconds" type="number" min="5" max="300" step="1" inputmode="numeric"><span class="unit">秒</span></label>
+            <label class="field" for="refreshSeconds"><input id="refreshSeconds" type="number" min="5" max="300" step="1" inputmode="numeric" aria-label="模型目录同步间隔（秒）"><span class="unit">秒</span></label>
           </div>
           <div class="setting">
             <span class="label">网关断线容错<span class="tip" role="button" tabindex="0" aria-label="网关断线容错说明" data-tip="网关短暂不可用时保持当前引擎与代理端口；超过该时长才进入错误状态并还原 Cursor 代理。">?</span></span>
-            <label class="field" for="gatewayGraceSeconds"><input id="gatewayGraceSeconds" type="number" min="10" max="600" step="1" inputmode="numeric"><span class="unit">秒</span></label>
+            <label class="field" for="gatewayGraceSeconds"><input id="gatewayGraceSeconds" type="number" min="10" max="600" step="1" inputmode="numeric" aria-label="网关断线容错（秒）"><span class="unit">秒</span></label>
           </div>
           <div class="setting">
             <span class="label">引擎日志上限<span class="tip" role="button" tabindex="0" aria-label="引擎日志上限说明" data-tip="engine.log 超过该大小时轮转。下次后台启动生效。">?</span></span>
-            <label class="field" for="logLimitMB"><input id="logLimitMB" type="number" min="1" max="64" step="1" inputmode="numeric"><span class="unit">MB</span></label>
+            <label class="field" for="logLimitMB"><input id="logLimitMB" type="number" min="1" max="64" step="1" inputmode="numeric" aria-label="引擎日志上限（MB）"><span class="unit">MB</span></label>
           </div>
         </div>
       </div>
@@ -131,11 +135,11 @@
         <div class="settings-row">
           <div class="setting">
             <span class="label">调用日志保留<span class="tip" role="button" tabindex="0" aria-label="调用日志保留说明" data-tip="后台自动删除超过天数的调用记录；0 表示不自动清理。清理不中断对话、不执行 VACUUM。">?</span></span>
-            <label class="field" for="tracesRetentionDays"><input id="tracesRetentionDays" type="number" min="0" max="3650" step="1" inputmode="numeric"><span class="unit">天</span></label>
+            <label class="field" for="tracesRetentionDays"><input id="tracesRetentionDays" type="number" min="0" max="3650" step="1" inputmode="numeric" aria-label="调用日志保留（天）"><span class="unit">天</span></label>
           </div>
           <div class="setting">
             <span class="label">历史会话保留<span class="tip" role="button" tabindex="0" aria-label="历史会话保留说明" data-tip="后台自动删除超过天数未更新的会话、消息与检查点；0 表示不自动清理。需要立即回收磁盘空间时，请使用下方「数据库管理」的手动清理。">?</span></span>
-            <label class="field" for="sessionsRetentionDays"><input id="sessionsRetentionDays" type="number" min="0" max="3650" step="1" inputmode="numeric"><span class="unit">天</span></label>
+            <label class="field" for="sessionsRetentionDays"><input id="sessionsRetentionDays" type="number" min="0" max="3650" step="1" inputmode="numeric" aria-label="历史会话保留（天）"><span class="unit">天</span></label>
           </div>
         </div>
       </div>
@@ -146,7 +150,7 @@
         <span id="settingsHint" class="hint"></span>
       </div>
     </form>
-  </section>
+  </details>
 
   <details id="modelNamesCard" class="card model-names-card">
     <summary>

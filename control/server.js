@@ -726,6 +726,9 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
             // an explicitly posted {} still clears a list.
             const p = paths(repoRoot);
             const saved = writeBridgeSettings(p.root, {...readBridgeSettings(p.root), ...body});
+            // The overview snapshot embeds the saved settings; drop the cache so
+            // the status call that follows a save never echoes the old values.
+            overviewCache = {at: 0, data: null, pending: null};
             // The saved intent takes effect immediately; when Orca is open the
             // result is "pending" and the supervisor retries after it exits.
             let orca = null;

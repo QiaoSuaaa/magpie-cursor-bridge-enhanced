@@ -332,10 +332,12 @@
       item('控制服务', `PID ${overview.control.pid} · ${overview.control.uptime}s`, {mono: true})
     );
 
-    if (!settingsFilled && overview.settings?.values) {
-      fillSettings(overview.settings.values);
+    const savedSettings = overview.settings?.values;
+    if (!settingsFilled && savedSettings) {
+      fillSettings(savedSettings);
       settingsFilled = true;
     }
+    renderSettingsState();
     // The card is collapsed by default; only load the catalogue once opened.
     if ($('modelNamesCard')?.open && !modelNamesFilled) loadModelNames(overview);
   }
@@ -347,6 +349,18 @@
     for (const key of ['refreshSeconds', 'gatewayGraceSeconds', 'logLimitMB', 'tracesRetentionDays', 'sessionsRetentionDays']) {
       if (values?.[key] !== undefined) $(key).value = values[key];
     }
+  }
+
+  // The parameters card is collapsed by default; while closed the summary
+  // shows the saved run mode plus a hint that clicking expands the form.
+  function renderSettingsState() {
+    const mode = lastOverview?.settings?.values?.runMode;
+    const card = $('settingsCard');
+    const state = $('settingsState');
+    if (!mode || !card || !state) return;
+    const label = MODES[mode] || mode;
+    const text = card.open ? label : `${label} · 展开编辑`;
+    if (state.textContent !== text) state.textContent = text;
   }
 
   // Display names are edited per model id. The catalogue comes from Magpie so
@@ -566,8 +580,13 @@
     };
     try {
       const result = await api('/api/settings', {method: 'POST', body});
+      // Mirror the saved values immediately: the summary and the overview are
+      // painted from lastOverview, which the next poll may still fill from a
+      // snapshot taken just before the write.
+      if (lastOverview?.settings) lastOverview.settings.values = result.settings;
       fillSettings(result.settings);
       settingsFilled = true;
+      renderSettingsState();
       const modeHint = beforeMode && beforeMode !== result.settings.runMode
         ? '运行模式已变更，引擎将在数秒内自动重启，当前对话可能中断一次；'
         : '';
@@ -1390,6 +1409,7 @@
       updateDbControls();
     });
     $('settingsForm').addEventListener('submit', saveSettings);
+    $('settingsCard').addEventListener('toggle', renderSettingsState);
     initSettingTips();
     $('saveModelNames').addEventListener('click', saveModelNames);
     $('modelNamesCard').addEventListener('toggle', () => {
