@@ -3047,3 +3047,76 @@ index fda8ce0..cadbb5a 100644
      #[test]
      fn cursor_cli_transport_and_model_metadata_routes_stay_local() {
          for path in [
+
+diff --git a/server/src/run/model_cycle.rs b/server/src/run/model_cycle.rs
+index 326e1f0..f94d170 100644
+--- a/server/src/run/model_cycle.rs
++++ b/server/src/run/model_cycle.rs
+@@ -400,6 +400,12 @@ fn failure(
+ /// so only the head before the body is inspected. 408 and 425 are timing
+ /// failures and stay retryable.
+ fn is_rejected_request(message: &str) -> bool {
++    if message.contains("RESOURCE_EXHAUSTED")
++        || message.contains("Individual quota reached")
++        || message.contains("quota exhausted")
++    {
++        return true;
++    }
+     let head = message.split_once(": ").map_or(message, |(head, _)| head);
+     head.split_whitespace().any(|token| {
+         token.len() == 3
+diff --git a/server/src/run/model_retry.rs b/server/src/run/model_retry.rs
+index cccde21..281dec5 100644
+--- a/server/src/run/model_retry.rs
++++ b/server/src/run/model_retry.rs
+@@ -5,10 +5,29 @@ use std::time::Duration;
+ use super::ModelCycleFailure;
+ 
+ pub(super) const MAX_MODEL_RETRIES: u32 = 8;
++pub(super) const MAX_RATE_LIMIT_RETRIES: u32 = 3;
+ pub(super) const MODEL_RETRY_DELAY: Duration = Duration::from_secs(5);
+ 
++fn is_rate_limit(failure: &super::RunFailure) -> bool {
++    match failure {
++        super::RunFailure::Provider(message) => {
++            let head = message.split_once(": ").map_or(message.as_str(), |(head, _)| head);
++            head.split_whitespace().any(|token| token == "429")
++        }
++        _ => false,
++    }
++}
++
+ pub(super) fn should_retry(failure: &ModelCycleFailure, retries: u32) -> bool {
+-    failure.retryable && retries < MAX_MODEL_RETRIES
++    if !failure.retryable {
++        return false;
++    }
++    let limit = if is_rate_limit(&failure.failure) {
++        MAX_RATE_LIMIT_RETRIES
++    } else {
++        MAX_MODEL_RETRIES
++    };
++    retries < limit
+ }
+ 
+ #[cfg(test)]
+@@ -39,4 +58,19 @@ mod tests {
+     fn terminal_failures_never_retry() {
+         assert!(!should_retry(&failure(false), 0));
+     }
++
++    #[test]
++    fn rate_limit_retries_are_capped_at_three() {
++        let rate_limited = ModelCycleFailure {
++            failure: RunFailure::Provider("OpenAI Responses 429 Too Many Requests: slow down".into()),
++            partial_text: String::new(),
++            partial_reasoning: String::new(),
++            usage: None,
++            retryable: true,
++        };
++        for retries in 0..MAX_RATE_LIMIT_RETRIES {
++            assert!(should_retry(&rate_limited, retries));
++        }
++        assert!(!should_retry(&rate_limited, MAX_RATE_LIMIT_RETRIES));
++    }
+ }
