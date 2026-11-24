@@ -17,6 +17,16 @@ test('disconnect preserves user edits made while connected',t=>{
  const data=document(s).data;data['http.proxy']='http://localhost:8888';data['editor.fontSize']=20;fs.writeFileSync(s,JSON.stringify(data));
  assert.deepEqual(restoreProxy(j),['http.proxy']);assert.deepEqual(document(s).data,{'editor.fontSize':20,'http.proxy':'http://localhost:8888'});
 });
+test('disconnect preserves user edits even after applyProxy re-runs while connected',t=>{
+ const [s,j]=setup(t);fs.writeFileSync(s,'{\n // keep comment\n "cursor.composer.queueMessageDefaultBehavior": "steer",\n "editor.fontSize": 16\n}\n');
+ applyProxy(s,j,'http://127.0.0.1:1234');
+ const edited=fs.readFileSync(s,'utf8').replace(/\s*"cursor\.composer\.queueMessageDefaultBehavior":\s*"steer",\r?\n/,'\n').replace(/"editor\.fontSize":\s*16/,'"editor.fontSize": 20');
+ fs.writeFileSync(s,edited);
+ applyProxy(s,j,'http://127.0.0.1:1234');
+ assert.deepEqual(restoreProxy(j),[]);
+ assert.deepEqual(document(s).data,{'editor.fontSize':20});
+ assert.match(fs.readFileSync(s,'utf8'),/keep comment/);
+});
 test('external proxy change is not silently overwritten',t=>{
  const [s,j]=setup(t);applyProxy(s,j,'http://127.0.0.1:1234');const data=document(s).data;data['http.proxy']='http://localhost:8888';fs.writeFileSync(s,JSON.stringify(data));
  assert.throws(()=>applyProxy(s,j,'http://127.0.0.1:1234'),/externally/);assert.equal(document(s).data['http.proxy'],'http://localhost:8888');
