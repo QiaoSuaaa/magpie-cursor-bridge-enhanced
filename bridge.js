@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
-import {createHash} from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn,execFileSync} from 'node:child_process';
 import {atomic,applyProxy,restoreProxy} from './lib/settings.js';
 import {gatewayModels} from './lib/config.js';
-import {read as readBridgeSettings,applyModelPreferences,tabConfig} from './lib/bridge-settings.js';
-import {resolveDataDir,databasePath} from './lib/storage.js';
+import {read as readBridgeSettings,applyModelPreferences} from './lib/bridge-settings.js';
 import platform from './lib/platform.js';
 import {createSupervisor} from './lib/supervisor.js';
 import {pruneDatabase} from './control/database.js';
+import {writeAgentEnv,removeAgentEnv} from './lib/cursor-agent.js';
+import {reconcileOrca} from './lib/orca.js';
 import {version} from './version.js';
 
 const packageDir=path.dirname(fileURLToPath(import.meta.url));
@@ -18,7 +19,17 @@ const root=process.env.CURSOR_BRIDGE_ROOT||platform.current.paths().config;
 const settings=process.env.CURSOR_BRIDGE_SETTINGS||platform.current.cursorSettings();
 const file=name=>path.join(root,name);
 let lastStatus='';
-const status=(state,extra={})=>{const signature=JSON.stringify({version,state,...extra});if(signature!==lastStatus){atomic(file('status.json'),JSON.stringify({version,state,...extra,updated:new Date().toISOString()},null,2));lastStatus=signature;}};
+// cursor-agent cannot read Cursor's settings.json, so its injection point is a
+// sourced environment file. Keeping it in lockstep with status.json means the
+// port is always current and a stopped/error bridge never leaves the CLI
+// pointing at a dead proxy.
+function syncAgentEnv(extra) {
+  const proxy=typeof extra.proxy==='string'&&extra.proxy?extra.proxy:null;
+  if(!proxy) { removeAgentEnv(root); return; }
+  const caPath=file('data/ca/ca.crt');
+  writeAgentEnv(root,{proxy,caPath:fs.existsSync(caPath)?caPath:null});
+}
+const status=(state,extra={})=>{const signature=JSON.stringify({version,state,...extra});if(signature!==lastStatus){atomic(file('status.json'),JSON.stringify({version,state,...extra,updated:new Date().toISOString()},null,2));lastStatus=signature;syncAgentEnv(extra);}};
 // On Windows Magpie's agent sandbox writes connection.json to its own
 // fallback path (see connectionFilesFor); accept the first file that exists.
 // A rooted install (tests, portable copies) must not fall back to the real
@@ -33,6 +44,25 @@ function connectionText() {
   return '{}';
 }
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
+// The Orca reconcile runs every 30 seconds and usually has nothing to do.
+// Log only when its outcome changes, so a pending retry while Orca stays open
+// does not fill supervisor.log.
+let lastOrcaLog='';
+function applyOrcaTakeover(takeover) {
+  let result;
+  const home=process.env.CURSOR_BRIDGE_HOME||os.homedir();
+  try { result=reconcileOrca({root,home,takeover}); }
+  catch(error) { result={ok:false,reason:'error',error:String(error?.message||error)}; }
+  const signature=JSON.stringify({takeover,ok:result.ok,changed:!!result.changed,pending:result.pending||'',reason:result.reason||''});
+  if(signature===lastOrcaLog) return;
+  lastOrcaLog=signature;
+  if(result.reason==='missing') return;
+  if(result.reason==='wrapper-missing') { console.error('orca cursor override skipped: cursor-agent wrapper is not installed'); return; }
+  if(result.reason==='foreign-override') { console.error('orca cursor override skipped: a custom cursor command is configured'); return; }
+  if(result.reason==='error') { console.error(`orca cursor override failed: ${result.error}`); return; }
+  if(result.pending==='running') { console.log(`orca cursor override ${takeover==='on'?'install':'removal'} deferred until Orca exits`); return; }
+  if(result.changed) console.log(`orca cursor override ${takeover==='on'?'installed':'removed'}: ${result.path}`);
+}
 // Native diagnostics stay local: 0600 file next to the other bridge state,
 // rotated at the size the control panel configured (default 4 MiB). Writes go
 // through a descriptor so rotation happens while the supervisor runs; a stream
@@ -92,13 +122,7 @@ if(command==='status') {
     fs.rmSync(lock,{recursive:true,force:true}); fs.mkdirSync(lock);
   }
   fs.writeFileSync(path.join(lock,'pid'),String(process.pid));
-  const stopRequest=file('stop-request.json');
-  fs.rmSync(stopRequest,{force:true});
   let ending=false;
-  const isEnding=()=>{
-    if(ending) return true;
-    try {return JSON.parse(fs.readFileSync(stopRequest,'utf8')).pid===process.pid;} catch {return false;}
-  };
   // Lite mode starts from an empty in-memory database, so the proxy port cannot
   // be read back from SQLite. Carry the last port across restarts: Cursor does
   // not re-read http.proxy until it restarts.
@@ -106,17 +130,13 @@ if(command==='status') {
   try {const last=JSON.parse(fs.readFileSync(file('status.json'),'utf8'));const url=new URL(last.proxy);if(url.port) preferredProxyPort=url.port;} catch {}
   const supervisor=createSupervisor({
     initialProxyPort:preferredProxyPort,
-    readSettings:()=>{
-      const config=readBridgeSettings(root);
-      if(config.tabMode!=='direct'&&!platform.engineSupportsTab(packageDir)) throw new Error('当前平台引擎不支持 Tab 接管，请先构建新引擎或使用 direct 模式');
-      return config;
-    },
+    readSettings:()=>readBridgeSettings(root),
     readConnection:connectionText,
     // gatewayModels returns the whole connection object; only its models array
     // takes the display-name and order overrides.
     fetchCatalogue:async(connection,config)=>{
       const catalogue=await gatewayModels(connection);
-      return {...catalogue,tab:tabConfig(config),models:applyModelPreferences(catalogue.models,{modelNames:config.modelNames,modelOrder:config.modelOrder,modelHidden:config.modelHidden,keep:connection.model})};
+      return {...catalogue,models:applyModelPreferences(catalogue.models,{modelNames:config.modelNames,modelOrder:config.modelOrder,modelHidden:config.modelHidden,keep:connection.model})};
     },
     writeEffective:text=>atomic(file('effective.json'),text),
     // status.json always advertises the configured mode, so the control panel
@@ -126,29 +146,21 @@ if(command==='status') {
     restoreProxy:()=>restoreProxy(file('settings-journal.json')),
     // Automatic retention runs in this process, online: it batches deletes and
     // never stops the engine or vacuums. The result is kept for the console.
-    pruneDatabase:({tracesDays,sessionsDays})=>pruneDatabase(databasePath(resolveDataDir(root)),{tracesDays,sessionsDays}),
+    pruneDatabase:({tracesDays,sessionsDays})=>pruneDatabase(file('data/bridge.db'),{tracesDays,sessionsDays}),
     onPrune:result=>atomic(file('retention.json'),JSON.stringify(result,null,2)),
-    onLifecycle:entry=>appendEngineLog(Buffer.from(`[bridge-lifecycle] ${JSON.stringify(entry)}\n`)),
-    spawnEngine:({mode,subagentMode,preferredProxyPort:port})=>{
-      const enginePath=platform.enginePathFor(packageDir);
-      const sha256=createHash('sha256').update(fs.readFileSync(enginePath)).digest('hex');
-      const engineVersion=execFileSync(enginePath,['--version'],{encoding:'utf8',timeout:5000,windowsHide:true}).trim();
-      const engine=spawn(enginePath,[file('effective.json')],{
-        env:{...process.env,CURSOR_BYOK_DATA_DIR:resolveDataDir(root),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
-      });
-      engine.bridgeIdentity={engineVersion,sha256,pluginVersion:version};
-      return engine;
-    },
+    reconcileOrca:({takeover})=>applyOrcaTakeover(takeover),
+    spawnEngine:({mode,subagentMode,preferredProxyPort:port})=>spawn(platform.enginePathFor(packageDir),[file('effective.json')],{
+      env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
+    }),
     // Native diagnostics can contain request information; keep them in a private local file.
     onEngineStderr:appendEngineLog,
     wait,
-    isEnding
+    isEnding:()=>ending
   });
   for(const signal of ['SIGTERM','SIGINT']) process.on(signal,()=>{ending=true;});
   try {
     await supervisor.run();
   } finally {
-    fs.rmSync(stopRequest,{force:true});
     fs.rmSync(lock,{recursive:true,force:true});
   }
 } else {throw new Error('usage: node bridge.js status|supervise|restore');}

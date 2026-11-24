@@ -5,6 +5,9 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {atomic,restoreProxy} from './lib/settings.js';
 import {paths,run,verifyPackage,initializeCertificate,stage,activate,stopJob,pruneReleases} from './lib/install.js';
+import {installWrapper,removeWrapper,installShellHook,removeShellHook,installEntry,removeEntry} from './lib/cursor-agent.js';
+import {removeOrca,reconcileOrca} from './lib/orca.js';
+import {read as readBridgeSettings} from './lib/bridge-settings.js';
 import platform from './lib/platform.js';
 const source=path.dirname(fileURLToPath(import.meta.url));
 const manifest=JSON.parse(fs.readFileSync(path.join(source,'package.json'),'utf8'));
@@ -47,7 +50,13 @@ try {
         }
         if(magpieReady) run(magpie,['plugin','rm',p.target],{optional:true});
         if(p.plist&&fs.existsSync(p.plist)) fs.unlinkSync(p.plist);
-        console.log('后台已卸载，Cursor 代理已还原。若从 Magpie 插件页安装，请同时移除该插件。证书、数据及恢复记录保留。');
+        // Only the wrapper this bridge generated is removed; a same-named file
+        // created by the user is left untouched.
+        const wrapper=removeWrapper({root:p.root});
+        const hook=removeShellHook();
+        const orca=removeOrca({root:p.root});
+        const entry=removeEntry();
+        console.log(`后台已卸载，Cursor 代理已还原${wrapper.removed?'，Cursor CLI 包装器已移除':''}${hook.removed?'，直接接管已关闭':''}${orca.ok&&orca.removed?'，Orca 配置已清理':''}${entry.removed?'，官方 cursor-agent 入口已恢复':''}。若从 Magpie 插件页安装，请同时移除该插件。证书、数据及恢复记录保留。`);
       } else {
         verifyPackage(source);
         initializeCertificate(platform.enginePathFor(source),p);
@@ -98,7 +107,39 @@ try {
         // removes the copies older builds left behind.
         pruneReleases(p,release);
         atomic(path.join(p.root,'installation.json'),JSON.stringify({version:manifest.version,release,source,installed:new Date().toISOString()},null,2));
+        // The wrapper is cheap and idempotent, and it is what lets the CLI use
+        // the same models. A missing cursor-agent is not an install failure: the
+        // wrapper simply forwards to it once the user installs the CLI.
+        let cliWrapper=null;
+        try { cliWrapper=installWrapper({root:p.root}); } catch(error) { console.log(`Cursor CLI 包装器未安装：${error.message}`); }
+        // Direct takeover is on by default (the user can switch it off in the
+        // console): a marked function block makes plain `cursor-agent` read the
+        // bridge environment without touching the official binary.
+        let cliHook=null;
+        try { cliHook=installShellHook({root:p.root}); } catch(error) { console.log(`Cursor CLI 直接接管未启用：${error.message}`); }
         console.log(`已安装 v${manifest.version}。在 Magpie → Agents 选择 Cursor · Magpie Bridge 和模型；首次连接后重启 Cursor。`);
+        if(cliWrapper) console.log(cliWrapper.onPath
+          ? '已安装 cursor-agent 包装器：用 cursor-agent-bridge 启动命令行版即可使用同一套模型。'
+          : `已安装 cursor-agent 包装器（${cliWrapper.path}），该目录不在 PATH；可在控制台「Cursor CLI 接管」中复制完整启动命令。`);
+        if(cliHook?.installed) console.log(`已在 ${cliHook.path} 启用「接管 Cursor CLI」；重新打开终端后直接输入 cursor-agent 即可，无需额外命令。`);
+        // Orca's chat spawns `cursor-agent acp` directly, so it needs the
+        // wrapper as its command override. Orca rewrites its data file on
+        // exit, hence the "quit and re-run setup" hint when it is open.
+        // Orca ignores per-agent settings for its ACP/chat path, so the PATH
+        // entry is the reliable injection point: every launcher that resolves
+        // the bare command name now gets the wrapper and its environment.
+        const entry=installEntry({root:p.root});
+        if(entry.installed) console.log(`已把 ${entry.path} 指向桥接包装器（官方入口保留为 ${entry.backup}）：Orca 聊天等直接调用 cursor-agent 的程序也会接管。`);
+        else if(entry.reason==='missing') console.log('未找到 ~/.local/bin/cursor-agent（可能尚未安装 Cursor CLI），跳过入口接管。');
+        // Keep Orca's native settings as a best-effort fallback for versions
+        // that do honour them; the entry above covers the ones that do not.
+        // The console stores the user's choice in bridge-settings.json, so a
+        // re-run of setup must not silently turn a disabled takeover back on.
+        const orcaTakeover=readBridgeSettings(p.root).orcaTakeover;
+        const orca=reconcileOrca({root:p.root,takeover:orcaTakeover});
+        if(orca.reason==='foreign-override') console.log('Orca 已配置自定义 cursor 命令，跳过兜底接管。');
+        else if(orca.pending==='running') console.log(`Orca 正在运行，已记录${orcaTakeover==='on'?'接管':'取消接管'}意图，退出 Orca 后自动生效。`);
+        else if(orca.changed) console.log(`${orcaTakeover==='on'?'同时写入':'已按设置移除'} Orca 的 Cursor 启动配置：${orca.path}`);
       }
     } finally {fs.rmdirSync(lock);}
   }

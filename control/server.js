@@ -5,12 +5,13 @@ import http from 'node:http';
 import {execFile, spawn} from 'node:child_process';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, tabModes, publicSettings, settingsFile} from '../lib/bridge-settings.js';
-import {resolveDataDir, databasePath, migrateStorage} from '../lib/storage.js';
+import {read as readBridgeSettings, write as writeBridgeSettings, defaults as bridgeDefaults, rules as bridgeRules, modes as bridgeModes, subagentModes as bridgeSubagentModes, takeoverModes as bridgeTakeoverModes, settingsFile} from '../lib/bridge-settings.js';
 import {atomic, restoreProxy} from '../lib/settings.js';
 import {cursorCompatibility, compareVersions} from '../lib/compatibility.js';
+import {agentStatus, installWrapper, removeWrapper, installShellHook, removeShellHook, installEntry, removeEntry} from '../lib/cursor-agent.js';
+import {orcaStatus, reconcileOrca} from '../lib/orca.js';
 import {version} from '../version.js';
-import {readDatabase, readRecentCalls, cleanDatabase, extractCursorAuthToken} from './database.js';
+import {readDatabase, readRecentCalls, cleanDatabase} from './database.js';
 import {tailFile, redact, classify} from './diagnostics.js';
 import {runSelfTest} from './selftest.js';
 import platform from '../lib/platform.js';
@@ -40,16 +41,14 @@ export function paths(repoRoot) {
   // Magpie may write the agent connection to a different file on Windows or
   // Linux; `connections` lists the same candidates the supervisor reads.
   const connections = platform.current.connectionFiles(home);
-  const data = resolveDataDir(root);
-  const database = databasePath(data);
   return {
     home,
     root,
     share,
-    data,
-    database,
-    databaseWal: `${database}-wal`,
-    databaseShm: `${database}-shm`,
+    data: path.join(root, 'data'),
+    database: path.join(root, 'data/bridge.db'),
+    databaseWal: path.join(root, 'data/bridge.db-wal'),
+    databaseShm: path.join(root, 'data/bridge.db-shm'),
     plist: layout.plist,
     systemdUnit: layout.systemdUnit || null,
     autostart: layout.autostart || null,
@@ -62,7 +61,7 @@ export function paths(repoRoot) {
     engineLog: path.join(root, 'engine.log'),
     supervisorLog: path.join(root, 'supervisor.log'),
     supervisorError: path.join(root, 'supervisor-error.log'),
-    diagnostics: path.join(data, 'diagnostics'),
+    diagnostics: path.join(root, 'data', 'diagnostics'),
     settings: settingsFile(root),
     setup: path.join(repoRoot, 'setup.command'),
     repo: repoRoot
@@ -114,11 +113,11 @@ async function commandOf(pid) {
   return result.ok ? result.stdout.trim() : '';
 }
 
-async function stopProcess(pid, marker, graceMs, {force = true} = {}) {
+async function stopProcess(pid, marker, graceMs) {
   if (!alive(pid)) return false;
   const command = await commandOf(pid);
   if (!command.includes(marker)) return false;
-  for (const signal of force ? ['SIGTERM', 'SIGKILL'] : ['SIGTERM']) {
+  for (const signal of ['SIGTERM', 'SIGKILL']) {
     try { process.kill(pid, signal); } catch { return false; }
     const until = Date.now() + graceMs;
     while (Date.now() < until) {
@@ -289,48 +288,16 @@ async function runMagpieConnect(model) {
   }
 }
 
-export function runtimeVersions({manifest, integrity, installation, runtime, engineAlive, key = `${process.platform}-${process.arch}`}) {
-  const identity = engineAlive && runtime?.runtime?.pid === Number(runtime?.pid) ? runtime.runtime : null;
-  const expectedHash = integrity?.platforms?.[key] || null;
-  const needsRestart = engineAlive && identity?.sha256 && expectedHash
-    ? identity.sha256 !== expectedHash || identity.pluginVersion !== manifest?.version
-    : null;
-  return {
-    availablePlugin: manifest?.version || null,
-    installedPlugin: installation?.version || null,
-    runningPlugin: engineAlive ? identity?.pluginVersion || runtime?.version || null : null,
-    availableEngine: integrity?.engineVersions?.[key] || integrity?.engineVersion || null,
-    runningEngine: identity?.engineVersion || null,
-    needsRestart,
-    state: !engineAlive ? 'stopped' : needsRestart === true ? 'restart_required' : needsRestart === false ? 'current' : 'unknown'
-  };
-}
-
-export function runtimeStatus(runtime, {supervisorAlive, engineAlive}) {
-  if (runtime?.state === 'connected' && !supervisorAlive && !engineAlive) {
-    return {...runtime, state: 'error', reason: '后台监视器和引擎已退出；上次连接状态已失效，请点击启动。'};
-  }
-  return runtime;
-}
-
 async function overview(repoRoot, port) {
   const p = paths(repoRoot);
   const installation = readJson(p.installation);
-  const savedRuntime = readJson(p.status);
+  const runtime = readJson(p.status);
   const supervisorPid = readPid(p.supervisorPid);
   const supervisorCommand = supervisorPid ? await commandOf(supervisorPid) : '';
-  const enginePid = Number(savedRuntime?.pid) || null;
+  const enginePid = Number(runtime?.pid) || null;
   const engineCommand = enginePid ? await commandOf(enginePid) : '';
   const agent = await launchAgentState(repoRoot);
-  const integrity = readJson(path.join(repoRoot, 'integrity.json'));
-  const manifest = readJson(path.join(repoRoot, 'package.json'));
-  const key = `${process.platform}-${process.arch}`;
-  const engineAlive = !!enginePid && alive(enginePid) && engineCommand.includes('cursor-magpie-bridge');
-  const supervisorAlive = !!supervisorPid && alive(supervisorPid) && supervisorCommand.includes('bridge.js') && supervisorCommand.includes('supervise');
-  const runtime = runtimeStatus(savedRuntime, {supervisorAlive, engineAlive});
-  const identity = engineAlive && runtime?.runtime?.pid === enginePid ? runtime.runtime : null;
   return {
-    versions: runtimeVersions({manifest, integrity, installation, runtime, engineAlive, key}),
     now: new Date().toISOString(),
     version: typeof installation?.version === 'string' ? installation.version : null,
     installation: installation ? {
@@ -348,14 +315,7 @@ async function overview(repoRoot, port) {
       pid: Number(runtime.pid) || null,
       updated: runtime.updated || null,
       warning: runtime.warning || null,
-      reason: runtime.reason || null,
-      mode: runtime.mode || null,
-      engineMode: runtime.engineMode || null,
-      identity,
-      lifecycle: Array.isArray(runtime.lifecycle) ? runtime.lifecycle.slice(-20).map(entry => ({
-        at: entry.at, event: entry.event, reason: entry.reason, pid: entry.pid,
-        code: entry.code, signal: entry.signal
-      })) : []
+      reason: runtime.reason || null
     } : null,
     supervisor: {
       pid: supervisorPid,
@@ -370,7 +330,6 @@ async function overview(repoRoot, port) {
     launchAgent: agent,
     platform: platform.platform,
     serviceSupported: platform.serviceSupported,
-    tabSupported: platform.engineSupportsTab(repoRoot),
     connection: safeConnection(repoRoot),
     cursor: (() => {
       const version = platform.current.cursorVersion(p.home);
@@ -379,7 +338,7 @@ async function overview(repoRoot, port) {
     database: stat(p.database),
     retention: readJson(p.retention),
     settings: {
-      values: publicSettings(readBridgeSettings(p.root)),
+      values: readBridgeSettings(p.root),
       defaults: bridgeDefaults,
       rules: bridgeRules,
       modes: bridgeModes,
@@ -388,7 +347,6 @@ async function overview(repoRoot, port) {
     },
     paths: {
       configDir: p.root,
-      dataDir: p.data,
       installDir: p.share,
       plist: p.plist,
       systemdUnit: p.systemdUnit,
@@ -502,15 +460,7 @@ function runStatus(repoRoot) {
 async function stopBridge(repoRoot) {
   const p = paths(repoRoot);
   if (platform.IS_WIN) {
-    // Windows process.kill(SIGTERM) is not graceful. Ask the supervisor to
-    // finish retention and close the engine before it releases its lock.
-    const pid = readPid(p.supervisorPid);
-    if (pid && alive(pid)) {
-      atomic(path.join(p.root, 'stop-request.json'), JSON.stringify({pid}));
-      const until = Date.now() + 15000;
-      while (alive(pid) && Date.now() < until) await wait(150);
-      if (alive(pid)) throw new Error('后台仍在处理数据，请稍后重试');
-    }
+    await run('schtasks', ['/End', '/TN', platform.serviceName], {timeout: 15000});
   } else if (platform.IS_LINUX) {
     const systemctl = platform.current.systemctl();
     if (systemctl) await run(systemctl, ['--user', 'stop', LABEL], {timeout: 30000});
@@ -518,15 +468,10 @@ async function stopBridge(repoRoot) {
     await run('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`], {timeout: 15000});
   }
   const supervisorPid = readPid(p.supervisorPid);
-  if (supervisorPid && !platform.IS_WIN) await stopProcess(supervisorPid, 'bridge.js', 10000, {force: false});
-  if (supervisorPid && alive(supervisorPid)) throw new Error('后台仍在处理数据，请稍后重试');
+  if (supervisorPid) await stopProcess(supervisorPid, 'bridge.js', 10000);
   const runtime = readJson(p.status);
   const enginePid = Number(runtime?.pid) || null;
   if (enginePid) await stopProcess(enginePid, 'cursor-magpie-bridge', 5000);
-  if ((supervisorPid && alive(supervisorPid)) || (enginePid && alive(enginePid))) {
-    throw new Error('后台进程尚未停止，已取消数据操作');
-  }
-  restoreProxy(path.join(p.root, 'settings-journal.json'));
 }
 
 function sendJson(res, status, body) {
@@ -574,7 +519,7 @@ function readBody(req) {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-export function createControlServer({repoRoot, port, log = console.log, connectAgent = runMagpieConnect, stop = stopBridge, start = runSetup}) {
+export function createControlServer({repoRoot, port, log = console.log, connectAgent = runMagpieConnect}) {
   const token = randomBytes(32).toString('hex');
   const repoUrl = repositoryUrl(repoRoot);
   const htmlFile = path.join(here, 'ui.html');
@@ -590,7 +535,6 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
   let databaseCache = {at: 0, data: null, deep: false};
   let databasePending = null;
   let databaseEpoch = 0;
-  const callReads = new Set();
   const DATABASE_CACHE_MS = 20000;
   // /api/status is polled every five seconds per open console, and each miss
   // spawns ps/launchctl. A two-second cache collapses concurrent panels into
@@ -639,9 +583,9 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
       ok: true,
       generated: new Date().toISOString(),
       platform: {platform: process.platform, arch: process.arch, release: os.release()},
-      versions: {plugin: snapshot.version, engine: integrity?.engineVersions?.[`${process.platform}-${process.arch}`] || integrity?.engineVersion || null, ...snapshot.versions},
+      versions: {plugin: snapshot.version, engine: integrity?.engineVersion || null},
       overview: snapshot,
-      settings: publicSettings(readBridgeSettings(p.root)),
+      settings: readBridgeSettings(p.root),
       logs,
       hints: [...hints.values()],
       retention: readJson(p.retention)
@@ -767,7 +711,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
 
       if (req.method === 'GET' && url.pathname === '/api/settings') {
         const p = paths(repoRoot);
-        return sendJson(res, 200, {ok: true, settings: publicSettings(readBridgeSettings(p.root)), defaults: bridgeDefaults, rules: bridgeRules, modes: bridgeModes, subagentModes: bridgeSubagentModes, tabModes, file: p.settings});
+        return sendJson(res, 200, {ok: true, settings: readBridgeSettings(p.root), defaults: bridgeDefaults, rules: bridgeRules, modes: bridgeModes, subagentModes: bridgeSubagentModes, takeoverModes: bridgeTakeoverModes, file: p.settings});
       }
 
       if (req.method === 'POST' && url.pathname === '/api/settings') {
@@ -780,13 +724,21 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
             // preferences; each posts only its own fields. Merge over the
             // current file so one form never resets the other's values, while
             // an explicitly posted {} still clears a list.
-            const root = paths(repoRoot).root;
-            const input = {...readBridgeSettings(root), ...body};
-            if (input.tabMode !== 'direct' && !platform.engineSupportsTab(repoRoot)) throw new Error('当前平台尚未打包支持 Tab 接管的新引擎，请先构建该平台引擎');
-            const saved = writeBridgeSettings(root, input);
-            log(`bridge settings saved: ${JSON.stringify(publicSettings(saved))}`);
+            const p = paths(repoRoot);
+            const saved = writeBridgeSettings(p.root, {...readBridgeSettings(p.root), ...body});
+            // The overview snapshot embeds the saved settings; drop the cache so
+            // the status call that follows a save never echoes the old values.
             overviewCache = {at: 0, data: null, pending: null};
-            return {status: 200, body: {ok: true, settings: publicSettings(saved)}};
+            // The saved intent takes effect immediately; when Orca is open the
+            // result is "pending" and the supervisor retries after it exits.
+            let orca = null;
+            try {
+              orca = reconcileOrca({home: p.home, root: p.root, takeover: saved.orcaTakeover});
+            } catch (error) {
+              orca = {ok: false, reason: 'error', error: String(error.message || error)};
+            }
+            log(`bridge settings saved: ${JSON.stringify(saved)}`);
+            return {status: 200, body: {ok: true, settings: saved, orca}};
           } catch (error) {
             return {status: 400, body: {ok: false, error: String(error.message || error)}};
           }
@@ -796,27 +748,14 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         return sendJson(res, result.status, result.body);
       }
 
-      if (req.method === 'POST' && url.pathname === '/api/tab/token/extract') {
-        try {
-          return sendJson(res, 200, {ok: true, ...(await extractCursorAuthToken(paths(repoRoot).home))});
-        } catch (error) {
-          return sendJson(res, 400, {ok: false, error: String(error.message || error)});
-        }
-      }
-
       if (req.method === 'GET' && url.pathname === '/api/calls') {
-        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
         const p = paths(repoRoot);
         const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 25));
         const errorsOnly = url.searchParams.get('errors') === '1';
-        const pending = readRecentCalls(p.database, {limit, errorsOnly});
-        callReads.add(pending);
         try {
-          return sendJson(res, 200, {ok: true, ...(await pending)});
+          return sendJson(res, 200, {ok: true, ...(await readRecentCalls(p.database, {limit, errorsOnly}))});
         } catch (error) {
           return sendJson(res, 500, {ok: false, error: `读取调用记录失败：${error.message}`});
-        } finally {
-          callReads.delete(pending);
         }
       }
 
@@ -840,9 +779,6 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
               return sendJson(res, 200, {ok: true, database: databaseCache.data, cached: true});
             }
           }
-          // A request queued behind another scan must not start a new read
-          // after a migration has already begun waiting for that first scan.
-          if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
           if (!databasePending) {
             const epoch = databaseEpoch;
             const promise = readDatabase(p.database, {deep})
@@ -933,40 +869,6 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         }
       }
 
-      if (req.method === 'POST' && url.pathname === '/api/storage/migrate') {
-        const body = await readBody(req);
-        if (typeof body.targetDir !== 'string' || !path.isAbsolute(body.targetDir.trim())) {
-          return sendJson(res, 400, {ok: false, error: '请填写数据目录的绝对路径'});
-        }
-        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
-        const p = paths(repoRoot);
-        const runtime = readJson(p.status);
-        const wasRunning = alive(Number(runtime?.pid)) || alive(readPid(p.supervisorPid));
-        busy = '数据目录迁移';
-        let result = null;
-        let failure = '';
-        let restart = null;
-        try {
-          await Promise.allSettled([...(databasePending ? [databasePending.promise] : []), ...callReads]);
-          if (wasRunning) await stop(repoRoot);
-          result = await migrateStorage(p.root, body.targetDir.trim());
-          log(`storage ${result.mode}: ${p.data} -> ${result.dataDir}`);
-        } catch (error) {
-          failure = String(error.message || error);
-        } finally {
-          if (wasRunning) {
-            try { restart = await start(repoRoot); }
-            catch (error) { restart = {ok: false, error: String(error.message || error)}; }
-          }
-          databaseEpoch += 1;
-          databaseCache = {at: 0, data: null, deep: false};
-          overviewCache = {at: 0, data: null, pending: null};
-          busy = null;
-        }
-        if (failure) return sendJson(res, 500, {ok: false, error: `迁移失败：${failure}`, restart});
-        return sendJson(res, 200, {ok: true, ...result, restart});
-      }
-
       if (req.method === 'GET' && url.pathname === '/api/logs') {
         const p = paths(repoRoot);
         const names = {engine: p.engineLog, supervisor: p.supervisorLog, error: p.supervisorError};
@@ -1020,16 +922,12 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
         // The control page runs in a WebView where a Blob download may not be
         // wired up; writing the bundle locally and returning its path works on
         // every platform and keeps the text out of the browser.
-        if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
-        busy = '导出诊断包';
-        try {
-          const data = await buildDiagnostics();
-          const p = paths(repoRoot);
-          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-          const file = path.join(p.diagnostics, `diagnostics-${stamp}.json`);
-          atomic(file, JSON.stringify(data, null, 2) + '\n');
-          return sendJson(res, 200, {ok: true, file, generated: data.generated, hints: data.hints});
-        } finally { busy = null; }
+        const data = await buildDiagnostics();
+        const p = paths(repoRoot);
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const file = path.join(p.diagnostics, `diagnostics-${stamp}.json`);
+        atomic(file, JSON.stringify(data, null, 2) + '\n');
+        return sendJson(res, 200, {ok: true, file, generated: data.generated, hints: data.hints});
       }
 
       if (req.method === 'GET' && url.pathname === '/api/update') {
@@ -1190,6 +1088,78 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
           return sendJson(res, 500, {ok: false, error: String(error.message || error)});
         } finally {
           busy = null;
+        }
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/cursor-agent') {
+        const p = paths(repoRoot);
+        const snapshot = await cachedOverview();
+        const caPath = path.join(p.data, 'ca/ca.crt');
+        const takeover = readBridgeSettings(p.root).orcaTakeover;
+        return sendJson(res, 200, {
+          ok: true,
+          agent: agentStatus({
+            root: p.root,
+            home: p.home,
+            proxy: snapshot.runtime?.proxy || null,
+            caPath: fs.existsSync(caPath) ? caPath : null
+          }),
+          orca: orcaStatus({root: p.root, home: p.home, takeover})
+        });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/cursor-agent') {
+        const body = await readBody(req);
+        const p = paths(repoRoot);
+        try {
+          if (body.action === 'install') {
+            const result = installWrapper({root: p.root, home: p.home});
+            log(`cursor-agent wrapper installed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'remove') {
+            const result = removeWrapper({root: p.root, home: p.home});
+            log(`cursor-agent wrapper removed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'hook-install') {
+            const result = installShellHook({root: p.root, home: p.home});
+            log(`cursor-agent shell hook installed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'hook-remove') {
+            const result = removeShellHook({home: p.home});
+            log(`cursor-agent shell hook removed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'entry-install') {
+            const result = installEntry({root: p.root, home: p.home});
+            log(`cursor-agent entry installed: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'entry-remove') {
+            const result = removeEntry({home: p.home});
+            log(`cursor-agent entry restored: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          if (body.action === 'orca-install' || body.action === 'orca-remove') {
+            const want = body.action === 'orca-install' ? 'on' : 'off';
+            const status = orcaStatus({home: p.home, root: p.root, takeover: want});
+            // A command the user configured themselves is never replaced, and
+            // their intent is not overwritten either.
+            if (status.foreignOverride) {
+              return sendJson(res, 409, {ok: false, reason: 'foreign-override', error: 'Orca 已配置自定义 cursor 命令；请先清空该设置再接管'});
+            }
+            // Persist the intent before touching Orca's file: while Orca runs
+            // the panel reports "pending" and the supervisor finishes later.
+            const saved = writeBridgeSettings(p.root, {...readBridgeSettings(p.root), orcaTakeover: want});
+            const result = reconcileOrca({home: p.home, root: p.root, running: status.running, takeover: saved.orcaTakeover});
+            log(`orca cursor override ${want === 'on' ? 'requested' : 'removal requested'}: ${result.path}`);
+            return sendJson(res, 200, {ok: true, ...result});
+          }
+          return sendJson(res, 400, {ok: false, error: '未知操作'});
+        } catch (error) {
+          return sendJson(res, 400, {ok: false, error: String(error.message || error)});
         }
       }
 

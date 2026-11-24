@@ -1,12 +1,52 @@
 # Changelog
 
-## 未发布（Tab 补全与数据目录迁移）
+## 0.2.36（参数卡片默认收起与 Cursor 3.31.17 兼容）
 
-- 在 enhanced 控制台新增独立 Tab 卡片：direct、official、custom、public；默认保留 Cursor 原补全。官方 Token 从本机状态库只读提取，设置及生效文件私有保存，状态、日志与诊断不输出 Token。未加入参考分支中仅转发官方请求的 model 占位选项。
-- 原生源码保留 enhanced 的 Agent 引擎与子代理行为，增加官方 Tab 端点分流、Token/checksum 和共享路由热更新；源码由固定上游提交和 source.patch 重建。Windows 新引擎按平台记录版本/摘要，尚未重建的平台禁用非 direct 模式。
-- 新增 lib/storage.js：默认 root/data，可通过 storage.json 切换数据目录；空目录异步复制，已有 SQLite bridge.db 直接切换，保留原数据，不覆盖非空无效目标。
-- 迁移 API 串行化维护、等待数据库读取、停写后复制、原子提交配置并恢复原运行状态；目录解析统一覆盖引擎、自动保留、数据库清理/备份、CA 初始化、自检与诊断输出。
-- Windows supervisor 增加 stop-request.json 协作退出，停机前等待自动清理完成，避免直接终止进程留下写入者。新增迁移故障/并发、Token 脱敏、Tab 热更新和真实 supervisor 退出测试。
+- 「可编辑参数」改为折叠卡片，默认收起，点击标题或右侧箭头展开；收起时标题右侧显示当前运行模式（如「默认模式 · 展开编辑」），展开后的编辑、保存与提示行为不变。
+- 折叠卡片的卡片外壳（去内边距、标题布局、展开箭头、状态文字）抽成共享规则，「模型显示名」「数据库管理」「可编辑参数」三张卡片复用同一套样式；键盘聚焦 `summary` 时显示焦点环。
+- 修复保存后状态滞后：`POST /api/settings` 写盘后清空 2 秒概览缓存，控制台保存成功后同步更新本地快照并立即刷新摘要，运行模式不再在「已保存」提示后短暂显示旧值。
+- 参数表单的 9 个控件补充 `aria-label`，屏幕阅读器可读出参数名与单位，不再只读到「秒 / MB / 天」。
+- 修复窄屏展开参数卡片时出现横向滚动：`?` 提示气泡隐藏时不再保留布局盒；提示改为悬浮/聚焦即时显示。
+- Cursor 已实测范围更新为 3.28.x–3.31.17；控制台对 3.31.17 显示「已实测」，超出范围仍标记「未验证」。
+- 同步 README、`docs/plugin-usage.md`（含适用版本与安装示例）与 `docs/promo-article.md` 中的适配范围与参数卡片描述。
+- 兼容测试更新：实测用例加入 3.31.17；全量 123 项，118 通过、5 项按平台跳过。
+- 版本号升至 0.2.36；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
+## 0.2.35（Orca 接管改为持久配置）
+
+- 修复 Windows 包装器标记识别：Windows 版包装器以 `rem Managed by Cursor Bridge` 写入，此前标记检查只认 POSIX 的 `# Managed by Cursor Bridge`，导致安装后显示「未安装」且无法移除；现两种注释形式都按桥接管理处理。
+- 修复包装器身份依赖进程 PATH 的问题：后台服务（launchd/systemd）与控制台/setup 的 PATH 不同，会把桥接自己写入的 override 误判为用户自定义命令（关闭失效），或补写一个从未安装的 `<root>/bin/cursor-agent-bridge`。现改为按磁盘上带标记的包装器文件识别与实际安装位置，身份不再随进程环境漂移；包装器未安装时跳过注入，不写死路径。
+- 修复 Orca 配置写入的跨进程临时文件冲突：临时文件名加入进程号，setup、控制台与 supervisor 并发写入不再互相截断或改名。
+- 测试脚本 `manual-lifecycle.mjs` 使用 `CURSOR_BRIDGE_HOME` 隔离 Orca 配置，避免 live 测试改写真实用户目录。
+- 「可编辑参数」改为四组多行布局（运行与引擎 / 接管与集成 / 模型与日志 / 数据保留）；9 项说明从常驻文字改为 `?` 悬浮提示，点击可固定、点击外部或 Esc 关闭，触屏同样可读。
+- 「可编辑参数」新增「接管 Orca 聊天」下拉（开启=自动维持 / 关闭，默认开启），写入 `bridge-settings.json` 的 `orcaTakeover`；下方「Cursor CLI 接管」卡片的两个按钮同步回写同一意图，两处状态不再分叉。
+- Orca 运行中切换不再报错：意图立即保存，`lib/orca.js` 新增 `reconcileOrca`，由 supervisor 在 Orca 退出后自动补写或移除 `agentCmdOverrides.cursor`（设置变更立即执行，其余每 30 秒重试一次）；实际写入或移除只记录一次日志。
+- setup 读取同一设置：关闭后重跑 setup 不再无条件写回兜底配置；Orca 已配置自定义 cursor 命令时始终跳过。
+- 关闭只停用 Orca 配置兜底，「官方入口」接管保持独立；控制台「Orca 聊天」状态会如实区分「已接管 / 等待 Orca 退出 / 已关闭 · 官方入口仍接管」。
+- 测试：新增设置校验、`reconcileOrca` 分支与 supervisor 调度用例；全量 122 项，117 通过、5 项按平台跳过。
+- 版本号升至 0.2.35；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
+## 0.2.34（Orca 聊天接管与官方入口接管）
+
+- 新增官方入口接管：setup 将 `~/.local/bin/cursor-agent` 替换为桥接包装器，官方入口保留为 `cursor-agent-official`；Orca 聊天、终端、脚本等所有直接调用 `cursor-agent` 的入口统一走桥接。控制台新增「官方入口」状态与「接管官方入口 / 恢复官方入口」按钮，`/api/cursor-agent` 新增 `entry` 状态与 `entry-install` / `entry-remove` 动作。
+- 根因：Orca 的「启动聊天」直接 spawn `cursor-agent --list-models` / `cursor-agent acp`，不经过登录 shell，且忽略 Orca 自己的 `agentDefaultEnv` / `agentCmdOverrides`（实测其 ACP 进程只带 `CURSOR_CONFIG_DIR`，无 `HTTPS_PROXY`）。
+- 新增 `lib/orca.js`：检测 `orca-data.json` 并写入 Orca 配置作为兜底（不会覆盖用户已有的自定义命令；Orca 运行中则跳过）。uninstall 同时恢复官方入口并清理 Orca 配置。
+- 官方 CLI 自更新会重建 `cursor-agent` 入口；重跑 setup 或点控制台「接管官方入口」即可修复。Orca 的模型目录会持久缓存旧列表，接管后若仍显示官方模型，重启一次 Orca 即可。
+- 测试：新增入口替换与 Orca 用例；全量 113 项，108 通过、5 项按平台跳过。
+- 版本号升至 0.2.34；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
+## 0.2.33（Cursor CLI 接管）
+
+- 新增 Cursor CLI（`cursor-agent`）接管：CLI 与 IDE 使用同一套 `agent.v1` / `BidiAppend` 协议，共用原生桥接与 Magpie 模型目录，无需改动引擎。
+- 新增 `lib/cursor-agent.js`：CLI 探测、`--version` 解析、`agent-env` 环境文件与 `cursor-agent-bridge` 包装器的生成/安装/移除；同名但非桥接生成的文件不会被覆盖或删除。
+- supervisor 随 `status.json` 同步维护 `agent-env`：代理端口变化时原子重写，断开/停止时删除，包装器自动退回直连。
+- 控制台新增「Cursor CLI 接管」卡片：CLI 版本与已实测标记、代理端口、环境文件、包装器状态，支持安装/移除包装器与复制启动命令；新增 `GET/POST /api/cursor-agent`。
+- 「可编辑参数」新增「接管 Cursor CLI」开关（即时生效，**默认开启**）：在 `~/.zshrc` / `~/.bashrc` 写入带标记的同名 shell 函数，交互式 shell 直接输入 `cursor-agent` 即注入代理；仅替换标记块，可随时停用，Windows 不支持。setup 默认写入，uninstall 移除；折叠卡片保留详细状态与包装器操作。
+- 新增 cursor-agent 独立版本门禁：已实测 `2026.11.19`，低于/高于范围分别提示升级或先验证。
+- setup 自动安装包装器（优先 `~/.local/bin`），uninstall 仅移除带标记的包装器。
+- 端到端实测：`--list-models` 返回 Magpie 模型、`-p` 对话、文件写入与 shell 工具回环均走本地引擎；调研与复现命令见 `docs/cursor-agent-takeover.md`。
+- 测试：新增 13 项 cursor-agent 用例；全量 101 项，96 通过、5 项按平台跳过。
+- 版本号升至 0.2.33；原生引擎不变（`engineVersion` 仍为 0.2.15）。
 
 ## 0.2.32（Cursor 3.31.3 兼容）
 

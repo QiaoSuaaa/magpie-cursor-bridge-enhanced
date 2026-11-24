@@ -1,15 +1,15 @@
 :root {
-  --bg: #f2f5f8;
+  --bg: #f6f6f7;
   --card: #ffffff;
-  --fg: #203047;
-  --muted: #64748b;
-  --line: #dce3ec;
-  --accent: #315fce;
-  --accent-soft: #edf3ff;
+  --fg: #1c1c1e;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --accent: #4f46e5;
+  --accent-soft: #eef2ff;
   --green: #16a34a;
   --amber: #d97706;
   --red: #dc2626;
-  --font: "Segoe UI Variable Text", "Microsoft YaHei UI", "PingFang SC", "Segoe UI", sans-serif;
+  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", system-ui, sans-serif;
   --code: ui-monospace, SFMono-Regular, Menlo, monospace;
   color-scheme: light;
 }
@@ -85,17 +85,32 @@ a.link-button:hover { border-color: var(--magpie-muted, var(--muted)); backgroun
 .settings { display: flex; align-items: flex-end; gap: 12px 18px; flex-wrap: wrap; }
 .settings label { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--magpie-muted, var(--muted)); white-space: nowrap; }
 .settings label .label { letter-spacing: .01em; }
-#tabCard > summary, #storageCard > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; }
-#tabCard[open] > summary, #storageCard[open] > summary { margin-bottom: 14px; }
-#tabForm, #storageForm { align-items: stretch; flex-direction: column; }
-#tabForm .field input, #storageForm .field input { width: 100%; min-width: 0; }
-#tabOfficialRow .form-actions { margin-top: 8px; }
-#currentDataDir { overflow-wrap: anywhere; }
-#storageHint, #tabHint { overflow-wrap: anywhere; }
 .field { display: flex; align-items: center; gap: 7px; height: 30px; color: var(--magpie-fg, var(--fg)); }
 .unit { font-size: 11.5px; color: var(--magpie-muted, var(--muted)); }
 
-input[type="number"], input[type="text"], input[type="password"], input[type="url"], select { height: 30px; font: 12.5px var(--magpie-code, var(--code)); color: var(--magpie-fg, var(--fg)); background: var(--magpie-card, var(--card)); border: 1px solid var(--magpie-line, var(--line)); border-radius: 7px; padding: 0 9px; transition: border-color .12s, box-shadow .12s; }
+/* Grouped parameters: nine settings no longer fit one flat row. Each group is
+   its own bordered line, so the eye can scan categories instead of a wall of
+   controls. Help text moved out of the card body into hover/click tips. */
+.settings-grouped { flex-direction: column; align-items: stretch; gap: 12px; }
+.settings-group { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; border: 1px solid color-mix(in srgb, var(--magpie-line, var(--line)) 78%, transparent); border-radius: 9px; }
+.settings-group-head { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600; letter-spacing: .03em; color: var(--magpie-muted, var(--muted)); }
+.settings-group-head::before { content: ""; width: 3px; height: 11px; border-radius: 2px; background: color-mix(in srgb, var(--magpie-accent, var(--accent)) 65%, transparent); }
+.settings-group-head .hint { margin-left: auto; font-weight: 400; letter-spacing: 0; }
+.settings-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 20px; }
+.settings .setting { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--magpie-muted, var(--muted)); white-space: nowrap; }
+/* The field is a label for click-to-focus, but it must stay a horizontal row. */
+.settings .setting > label.field { flex-direction: row; gap: 7px; font-size: 11.5px; color: var(--magpie-muted, var(--muted)); white-space: nowrap; }
+.settings .setting .label { display: inline-flex; align-items: center; gap: 2px; letter-spacing: .01em; }
+.settings .tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: 3px; border: 1px solid color-mix(in srgb, var(--magpie-muted, var(--muted)) 50%, transparent); border-radius: 50%; font-size: 9px; line-height: 1; color: var(--magpie-muted, var(--muted)); cursor: help; user-select: none; }
+.settings .tip:hover, .settings .tip:focus-visible, .settings .tip.open { color: var(--magpie-accent, var(--accent)); border-color: var(--magpie-accent, var(--accent)); }
+/* Hover/focus previews the text; a click pins it so touch devices can read it. */
+/* Hidden tooltips must not keep a layout box: a max-content bubble counts
+   towards horizontal overflow even while invisible and forces a scrollbar on
+   narrow panels. Toggle the box instead of only hiding paint. */
+.settings .tip::after { content: attr(data-tip); position: absolute; left: -6px; bottom: calc(100% + 9px); width: max-content; max-width: min(340px, 70vw); padding: 8px 10px; border: 1px solid var(--magpie-line, var(--line)); border-radius: 8px; background: var(--magpie-card, var(--card)); color: var(--magpie-fg, var(--fg)); font-size: 11.5px; font-weight: 400; line-height: 1.55; letter-spacing: 0; white-space: normal; text-align: left; box-shadow: 0 8px 22px color-mix(in srgb, #000 16%, transparent); display: none; pointer-events: none; z-index: 40; }
+.settings .tip:hover::after, .settings .tip:focus-visible::after, .settings .tip.open::after { display: block; }
+
+input[type="number"], input[type="text"], select { height: 30px; font: 12.5px var(--magpie-code, var(--code)); color: var(--magpie-fg, var(--fg)); background: var(--magpie-card, var(--card)); border: 1px solid var(--magpie-line, var(--line)); border-radius: 7px; padding: 0 9px; transition: border-color .12s, box-shadow .12s; }
 input[type="number"] { width: 74px; -moz-appearance: textfield; appearance: textfield; }
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
@@ -104,13 +119,18 @@ input[type="number"]:focus, input[type="text"]:focus, select:focus { outline: no
 .field.select { position: relative; }
 .field.select select { min-width: 116px; padding: 0 30px 0 10px; cursor: pointer; appearance: none; -webkit-appearance: none; }
 .field.select::after { content: ""; position: absolute; right: 12px; top: 50%; width: 6px; height: 6px; margin-top: -4px; border-right: 1.5px solid var(--magpie-muted, var(--muted)); border-bottom: 1.5px solid var(--magpie-muted, var(--muted)); border-radius: 1px; transform: rotate(45deg); pointer-events: none; }
-.model-names-card { padding: 0; }
-.model-names-card > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; cursor: pointer; list-style: none; }
-.model-names-card > summary::-webkit-details-marker { display: none; }
-.model-names-card > summary::after { content: ""; width: 7px; height: 7px; margin-left: 2px; border-right: 1.5px solid var(--magpie-muted, var(--muted)); border-bottom: 1.5px solid var(--magpie-muted, var(--muted)); transform: rotate(45deg); transition: transform .15s; flex-shrink: 0; }
-.model-names-card[open] > summary::after { transform: rotate(-135deg); }
-.model-names-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
-.model-names-state { flex-shrink: 0; margin-left: auto; white-space: nowrap; font-family: var(--magpie-code, var(--code)); }
+/* Collapsible cards share one shell: the body pads itself, so the summary can
+   span the full card width and the state text stays aligned with the arrow. */
+:is(.model-names-card, .db-card, .settings-card) { padding: 0; }
+:is(.model-names-card, .db-card, .settings-card) > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; cursor: pointer; list-style: none; }
+:is(.model-names-card, .db-card, .settings-card) > summary::-webkit-details-marker { display: none; }
+:is(.model-names-card, .db-card, .settings-card) > summary::after { content: ""; width: 7px; height: 7px; margin-left: 2px; border-right: 1.5px solid var(--magpie-muted, var(--muted)); border-bottom: 1.5px solid var(--magpie-muted, var(--muted)); transform: rotate(45deg); transition: transform .15s; flex-shrink: 0; }
+:is(.model-names-card, .db-card, .settings-card)[open] > summary::after { transform: rotate(-135deg); }
+:is(.model-names-card, .db-card, .settings-card) > summary:focus-visible { outline: 2px solid var(--magpie-accent, var(--accent)); outline-offset: -2px; border-radius: 8px; }
+:is(.model-names-title, .db-title, .settings-title) { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
+:is(.model-names-state, .db-state, .settings-state) { flex-shrink: 0; margin-left: auto; white-space: nowrap; font-family: var(--magpie-code, var(--code)); }
+.settings-card > form { padding: 0 14px 14px; }
+.settings-intro { margin: 0; }
 .model-names-body { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 14px; }
 .model-names-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .model-names-actions button { height: 30px; padding: 0 14px; }
@@ -144,13 +164,6 @@ input[type="number"]:focus, input[type="text"]:focus, select:focus { outline: no
 .links { display: flex; gap: 8px; flex-wrap: wrap; }
 .links button { font-size: 12px; }
 
-.db-card { padding: 0; }
-.db-card > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; cursor: pointer; list-style: none; }
-.db-card > summary::-webkit-details-marker { display: none; }
-.db-card > summary::after { content: ""; width: 7px; height: 7px; margin-left: 2px; border-right: 1.5px solid var(--magpie-muted, var(--muted)); border-bottom: 1.5px solid var(--magpie-muted, var(--muted)); transform: rotate(45deg); transition: transform .15s; flex-shrink: 0; }
-.db-card[open] > summary::after { transform: rotate(-135deg); }
-.db-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; flex-wrap: wrap; }
-.db-state { flex-shrink: 0; margin-left: auto; white-space: nowrap; font-family: var(--magpie-code, var(--code)); }
 .db-body { display: flex; flex-direction: column; gap: 10px; padding: 0 14px 14px; }
 .db-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .diag-toolbar { flex-wrap: wrap; }
@@ -194,93 +207,6 @@ input[type="number"]:focus, input[type="text"]:focus, select:focus { outline: no
 .foot { margin: 0; font-size: 11.5px; color: var(--magpie-muted, var(--muted)); }
 code { font: 11.5px var(--magpie-code, var(--code)); }
 
-/* Control surface: status first, aligned fields, quieter secondary tools. */
-main { max-width: 1440px; margin: 0 auto; padding: 28px 32px 32px; gap: 16px; }
-.head { min-height: 72px; padding-bottom: 20px; border-bottom: 1px solid var(--magpie-line, var(--line)); }
-.identity { gap: 16px; }
-h1 { font-size: 21px; font-weight: 650; letter-spacing: -.035em; line-height: 1.3; }
-h2 { font-size: 14px; color: var(--magpie-fg, var(--fg)); font-weight: 650; }
-.sub { margin-top: 6px; font-size: 12px; }
-.head-actions { gap: 6px; }
-.port { padding: 5px 9px; border-radius: 5px; background: color-mix(in srgb, var(--magpie-muted, var(--muted)) 7%, transparent); }
-.head-actions button, .head-actions .link-button { font-size: 12px; padding: 6px 9px; border-color: transparent; }
-.dot { width: 10px; height: 10px; margin-left: 5px; }
-.bar { gap: 8px; padding: 0 0 2px; }
-button, a.link-button { min-height: 34px; border-radius: 6px; padding: 6px 15px; font-weight: 500; }
-button:hover:not(:disabled), a.link-button:hover { background: color-mix(in srgb, var(--magpie-accent, var(--accent)) 5%, var(--magpie-card, var(--card))); border-color: color-mix(in srgb, var(--magpie-accent, var(--accent)) 45%, var(--magpie-line, var(--line))); }
-button.primary { background: var(--magpie-accent, var(--accent)); box-shadow: 0 2px 3px color-mix(in srgb, var(--magpie-accent, var(--accent)) 12%, transparent); }
-button.primary:hover:not(:disabled) { background: var(--magpie-accent, var(--accent)); }
-:focus-visible { outline-offset: 3px; }
-.card { padding: 20px 22px; border-radius: 10px; box-shadow: none; }
-.card-head { margin-bottom: 20px; align-items: center; }
-.hint { font-size: 12px; line-height: 1.7; }
-#overview { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; padding: 8px; border-radius: 10px; box-shadow: inset 3px 0 var(--magpie-accent, var(--accent)); }
-#overview .item { padding: 13px 17px; }
-.item .k { font-size: 11.5px; margin-bottom: 5px; }
-.item .v { font-size: 13px; font-weight: 550; line-height: 1.5; }
-.item .v.mono { font-size: 12px; font-weight: 450; }
-.settings { gap: 20px 24px; }
-.settings label { gap: 8px; font-size: 12px; }
-.field { height: 36px; }
-input[type="number"], input[type="text"], input[type="password"], input[type="url"], select { height: 36px; border-radius: 6px; background: color-mix(in srgb, var(--magpie-bg, var(--bg)) 42%, var(--magpie-card, var(--card))); }
-input[type="password"]:focus, input[type="url"]:focus { outline: none; border-color: var(--magpie-accent, var(--accent)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--magpie-accent, var(--accent)) 16%, transparent); }
-#settingsForm { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-#settingsForm .field.select select { width: 100%; min-width: 0; }
-#settingsForm .form-actions, #settingsForm .mode-hint { grid-column: 1 / -1; }
-#settingsForm .form-actions { padding-top: 16px; border-top: 1px solid var(--magpie-line, var(--line)); }
-.settings .form-actions button, .model-names-actions button { height: 36px; }
-.mode-hint { margin: 0; max-width: 95ch; }
-#settingsForm .mode-hint + .mode-hint { margin-top: -12px; }
-.agent-card { border-color: color-mix(in srgb, var(--magpie-accent, var(--accent)) 28%, var(--magpie-line, var(--line))); }
-details.card { padding: 0; }
-details.card > summary { display: flex; align-items: center; gap: 16px; min-height: 61px; padding: 17px 22px; cursor: pointer; list-style: none; }
-details.card > summary::-webkit-details-marker { display: none; }
-details.card > summary > .hint { margin-left: auto; text-align: right; }
-details.card > summary::after { content: ""; width: 6px; height: 6px; margin-left: auto; border-right: 1.5px solid var(--magpie-muted, var(--muted)); border-bottom: 1.5px solid var(--magpie-muted, var(--muted)); transform: rotate(45deg); flex-shrink: 0; }
-details.card[open] > summary::after { transform: rotate(-135deg); }
-details.card[open] > summary { border-bottom: 1px solid var(--magpie-line, var(--line)); margin-bottom: 0 !important; }
-#tabForm, #storageForm { padding: 20px 22px; }
-.model-names-body, .db-body { padding: 20px 22px; }
-#lifecycleCard > p { margin: 16px 22px 8px; }
-#lifecycleEntries { margin: 0 22px 20px; }
-#lifecycleEntries p { padding: 9px 12px; margin: 0; border-left: 2px solid var(--magpie-line, var(--line)); overflow-wrap: anywhere; }
-#lifecycleEntries p + p { border-top: 1px solid color-mix(in srgb, var(--magpie-line, var(--line)) 50%, transparent); }
-.output { max-height: 180px; padding: 14px 16px; border-radius: 6px; background: color-mix(in srgb, var(--magpie-bg, var(--bg)) 65%, var(--magpie-card, var(--card))); line-height: 1.7; }
-.notice { padding: 11px 15px; border-radius: 6px; }
-.links { gap: 8px; }
-.links button { background: transparent; font-size: 12px; }
-.foot { max-width: 110ch; line-height: 1.8; padding: 0 4px; }
-.db-toolbar { flex-wrap: wrap; }
-.model-names-body, .db-body { min-width: 0; overflow-x: auto; }
-.model-names-table { min-width: 620px; }
-.db-table { min-width: 460px; }
-input[type="checkbox"] { accent-color: var(--magpie-accent, var(--accent)); }
-@media (max-width: 1000px) {
-  main { padding: 22px; }
-  .head { align-items: flex-start; flex-wrap: wrap; }
-  .head-actions { flex-wrap: wrap; }
-  #overview { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  #settingsForm { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-@media (max-width: 620px) {
-  h1 { font-size: 19px; }
-  #overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  #overview .item { padding: 12px; }
-  #settingsForm { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 14px; }
-  .card { padding: 18px 16px; }
-  details.card > summary { padding: 16px; gap: 10px; }
-  details.card > summary > .hint { max-width: 48%; font-size: 11px; }
-  .model-names-body, .db-body, #tabForm, #storageForm { padding: 16px; }
-  .card-head { align-items: flex-start; flex-wrap: wrap; gap: 6px; }
-  .agent-card .field.select select { min-width: 0; max-width: 100%; width: 100%; }
-  .agent-card .settings > label { width: 100%; }
-  .head-actions { justify-content: flex-start !important; }
-  .model-names-state, .db-state { white-space: normal; }
-}
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
-}
-
 @media (max-width: 620px) {
   main { padding: 14px; }
   .head { align-items: flex-start; flex-direction: column; }
@@ -288,5 +214,5 @@ input[type="checkbox"] { accent-color: var(--magpie-accent, var(--accent)); }
   .bar .right { margin-left: 0; }
   .cleanup-row { align-items: flex-start; flex-direction: column; }
   .cleanup-controls { width: 100%; }
-  .db-card > summary { align-items: flex-start; }
+  :is(.db-card, .settings-card) > summary { align-items: flex-start; }
 }

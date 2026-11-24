@@ -7,7 +7,6 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createControlServer, paths, readConnection} from '../control/server.js';
 import platformModule from '../lib/platform.js';
-import {defaults, publicSettings} from '../lib/bridge-settings.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -39,8 +38,7 @@ function fakeHome(t) {
   fs.writeFileSync(path.join(root, 'status.json'), JSON.stringify({
     version: '9.9.9', state: 'connected', model: 'group/opus', models: 4,
     proxy: 'http://127.0.0.1:58160', backend: 'http://127.0.0.1:53902',
-    pid: process.pid, updated: '2026-01-01T00:00:01.000Z', mode: 'default', engineMode: 'lite',
-    lifecycle: [{at: '2026-01-01T00:00:00.000Z', event: 'exited', reason: 'unexpected_exit', pid: 42, code: 1, ignoredSecret: 'omit-this'}]
+    pid: process.pid, updated: '2026-01-01T00:00:01.000Z'
   }));
   fs.writeFileSync(path.join(root, 'connection.json'), JSON.stringify({
     enabled: true, gateway: 'http://127.0.0.1:3425/v1', key: 'secret-gateway-key',
@@ -103,13 +101,7 @@ test('control console serves a tokenised page and guards /api', async (t) => {
   assert.equal(ok.status, 200);
   const overview = JSON.parse(ok.body).overview;
   assert.equal(overview.version, '9.9.9');
-  assert.equal(overview.runtime.state, 'error');
-  assert.match(overview.runtime.reason, /上次连接状态已失效/);
-  assert.equal(overview.runtime.engineMode, 'lite');
-  assert.equal(overview.versions.installedPlugin, '9.9.9');
-  assert.equal(overview.runtime.lifecycle[0].reason, 'unexpected_exit');
-  assert.equal(overview.runtime.lifecycle[0].code, 1);
-  assert.doesNotMatch(ok.body, /omit-this/);
+  assert.equal(overview.runtime.state, 'connected');
   assert.equal(overview.connection.gateway, 'http://127.0.0.1:3425/v1');
   assert.doesNotMatch(ok.body, /secret-gateway-key/);
 
@@ -270,14 +262,18 @@ test('control settings validate and are written to the bridge root', async (t) =
   assert.equal(badSubagentMode.status, 400);
   assert.match(badSubagentMode.body, /async 或 sync/);
 
+  const badOrca = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify({orcaTakeover: 'sometimes'})});
+  assert.equal(badOrca.status, 400);
+  assert.match(badOrca.body, /接管 Orca 需为 on 或 off/);
+
   const badName = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify({modelNames: {'group/opus': 'x'.repeat(81)}})});
   assert.equal(badName.status, 400);
   assert.match(badName.body, /80 个字符/);
 
-  const expected = {...defaults, runMode: 'lite', subagentMode: 'sync', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6, tracesRetentionDays: 14, sessionsRetentionDays: 30, modelNames: {'group/opus': 'Opus 4.5'}, modelOrder: ['group/sonnet', 'group/opus'], modelHidden: ['group/sonnet']};
+  const expected = {runMode: 'lite', subagentMode: 'sync', orcaTakeover: 'off', refreshSeconds: 20, gatewayGraceSeconds: 90, logLimitMB: 6, tracesRetentionDays: 14, sessionsRetentionDays: 30, modelNames: {'group/opus': 'Opus 4.5'}, modelOrder: ['group/sonnet', 'group/opus'], modelHidden: ['group/sonnet']};
   const good = await request(port, {method: 'POST', path: '/api/settings', headers, body: JSON.stringify(expected)});
   assert.equal(good.status, 200);
-  assert.deepEqual(JSON.parse(good.body).settings, publicSettings(expected));
+  assert.deepEqual(JSON.parse(good.body).settings, expected);
   const file = paths(repoRoot).settings;
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), expected);
   if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
