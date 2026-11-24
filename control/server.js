@@ -128,6 +128,19 @@ async function stopProcess(pid, marker, graceMs) {
   return !alive(pid);
 }
 
+// Windows autostart has two user-level forms: the Startup-folder launcher and,
+// when security software blocks that .vbs, a launcher beside the bridge state
+// registered through HKCU Run. The panel must report either as "loaded".
+async function windowsAutostartRegistered(p) {
+  if (p.autostart && fs.existsSync(p.autostart)) return true;
+  const launcher = path.join(p.root, 'supervisor-launch.vbs');
+  if (!fs.existsSync(launcher)) return false;
+  const reg = platform.current.reg();
+  if (!reg) return false;
+  const result = await run(reg, ['query', platform.windowsRunKey, '/v', LABEL], {timeout: 8000});
+  return result.ok && String(result.stdout || '').includes(LABEL);
+}
+
 async function launchAgentState(repoRoot) {
   if (!platform.serviceSupported) return {registered: false, state: null, pid: null, supported: false};
   if (platform.IS_WIN) {
@@ -136,7 +149,7 @@ async function launchAgentState(repoRoot) {
     // console cannot request.
     const p = paths(repoRoot);
     const pid = readPid(p.supervisorPid);
-    const registered = !!p.autostart && fs.existsSync(p.autostart);
+    const registered = await windowsAutostartRegistered(p);
     return {
       registered,
       state: pid ? (alive(pid) ? 'running' : 'stopped') : (registered ? 'ready' : null),

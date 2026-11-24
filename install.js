@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {atomic,restoreProxy} from './lib/settings.js';
-import {paths,run,verifyPackage,initializeCertificate,stage,activate,stopJob,pruneReleases} from './lib/install.js';
+import {paths,run,verifyPackage,initializeCertificate,stage,activate,stopJob,pruneReleases,removeWindowsAutostart} from './lib/install.js';
 import {installWrapper,removeWrapper,installShellHook,removeShellHook,installEntry,removeEntry} from './lib/cursor-agent.js';
 import {removeOrca,reconcileOrca} from './lib/orca.js';
 import {read as readBridgeSettings} from './lib/bridge-settings.js';
@@ -14,7 +14,7 @@ const manifest=JSON.parse(fs.readFileSync(path.join(source,'package.json'),'utf8
 const command=process.argv[2]||'setup';
 const p=paths(os.homedir());
 try {
-  if(command==='--help'||command==='-h') console.log(`Usage: bash setup.command [setup|status|uninstall|--version]\nsetup: install/update the paired plugin and service.\nmacOS uses a LaunchAgent; Windows uses a Startup-folder launcher (no administrator rights needed); Linux uses a systemd user unit and falls back to a detached supervisor when no user manager is reachable.`);
+  if(command==='--help'||command==='-h') console.log(`Usage: bash setup.command [setup|status|uninstall|--version]\nsetup: install/update the paired plugin and service.\nmacOS uses a LaunchAgent; Windows uses a Startup-folder launcher (no administrator rights needed) and falls back to the HKCU Run key when security software blocks it; Linux uses a systemd user unit and falls back to a detached supervisor when no user manager is reachable.`);
   else if(command==='--version') console.log(manifest.version);
   else if(command==='status') {
     console.log(fs.existsSync(path.join(p.root,'status.json'))?fs.readFileSync(path.join(p.root,'status.json'),'utf8'):'未安装或尚未运行');
@@ -36,10 +36,7 @@ try {
       if(command==='uninstall') {
         if(magpieReady) run(magpie,['cursor-bridge','default'],{optional:true});
         await stopJob(p,domain);restoreProxy(path.join(p.root,'settings-journal.json'));
-        if(platform.IS_WIN) {
-          const autostart=p.autostart||platform.current.autostartEntry(p.home);
-          if(autostart&&fs.existsSync(autostart)) fs.unlinkSync(autostart);
-        }
+        if(platform.IS_WIN) removeWindowsAutostart(p);
         if(platform.IS_LINUX) {
           const unit=p.systemdUnit||platform.current.systemdUnit(p.home);
           if(unit&&fs.existsSync(unit)) {

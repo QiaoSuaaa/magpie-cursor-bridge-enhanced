@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.37（修复 Windows「对话一次后断开」与自启动被拦截）
+
+- 修复 Windows 上「对话一次后就断开」（issue #1）：自动保留策略原先在 supervisor 进程内执行，Windows 随包运行时（Bun）的 `bun:sqlite` 全同步，`quick_check` 与分批删除会让事件循环停顿数秒到数分钟；期间 supervisor 停止读取引擎 stderr，引擎写日志被 64 KiB 管道背压阻塞，Cursor 的回合随即卡死。默认保留策略恰好在启动 60 秒后首次执行，因此表现为「第一次对话后断开」。现在保留任务改由独立子进程 `bridge.js retain` 执行，supervisor 只等待并解析一行 JSON 结果，数据库再大也不阻塞引擎与对话。
+- 引擎崩溃重启或模式切换不再先还原再写回 Cursor 的 `http.proxy`：Cursor 每次看到代理变化都会重建传输层，正在进行的对话会立即断开。替换引擎沿用已记录的代理端口，代理设置全程不动；只有真正断开（连接文件失效、外部改动代理、停止后台）才还原。
+- Magpie 网关目录连续失败时不再停止正在运行的引擎：运行中的引擎仍持有上一份完整目录，supervisor 改为发布带 `warning` 的 `connected` 状态并持续重试，网关恢复后自动回到正常状态；只有没有引擎在跑且超过「网关断线容错」时才回退到 Cursor 自带后端。
+- `connection.json` 写到一半或处在 unlink/rename 间隙时不再误判为断开：引擎存活期间容忍 5 秒的解析失败，持续无效才按断开处理，避免 Magpie 更新目录时打断对话。
+- Windows 后台的 `console.log` / `console.error` 现在镜像写入 `supervisor.log` / `supervisor-error.log`（4 MiB 轮转一份 `.1`），无控制台运行时也能从控制台「日志与诊断」看到启动、重启、网关告警与错误。
+- 修复 Windows 自启动 VBS 被安全软件拦截时 setup 直接报错退出（issue #2）：启动文件夹写入失败时自动改用 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 注册表项，命令指向安装目录下隐藏窗口的 `supervisor-launch.vbs`；两种方式都不可用时只打印警告并继续启动后台服务，setup 不再中止。卸载会同时清理启动文件夹 VBS、兜底 VBS 与注册表值，控制台「后台服务」也能识别两种自启动形式。
+- 新增 `test/retention.test.js`（子进程参数、结果解析、失败与超时），supervisor 与 install 用例覆盖保留任务不阻塞主循环、引擎崩溃不触碰代理、目录持续故障保留引擎、连接文件半写入、Windows 注册表兜底/全被拦截/双形式卸载。
+- 测试：全量 134 项；本机 Windows 119 通过、15 项按平台跳过，macOS/Linux 跳过项相应减少。
+- 版本号升至 0.2.37；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.36（参数卡片默认收起与 Cursor 3.31.17 兼容）
 
 - 「可编辑参数」改为折叠卡片，默认收起，点击标题或右侧箭头展开；收起时标题右侧显示当前运行模式（如「默认模式 · 展开编辑」），展开后的编辑、保存与提示行为不变。

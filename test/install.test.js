@@ -6,7 +6,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {paths,verifyPackage,initializeCertificate,stage,pruneReleases,activate,plistText,systemdUnitText,windowsLauncherScript,writeCursorAuthority,cursorAuthority,trustLinuxNss,writeLinuxTrustMarker,nssNickname} from '../lib/install.js';
+import {paths,verifyPackage,initializeCertificate,stage,pruneReleases,activate,plistText,systemdUnitText,windowsLauncherScript,installWindowsAutostart,removeWindowsAutostart,windowsRunCommand,windowsAutostartRegistered,writeCursorAuthority,cursorAuthority,trustLinuxNss,writeLinuxTrustMarker,nssNickname} from '../lib/install.js';
 import platformModule from '../lib/platform.js';
 import {version} from '../version.js';
 const source=fileURLToPath(new URL('..',import.meta.url));
@@ -187,12 +187,58 @@ test('windows activation writes a Startup launcher and starts the supervisor onc
  let launched=0;
  const exec=()=>({status:0});
  const launch=(releaseDir)=>{launched++;fs.mkdirSync(path.join(p.root,'supervisor.lock'),{recursive:true});fs.writeFileSync(path.join(p.root,'supervisor.lock/pid'),String(process.pid));};
- await activate(p,release,'',exec,launch);
+ const activation=await activate(p,release,'',exec,launch);
  assert.equal(launched,1);
+ assert.equal(activation.autostart.kind,'startup');
  const text=fs.readFileSync(p.autostart,'utf8');
  assert.match(text,/bridge\.js/);
  assert.match(text,/, 0, False/);
  assert.equal(fs.readFileSync(path.join(p.root,'supervisor.lock/pid'),'utf8'),String(process.pid));
+});
+test('windows autostart falls back to the Run key when the Startup folder is blocked',{skip:!IS_WIN},t=>{
+ const p=fakePaths(t);
+ const calls=[];
+ const exec=(cmd,args)=>{calls.push(args);return {status:0,stdout:'local.magpie.cursor-bridge'};};
+ const write=(file,body)=>{
+  if(file===p.autostart) throw new Error('blocked by security software');
+  fs.mkdirSync(path.dirname(file),{recursive:true});
+  fs.writeFileSync(file,body);
+ };
+ const result=installWindowsAutostart(p,'C:\\releases\\v0','C:\\Program Files\\magpie\\runtime.exe',{exec,write,log:()=>{}});
+ assert.equal(result.kind,'run');
+ const launcher=path.join(p.root,'supervisor-launch.vbs');
+ assert.ok(fs.existsSync(launcher));
+ assert.match(fs.readFileSync(launcher,'utf8'),/supervise", 0, False/);
+ const add=calls.find((args)=>args[0]==='add');
+ assert.ok(add,'the Run value is written');
+ assert.equal(add[1],platformModule.windowsRunKey);
+ assert.deepEqual(add.slice(2,7),['/v','local.magpie.cursor-bridge','/t','REG_SZ','/d']);
+ assert.equal(add[7],windowsRunCommand(launcher));
+ assert.equal(windowsAutostartRegistered(p,{exec}),true);
+});
+test('windows setup keeps starting the service when every autostart mechanism is blocked',{skip:!IS_WIN},t=>{
+ const p=fakePaths(t);
+ const result=installWindowsAutostart(p,'C:\\releases\\v0','C:\\runtime.exe',{
+  exec:()=>({status:1,stdout:''}),
+  write:()=>{throw new Error('blocked by security software');},
+  log:()=>{}
+ });
+ assert.equal(result.kind,'none');
+ assert.match(result.error,/blocked by security software/);
+ assert.equal(windowsAutostartRegistered(p,{exec:()=>({status:1})}),false);
+});
+test('windows uninstall removes both autostart forms',{skip:!IS_WIN},t=>{
+ const p=fakePaths(t);
+ fs.mkdirSync(path.dirname(p.autostart),{recursive:true});
+ fs.mkdirSync(p.root,{recursive:true});
+ fs.writeFileSync(p.autostart,'launcher');
+ fs.writeFileSync(path.join(p.root,'supervisor-launch.vbs'),'launcher');
+ const calls=[];
+ const removed=removeWindowsAutostart(p,{exec:(cmd,args)=>{calls.push(args);return {status:0};}});
+ assert.equal(removed.length,2);
+ assert.equal(fs.existsSync(p.autostart),false);
+ assert.equal(fs.existsSync(path.join(p.root,'supervisor-launch.vbs')),false);
+ assert.ok(calls.some((args)=>args[0]==='delete'&&args.includes('/v')));
 });
 test('windows launcher hides the console window and doubles embedded quotes',()=>{
  const script=windowsLauncherScript('C:\\Users\\u\\releases\\v','C:\\Program Files\\magpie\\runtime.exe');
