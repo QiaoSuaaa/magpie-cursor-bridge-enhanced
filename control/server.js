@@ -288,16 +288,46 @@ async function runMagpieConnect(model) {
   }
 }
 
+export function runtimeStatus(runtime, {supervisorAlive, engineAlive}) {
+  if (runtime?.state === 'connected' && !supervisorAlive && !engineAlive) {
+    return {...runtime, state: 'error', reason: '后台监视器和引擎已退出；上次连接状态已失效，请点击启动。'};
+  }
+  return runtime;
+}
+
+export function runtimeVersions({manifest, integrity, installation, runtime, engineAlive, key = `${process.platform}-${process.arch}`}) {
+  const identity = engineAlive && runtime?.runtime?.pid === Number(runtime?.pid) ? runtime.runtime : null;
+  const expectedHash = integrity?.platforms?.[key] || null;
+  const needsRestart = engineAlive && identity?.sha256 && expectedHash
+    ? identity.sha256 !== expectedHash || identity.pluginVersion !== manifest?.version : null;
+  return {
+    availablePlugin: manifest?.version || null,
+    installedPlugin: installation?.version || null,
+    runningPlugin: engineAlive ? identity?.pluginVersion || runtime?.version || null : null,
+    availableEngine: integrity?.engineVersions?.[key] || integrity?.engineVersion || null,
+    runningEngine: identity?.engineVersion || null,
+    needsRestart,
+    state: !engineAlive ? 'stopped' : needsRestart === true ? 'restart_required' : needsRestart === false ? 'current' : 'unknown'
+  };
+}
+
 async function overview(repoRoot, port) {
   const p = paths(repoRoot);
   const installation = readJson(p.installation);
-  const runtime = readJson(p.status);
+  const savedRuntime = readJson(p.status);
   const supervisorPid = readPid(p.supervisorPid);
   const supervisorCommand = supervisorPid ? await commandOf(supervisorPid) : '';
-  const enginePid = Number(runtime?.pid) || null;
+  const enginePid = Number(savedRuntime?.pid) || null;
   const engineCommand = enginePid ? await commandOf(enginePid) : '';
+  const supervisorAlive = !!supervisorPid && alive(supervisorPid) && supervisorCommand.includes('bridge.js') && supervisorCommand.includes('supervise');
+  const engineAlive = !!enginePid && alive(enginePid) && engineCommand.includes('cursor-magpie-bridge');
+  const runtime = runtimeStatus(savedRuntime, {supervisorAlive, engineAlive});
+  const integrity = readJson(path.join(repoRoot, 'integrity.json'));
+  const manifest = readJson(path.join(repoRoot, 'package.json'));
   const agent = await launchAgentState(repoRoot);
+  const key = `${process.platform}-${process.arch}`;
   return {
+    versions: runtimeVersions({manifest, integrity, installation, runtime, engineAlive, key}),
     now: new Date().toISOString(),
     version: typeof installation?.version === 'string' ? installation.version : null,
     installation: installation ? {
@@ -315,11 +345,16 @@ async function overview(repoRoot, port) {
       pid: Number(runtime.pid) || null,
       updated: runtime.updated || null,
       warning: runtime.warning || null,
-      reason: runtime.reason || null
+      reason: runtime.reason || null,
+      identity: runtime?.runtime?.pid === enginePid ? runtime.runtime : null,
+      lifecycle: Array.isArray(runtime.lifecycle) ? runtime.lifecycle.slice(-20).map(entry => ({
+        at: entry.at, event: entry.event, reason: entry.reason, pid: entry.pid,
+        code: entry.code, signal: entry.signal
+      })) : []
     } : null,
     supervisor: {
       pid: supervisorPid,
-      alive: !!supervisorPid && alive(supervisorPid),
+      alive: supervisorAlive,
       expected: supervisorCommand.includes('bridge.js') && supervisorCommand.includes('supervise')
     },
     engine: {

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn,execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {atomic,applyProxy,restoreProxy} from './lib/settings.js';
 import {gatewayModels} from './lib/config.js';
 import {read as readBridgeSettings,applyModelPreferences} from './lib/bridge-settings.js';
@@ -149,11 +150,19 @@ if(command==='status') {
     pruneDatabase:({tracesDays,sessionsDays})=>pruneDatabase(file('data/bridge.db'),{tracesDays,sessionsDays}),
     onPrune:result=>atomic(file('retention.json'),JSON.stringify(result,null,2)),
     reconcileOrca:({takeover})=>applyOrcaTakeover(takeover),
-    spawnEngine:({mode,subagentMode,preferredProxyPort:port})=>spawn(platform.enginePathFor(packageDir),[file('effective.json')],{
-      env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
-    }),
+    spawnEngine:({mode,subagentMode,preferredProxyPort:port})=>{
+      const enginePath=platform.enginePathFor(packageDir);
+      const sha256=createHash('sha256').update(fs.readFileSync(enginePath)).digest('hex');
+      const engineVersion=execFileSync(enginePath,['--version'],{encoding:'utf8',timeout:5000,windowsHide:true}).trim();
+      const engine=spawn(enginePath,[file('effective.json')],{
+        env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
+      });
+      engine.bridgeIdentity={engineVersion,sha256,pluginVersion:version};
+      return engine;
+    },
     // Native diagnostics can contain request information; keep them in a private local file.
     onEngineStderr:appendEngineLog,
+    onLifecycle:entry=>appendEngineLog(Buffer.from(`[bridge-lifecycle] ${JSON.stringify(entry)}\n`)),
     wait,
     isEnding:()=>ending
   });

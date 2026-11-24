@@ -7,6 +7,7 @@
 - **平台支持**：macOS（Apple Silicon 与 Intel x64，LaunchAgent 守护；Intel 引擎为 `bin/darwin-x64/cursor-magpie-bridge`）、Windows x64（启动文件夹守护，`bin/win32-x64/cursor-magpie-bridge.exe`，无需管理员权限即可常驻；首次信任证书需一次管理员确认）与 Linux x64/arm64（systemd 用户单元守护，`bin/linux-<arch>/cursor-magpie-bridge`；证书写入 Cursor `argv.json` 与用户 NSS 库，无需 root；无 systemd 用户实例时回退为分离进程）
 - **与上游的关系**：基于 [nodlles/magpie-agent-cursor-bridge](https://github.com/nodlles/magpie-agent-cursor-bridge) `v0.2.2` 与本机 fork 增补，原生核心来自 [leookun/cursor-byok v1.0.1](https://github.com/leookun/cursor-byok/tree/v1.0.1)；Linux 适配参考 [Ice0828/magpie-agent-cursor-bridge-linux](https://github.com/Ice0828/magpie-agent-cursor-bridge-linux)
 - **本仓库定位**：公开增强版，GitHub topic 已标记 `magpie-plugin`；可从 Magpie 插件页安装 `github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.36`，也支持本机源码安装
+- **稳定性说明**：后台监视器会记录引擎 PID、版本和 SHA-256，并把启动、就绪、重启、退出事件写入运行状态与 `engine.log`；控制台检测到监视器和引擎都已退出时，会明确显示过期状态，而不是继续显示旧的「已连接」
 - **变更记录**：[CHANGELOG.md](CHANGELOG.md)
 
 ---
@@ -72,6 +73,9 @@ Cursor 的 Agent / Composer 默认只认自家订阅与官方后端。通过 Mag
 | Orca 接管持久化与后台自动维持 | ✅ 0.2.35 |
 | 参数区分组多行与 `?` 悬浮说明 | ✅ 0.2.35 |
 | 参数卡片默认收起、标题显示运行模式 | ✅ 0.2.36 |
+| 引擎运行身份、版本与 SHA-256 校验 | ✅ 合并增强 |
+| 生命周期记录与后台掉线诊断 | ✅ 合并增强 |
+| 配置读取异常自动恢复与保留策略安全退出 | ✅ 合并增强 |
 | Cursor 3.29+ 二进制协议编码 | ✅ 0.2.3 |
 | Cursor 3.27 本地循环开关回退 | ✅ 上游 0.2.2 |
 | Tab 补全 / 行内补全 | 沿用 Cursor 原路径 |

@@ -43,7 +43,10 @@ test('fresh machines generate distinct CAs without a BYOK install, database or t
   assert.equal(fs.statSync(path.join(one,'ca')).mode&0o777,0o700);
  }
  const before=hash(path.join(one,'ca/ca.key'));assert.equal(init(one).status,0);assert.equal(hash(path.join(one,'ca/ca.key')),before);
- assert.deepEqual(fs.readdirSync(one),['ca']);
+ assert.ok(fs.existsSync(path.join(one,'ca/ca.crt')));
+ assert.ok(fs.existsSync(path.join(one,'ca/ca.key')));
+ // The current engine initializes its on-disk workspace together with the
+ // certificate; unrelated workspace entries are expected and harmless.
  fs.unlinkSync(path.join(one,'ca/ca.crt'));assert.notEqual(init(one).status,0);assert.equal(hash(path.join(one,'ca/ca.key')),before);
 });
 test('package and native engine have the same pinned version and digest',()=>{

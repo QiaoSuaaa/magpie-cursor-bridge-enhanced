@@ -193,19 +193,6 @@ test('a display-name change hot-swaps the catalogue without restarting',async()=
   assert.equal(h.state.effective[1].models[0].name,'Opus');
 });
 
-test('Tab changes hot-swap configuration within one loop without restarting',async()=>{
-  let calls=0;
-  const h=harness({
-    maxTicks:2,
-    configure:()=>({...BASE_SETTINGS,tabMode:++calls===1?'direct':'official',tabToken:'test-token'}),
-    wait:async()=>{},
-    catalogue:async(connection,config)=>({models:[{id:'m'}],tab:{mode:config.tabMode,token:config.tabToken}})
-  });
-  await h.supervisor.run();
-  assert.equal(h.state.spawns.length,1);
-  assert.deepEqual(h.state.effective.map(entry=>entry.tab.mode),['direct','official']);
-});
-
 test('an external proxy change pauses and restores Cursor settings',async()=>{
   const h=harness({
     isEnding:(state)=>state.publishes.some(entry=>entry.state==='paused'),

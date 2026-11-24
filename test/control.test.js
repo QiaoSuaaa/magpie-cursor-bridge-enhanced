@@ -101,7 +101,8 @@ test('control console serves a tokenised page and guards /api', async (t) => {
   assert.equal(ok.status, 200);
   const overview = JSON.parse(ok.body).overview;
   assert.equal(overview.version, '9.9.9');
-  assert.equal(overview.runtime.state, 'connected');
+  assert.equal(overview.runtime.state, 'error');
+  assert.match(overview.runtime.reason, /上次连接状态已失效/);
   assert.equal(overview.connection.gateway, 'http://127.0.0.1:3425/v1');
   assert.doesNotMatch(ok.body, /secret-gateway-key/);
 
