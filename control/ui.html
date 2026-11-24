@@ -54,10 +54,15 @@
 
   <section class="grid" id="overview" aria-live="polite"></section>
 
-  <details class="card" id="lifecycleCard">
-    <summary><h2>引擎运行记录</h2><span class="hint">最近 20 条 · 完整记录见 engine.log</span></summary>
-    <p class="hint">记录当前后台监视器生命周期中的启停原因；未连接上游时，无法判断 ACP 会话复用情况。</p>
-    <div id="lifecycleEntries" role="log" aria-live="polite"></div>
+  <details class="card db-card" id="lifecycleCard">
+    <summary>
+      <span class="db-title"><h2>引擎运行记录</h2><span class="hint">最近 20 条 · 完整记录见 engine.log</span></span>
+      <span class="hint db-state" id="lifecycleState">展开查看</span>
+    </summary>
+    <div class="db-body">
+      <p class="hint mode-hint">记录当前后台监视器生命周期中的启停原因；未连接上游时，无法判断 ACP 会话复用情况。</p>
+      <div id="lifecycleEntries" class="lifecycle-entries" role="log" aria-live="polite"></div>
+    </div>
   </details>
 
   <section id="updateCard" class="card" hidden>
@@ -158,32 +163,42 @@
     </form>
   </details>
 
-  <details id="tabCard" class="card">
-    <summary><h2>Tab 代码补全</h2><span id="tabState" class="hint">沿用 Cursor 官方补全</span></summary>
-    <form id="tabForm" class="settings">
-      <label><span class="label">补全模式</span><span class="field select"><select id="tabMode">
-        <option value="direct">沿用 Cursor 官方补全</option>
-        <option value="official">官方 Token 补全</option>
-        <option value="custom">自定义端点</option>
-        <option value="public">公共服务</option>
-      </select></span></label>
-      <div id="tabOfficialRow" hidden>
-        <label><span class="label">Cursor 登录 Token</span><span class="field"><input id="tabToken" type="password" autocomplete="off" spellcheck="false" placeholder="填写 Token"></span></label>
-        <div class="form-actions"><button id="tabExtract" type="button">提取本机登录 Token</button><button id="tabClear" class="ghost" type="button">清除已保存 Token</button></div>
+  <details id="tabCard" class="card settings-card">
+    <summary>
+      <span class="settings-title"><h2>Tab 代码补全</h2><span class="hint">代码补全模式与服务端点</span></span>
+      <span id="tabState" class="hint settings-state">沿用 Cursor 官方补全</span>
+    </summary>
+    <form id="tabForm" class="settings settings-grouped">
+      <div class="settings-row">
+        <label><span class="label">补全模式</span><span class="field select"><select id="tabMode">
+          <option value="direct">沿用 Cursor 官方补全</option>
+          <option value="official">官方 Token 补全</option>
+          <option value="custom">自定义端点</option>
+          <option value="public">公共服务</option>
+        </select></span></label>
+        <div id="tabOfficialRow" class="settings-row" hidden>
+          <label><span class="label">Cursor 登录 Token</span><span class="field"><input id="tabToken" type="password" autocomplete="off" spellcheck="false" placeholder="填写 Token"></span></label>
+          <div class="form-actions"><button id="tabExtract" type="button">提取本机登录 Token</button><button id="tabClear" class="ghost" type="button">清除已保存 Token</button></div>
+        </div>
+        <label id="tabAddressRow" hidden><span class="label">服务地址</span><span class="field"><input id="tabAddress" type="url" placeholder="https://your-tab-service.example" autocomplete="off"></span></label>
       </div>
-      <label id="tabAddressRow" hidden><span class="label">服务地址</span><span class="field"><input id="tabAddress" type="url" placeholder="https://your-tab-service.example" autocomplete="off"></span></label>
       <p id="tabModeHint" class="hint mode-hint"></p>
       <div class="form-actions"><button id="saveTab" class="primary" type="submit">保存 Tab 设置</button><span id="tabHint" class="hint"></span></div>
     </form>
   </details>
 
-  <details id="storageCard" class="card">
-    <summary><h2>数据目录迁移</h2><span class="hint">复制数据或切换已有目录</span></summary>
-    <form id="storageForm" class="settings">
-      <p class="hint">当前目录：<span id="currentDataDir" class="mono"></span></p>
-      <label><span class="label">目标目录</span><span class="field"><input id="storageTarget" type="text" placeholder="填写绝对路径" autocomplete="off" spellcheck="false" required></span></label>
+  <details id="storageCard" class="card settings-card">
+    <summary>
+      <span class="settings-title"><h2>数据目录迁移</h2><span class="hint">复制数据或切换已有目录</span></span>
+      <span class="hint settings-state">展开操作</span>
+    </summary>
+    <form id="storageForm" class="settings settings-grouped">
+      <p class="hint storage-current">当前目录：<span id="currentDataDir" class="mono"></span></p>
+      <div class="settings-row">
+        <label class="storage-target"><span class="label">目标目录</span><span class="field"><input id="storageTarget" type="text" placeholder="填写绝对路径" autocomplete="off" spellcheck="false" required></span></label>
+        <div class="form-actions"><button id="storageMigrate" type="button">迁移 / 切换</button><span id="storageHint" class="hint" role="status" aria-live="polite"></span></div>
+      </div>
       <p class="hint mode-hint">空目录会复制当前数据库、证书、备份和诊断文件；已有 bridge.db 的目录会直接切换。迁移期间暂停桥接，完成后恢复原运行状态，当前对话可能中断。轻量模式的内存会话不会迁移。原目录保留。</p>
-      <div class="form-actions"><button id="storageMigrate" type="button">迁移 / 切换</button><span id="storageHint" class="hint" role="status" aria-live="polite"></span></div>
       <div id="storageConfirm" class="confirm" hidden>
         <p id="storageConfirmText"></p>
         <div class="confirm-actions">
