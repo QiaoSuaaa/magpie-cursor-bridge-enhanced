@@ -84,6 +84,7 @@ function harness(options={}) {
     initialProxyPort:options.initialProxyPort??'',
     engineReadyTimeoutMs:50,
     engineStopTimeoutMs:10,
+    connectionGraceMs:options.connectionGraceMs,
     loopIntervalMs:1,
     retentionIntervalMs:options.retentionIntervalMs??6*60*60*1000,
     retentionInitialDelayMs:options.retentionInitialDelayMs??60*1000
@@ -212,7 +213,7 @@ test('an external proxy change pauses and restores Cursor settings',async()=>{
   assert.ok(h.state.restores>=2);
 });
 
-test('an engine crash is restarted on the next tick',async()=>{
+test('an engine crash is restarted in place without touching Cursor\'s proxy',async()=>{
   const h=harness({
     isEnding:(state)=>state.spawns.length>=2,
     wait:async(ms,state)=>{
@@ -228,6 +229,59 @@ test('an engine crash is restarted on the next tick',async()=>{
   await h.supervisor.run();
   assert.equal(h.state.spawns.length,2);
   assert.equal(h.state.children[0].kills.length,0,'an already exited engine is not killed again');
+  // Restoring and re-applying http.proxy makes Cursor rebuild every
+  // transport, which cuts the conversation. The replacement engine reuses the
+  // port, so the proxy is left untouched across the restart.
+  const kinds=h.events.map((entry)=>entry[0]);
+  const first=kinds.indexOf('spawn');
+  const second=kinds.indexOf('spawn',first+1);
+  assert.ok(second>first);
+  assert.equal(kinds.slice(first,second).filter((kind)=>kind==='restore').length,0);
+});
+
+test('a sustained catalogue outage keeps the running engine and the proxy',async()=>{
+  let calls=0;
+  const h=harness({
+    isEnding:(state)=>state.publishes.filter((entry)=>entry.warning).length>=5,
+    wait:async(ms,state,{advance})=>{advance(20000);},
+    catalogue:async()=>{
+      calls+=1;
+      if(calls>1) throw new Error('gateway down');
+      return {models:[{id:'m'}]};
+    }
+  });
+  await h.supervisor.run();
+  assert.equal(h.state.spawns.length,1,'the engine is never torn down');
+  assert.equal(h.state.publishes.some((entry)=>entry.state==='error'),false);
+  assert.equal(h.state.children[0].kills.length,1,'only the final shutdown terminated the engine');
+});
+
+test('a connection file caught mid-write does not stop the running engine',async()=>{
+  let reads=0;
+  const h=harness({
+    maxTicks:4,
+    connection:()=>{reads+=1;return reads===2?'{"enabled":true,':CONNECTION;},
+    wait:async(ms,state,{advance})=>{advance(1000);}
+  });
+  await h.supervisor.run();
+  assert.equal(h.state.spawns.length,1);
+  assert.equal(h.state.publishes.some((entry)=>entry.state==='error'),false);
+  assert.equal(h.state.publishes.some((entry)=>entry.state==='disconnected'),false);
+  assert.equal(h.state.children[0].kills.length,1,'only the final shutdown terminated the engine');
+});
+
+test('an inactive connection disconnects once the grace window expires',async()=>{
+  let reads=0;
+  const h=harness({
+    maxTicks:5,
+    connectionGraceMs:2000,
+    connection:()=>{reads+=1;return reads===1?CONNECTION:'{}';},
+    wait:async(ms,state,{advance})=>{advance(1000);}
+  });
+  await h.supervisor.run();
+  // One inactive poll keeps the engine; a persistent disconnect still applies.
+  assert.equal(h.state.publishes.some((entry)=>entry.state==='disconnected'),true);
+  assert.equal(h.state.children[0].kills.length,1);
 });
 
 test('orca takeover applies the saved setting immediately and on change',async()=>{

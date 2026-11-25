@@ -6,7 +6,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {paths,verifyPackage,initializeCertificate,stage,pruneReleases,activate,plistText,systemdUnitText,windowsLauncherScript,writeCursorAuthority,cursorAuthority,trustLinuxNss,writeLinuxTrustMarker,nssNickname} from '../lib/install.js';
+import {paths,verifyPackage,initializeCertificate,stage,pruneReleases,activate,plistText,systemdUnitText,windowsLauncherScript,installWindowsAutostart,removeWindowsAutostart,windowsRunCommand,windowsAutostartRegistered,writeCursorAuthority,cursorAuthority,trustLinuxNss,writeLinuxTrustMarker,nssNickname} from '../lib/install.js';
 import platformModule from '../lib/platform.js';
 import {version} from '../version.js';
 const source=fileURLToPath(new URL('..',import.meta.url));
@@ -206,38 +206,82 @@ test('windows activation writes a Startup launcher and starts the supervisor onc
  let launched=0;
  const exec=()=>({status:0});
  const launch=(releaseDir)=>{launched++;fs.mkdirSync(path.join(p.root,'supervisor.lock'),{recursive:true});fs.writeFileSync(path.join(p.root,'supervisor.lock/pid'),String(process.pid));};
- await activate(p,release,'',exec,launch);
+ const activation=await activate(p,release,'',exec,launch);
  assert.equal(launched,1);
+ assert.equal(activation.autostart.kind,'startup');
  const text=fs.readFileSync(p.autostart,'utf8');
  assert.match(text,/bridge\.js/);
  assert.match(text,/, 0, False/);
  assert.equal(fs.readFileSync(path.join(p.root,'supervisor.lock/pid'),'utf8'),String(process.pid));
 });
-test('Windows background survives launcher exit and captures both output streams',{skip:!IS_WIN,timeout:20000},async t=>{
+test('Windows background survives launcher exit',{skip:!IS_WIN,timeout:20000},async t=>{
  const root=temp(t);
  const release=path.join(root,"release with spaces and 'quote");
+ const marker=path.join(root,'survived.txt');
  fs.mkdirSync(release,{recursive:true});
- fs.writeFileSync(path.join(release,'bridge.js'),`setTimeout(()=>{console.log('SURVIVED');console.error('ERROR_CAPTURED');},1000);`);
+ fs.writeFileSync(path.join(release,'bridge.js'),`import fs from 'node:fs'; setTimeout(()=>{fs.writeFileSync(${JSON.stringify(marker)},'SURVIVED');},500);`);
  const moduleUrl=new URL('../lib/install.js',import.meta.url).href;
  const script=`import {launchWindowsSupervisor} from ${JSON.stringify(moduleUrl)}; launchWindowsSupervisor(${JSON.stringify(release)},${JSON.stringify(process.execPath)},${JSON.stringify(root)});`;
  const result=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8',timeout:15000,windowsHide:true});
  assert.equal(result.status,0,result.stderr);
- let output='',errors='';
+ let output='';
  for(let attempt=0;attempt<60;attempt++) {
-   try {output=fs.readFileSync(path.join(root,'supervisor.log'),'utf8');errors=fs.readFileSync(path.join(root,'supervisor-error.log'),'utf8');} catch {}
-   if(output.includes('SURVIVED')&&errors.includes('ERROR_CAPTURED')) break;
+   try {output=fs.readFileSync(marker,'utf8');} catch {}
+   if(output.includes('SURVIVED')) break;
    await new Promise(resolve=>setTimeout(resolve,50));
  }
  assert.match(output,/SURVIVED/);
- assert.match(errors,/ERROR_CAPTURED/);
+});
+test('windows autostart falls back to the Run key when the Startup folder is blocked',{skip:!IS_WIN},t=>{
+ const p=fakePaths(t);
+ const calls=[];
+ const exec=(cmd,args)=>{calls.push(args);return {status:0,stdout:'local.magpie.cursor-bridge'};};
+ const write=(file,body)=>{
+  if(file===p.autostart) throw new Error('blocked by security software');
+  fs.mkdirSync(path.dirname(file),{recursive:true});
+  fs.writeFileSync(file,body);
+ };
+ const result=installWindowsAutostart(p,'C:\\releases\\v0','C:\\Program Files\\magpie\\runtime.exe',{exec,write,log:()=>{}});
+ assert.equal(result.kind,'run');
+ const launcher=path.join(p.root,'supervisor-launch.vbs');
+ assert.ok(fs.existsSync(launcher));
+ assert.match(fs.readFileSync(launcher,'utf8'),/supervise", 0, False/);
+ const add=calls.find((args)=>args[0]==='add');
+ assert.ok(add,'the Run value is written');
+ assert.equal(add[1],platformModule.windowsRunKey);
+ assert.deepEqual(add.slice(2,7),['/v','local.magpie.cursor-bridge','/t','REG_SZ','/d']);
+ assert.equal(add[7],windowsRunCommand(launcher));
+ assert.equal(windowsAutostartRegistered(p,{exec}),true);
+});
+test('windows setup keeps starting the service when every autostart mechanism is blocked',{skip:!IS_WIN},t=>{
+ const p=fakePaths(t);
+ const result=installWindowsAutostart(p,'C:\\releases\\v0','C:\\runtime.exe',{
+  exec:()=>({status:1,stdout:''}),
+  write:()=>{throw new Error('blocked by security software');},
+  log:()=>{}
+ });
+ assert.equal(result.kind,'none');
+ assert.match(result.error,/blocked by security software/);
+ assert.equal(windowsAutostartRegistered(p,{exec:()=>({status:1})}),false);
+});
+test('windows uninstall removes both autostart forms',{skip:!IS_WIN},t=>{
+ const p=fakePaths(t);
+ fs.mkdirSync(path.dirname(p.autostart),{recursive:true});
+ fs.mkdirSync(p.root,{recursive:true});
+ fs.writeFileSync(p.autostart,'launcher');
+ fs.writeFileSync(path.join(p.root,'supervisor-launch.vbs'),'launcher');
+ const calls=[];
+ const removed=removeWindowsAutostart(p,{exec:(cmd,args)=>{calls.push(args);return {status:0};}});
+ assert.equal(removed.length,2);
+ assert.equal(fs.existsSync(p.autostart),false);
+ assert.equal(fs.existsSync(path.join(p.root,'supervisor-launch.vbs')),false);
+ assert.ok(calls.some((args)=>args[0]==='delete'&&args.includes('/v')));
 });
 test('windows launcher hides the console window and doubles embedded quotes',()=>{
- const script=windowsLauncherScript('C:\\Users\\u\\releases\\v','C:\\Program Files\\magpie\\runtime.exe','C:\\Users\\u\\config');
+ const script=windowsLauncherScript('C:\\Users\\u\\releases\\v','C:\\Program Files\\magpie\\runtime.exe');
  assert.match(script,/CreateObject\("WScript\.Shell"\)\.Run/);
  assert.match(script,/""C:\\Program Files\\magpie\\runtime\.exe""/);
- assert.match(script,/supervise >>/);
- assert.match(script,/supervisor-error\.log/);
- assert.match(script,/, 0, False/);
+ assert.match(script,/supervise", 0, False/);
 });
 test('failed activation restores previous launch configuration and restarts previous release',{skip:!IS_DARWIN,timeout:15000},async t=>{
  const p=fakePaths(t);fs.mkdirSync(path.dirname(p.plist),{recursive:true});fs.writeFileSync(p.plist,'previous');

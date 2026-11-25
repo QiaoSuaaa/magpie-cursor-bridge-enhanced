@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.37（合并上游 Windows 稳定性修复 + 本地引擎与诊断增强）
+
+- 合并上游 `v0.2.37`：
+  - 修复 Windows 上「对话一次后就断开」（issue #1）：自动保留策略改由独立子进程 `bridge.js retain` 执行，不再在 supervisor 主进程中阻塞事件循环导致引擎 stderr 管道背压卡死。
+  - 引擎崩溃重启或模式切换沿用已记录端口、不再反复还原/写回 Cursor `http.proxy`，避免打断进行中的对话。
+  - Magpie 网关目录连续失败时保留运行中引擎并发布带 `warning` 的 `connected` 状态，网关恢复后自动转正。
+  - 引擎存活期间容忍 `connection.json` 瞬时半写入/替换（5 秒窗口），避免误判断开。
+  - Windows 后台的 `console.log` / `console.error` 镜像写入 `supervisor.log` / `supervisor-error.log`（4 MiB 轮转）。
+  - 修复 Windows 自启动 VBS 被安全软件拦截导致 setup 中止（issue #2）：自动回退到 `HKCU\...\Run` 注册表项，全部被拦截时仅提示并继续启动服务；卸载同时清理两种形式。
+- 保留并同步本地增强：
+  - 内置 Windows 原生引擎 `0.2.19`（修复同流续发清空 `conversation_state` 与运行中插话未写入独立 Turn 导致切换对话丢失记录的问题，并保留稳定 `{{SessionId}}` 元数据与 HTTP 429 重试上限）。
+  - 保留引擎运行身份（PID、版本、SHA-256）、生命周期事件记录、过期 `connected` 状态检测、WMI 脱离 Job Object 后台启动以及保留任务安全退出等待。
+
 ## 0.2.36（合并上游增强与运行稳定性诊断）
 
 - 合并上游 `v0.2.36` 的新版控制台与运行能力，保留 Orca 接管、Cursor CLI 接管、参数卡片收起、数据库管理、日志诊断和 Cursor 3.31.17 兼容。

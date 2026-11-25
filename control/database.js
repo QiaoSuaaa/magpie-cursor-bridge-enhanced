@@ -758,7 +758,7 @@ export async function cleanDatabase(dbPath, {scope = 'traces', olderThanDays = 3
 // never vacuums: bounded deletes in short transactions keep WAL writers
 // moving, and the freed pages are reused by later writes. Manual cleanup
 // remains the way to reclaim disk space.
-export async function pruneDatabase(dbPath, {tracesDays = 0, sessionsDays = 0, batchSize = 200, busyTimeout = 15000, maxBatches = 50} = {}) {
+export async function pruneDatabase(dbPath, {tracesDays = 0, sessionsDays = 0, batchSize = 200, busyTimeout = 15000, maxBatches = 50, check = true} = {}) {
   const result = {
     exists: fs.existsSync(dbPath),
     at: new Date().toISOString(),
@@ -811,7 +811,10 @@ export async function pruneDatabase(dbPath, {tracesDays = 0, sessionsDays = 0, b
     result.error = String(error?.message || error);
   }
   try { await sqlite(dbPath, 'PRAGMA optimize;', {busyTimeout, timeout: QUERY_TIMEOUT}); } catch { /* best effort */ }
-  result.check = await quickCheck(dbPath);
+  // quick_check scans the whole database; the background worker skips it
+  // because it would keep the database busy far longer than the deletes
+  // themselves. Manual cleanup keeps verifying the result.
+  if (check) result.check = await quickCheck(dbPath);
   result.durationMs = Date.now() - started;
   return result;
 }

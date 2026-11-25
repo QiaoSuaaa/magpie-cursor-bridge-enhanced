@@ -11,6 +11,7 @@ import {read as readBridgeSettings,applyModelPreferences} from './lib/bridge-set
 import platform from './lib/platform.js';
 import {createSupervisor} from './lib/supervisor.js';
 import {pruneDatabase} from './control/database.js';
+import {runRetentionWorker} from './lib/retention.js';
 import {writeAgentEnv,removeAgentEnv} from './lib/cursor-agent.js';
 import {reconcileOrca} from './lib/orca.js';
 import {version} from './version.js';
@@ -45,6 +46,32 @@ function connectionText() {
   return '{}';
 }
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
+// On Windows both launch paths (Startup VBS and the detached spawn from setup)
+// discard stdio, so the supervisor.log / supervisor-error.log the console reads
+// would stay empty exactly when a user needs them. Mirror console output into
+// those files there; launchd and systemd already capture stdout/stderr.
+function mirrorConsoleToFiles() {
+  const limit=4*1024*1024;
+  const open=(name)=>{
+    const target=file(name);
+    try {
+      try {if(fs.statSync(target).size>limit) fs.renameSync(target,`${target}.1`);} catch { /* first run */ }
+      const fd=fs.openSync(target,'a',0o600);
+      return (text)=>{try {fs.writeSync(fd,text);} catch { /* logging must never take the supervisor down */ }};
+    } catch { return ()=>{}; }
+  };
+  const out=open('supervisor.log');
+  const err=open('supervisor-error.log');
+  const format=(values)=>values.map((value)=>typeof value==='string'?value:(value instanceof Error?value.stack:String(value))).join(' ');
+  for(const method of ['log','info','debug']) {
+    const original=console[method].bind(console);
+    console[method]=(...values)=>{out(`${new Date().toISOString()} ${format(values)}\n`);original(...values);};
+  }
+  for(const method of ['warn','error']) {
+    const original=console[method].bind(console);
+    console[method]=(...values)=>{err(`${new Date().toISOString()} ${format(values)}\n`);original(...values);};
+  }
+}
 // The Orca reconcile runs every 30 seconds and usually has nothing to do.
 // Log only when its outcome changes, so a pending retry while Orca stays open
 // does not fill supervisor.log.
@@ -112,9 +139,18 @@ if(command==='status') {
   console.log(fs.existsSync(file('status.json'))?fs.readFileSync(file('status.json'),'utf8'):'未安装或尚未运行');
 } else if(command==='restore') {
   console.log(JSON.stringify({preservedExternalChanges:restoreProxy(file('settings-journal.json'))}));
+} else if(command==='retain') {
+  // Internal: the supervisor runs automatic retention here, in a separate
+  // runtime process, so a synchronous prune can never block its event loop.
+  const target=process.argv[3]||root;
+  const tracesDays=Number(process.argv[4])||0;
+  const sessionsDays=Number(process.argv[5])||0;
+  const result=await pruneDatabase(path.join(target,'data/bridge.db'),{tracesDays,sessionsDays,check:false});
+  process.stdout.write(JSON.stringify(result));
 } else if(command==='supervise') {
   fs.mkdirSync(root,{recursive:true,mode:0o700});
   if(!platform.IS_WIN) process.umask(0o077);
+  if(platform.IS_WIN) mirrorConsoleToFiles();
   const lock=file('supervisor.lock');
   try {fs.mkdirSync(lock);} catch(error) {
     let live=false;
@@ -145,9 +181,17 @@ if(command==='status') {
     publish:(state,extra)=>status(state,extra),
     applyProxy:proxy=>applyProxy(settings,file('settings-journal.json'),proxy),
     restoreProxy:()=>restoreProxy(file('settings-journal.json')),
-    // Automatic retention runs in this process, online: it batches deletes and
-    // never stops the engine or vacuums. The result is kept for the console.
-    pruneDatabase:({tracesDays,sessionsDays})=>pruneDatabase(file('data/bridge.db'),{tracesDays,sessionsDays}),
+    // Automatic retention runs online: it batches deletes and never stops the
+    // engine or vacuums. It runs in a worker process because Bun's SQLite is
+    // synchronous and blocking this loop also stops draining the engine's log
+    // pipe. The result is kept for the console.
+    pruneDatabase:({tracesDays,sessionsDays})=>runRetentionWorker({
+      runtime:process.execPath,
+      bridge:path.join(packageDir,'bridge.js'),
+      root,
+      tracesDays,
+      sessionsDays
+    }),
     onPrune:result=>atomic(file('retention.json'),JSON.stringify(result,null,2)),
     reconcileOrca:({takeover})=>applyOrcaTakeover(takeover),
     spawnEngine:({mode,subagentMode,preferredProxyPort:port})=>{
@@ -172,4 +216,4 @@ if(command==='status') {
   } finally {
     fs.rmSync(lock,{recursive:true,force:true});
   }
-} else {throw new Error('usage: node bridge.js status|supervise|restore');}
+} else {throw new Error('usage: node bridge.js status|supervise|restore|retain');}
