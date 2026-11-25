@@ -118,7 +118,16 @@ INSERT INTO ItemTable (key, value) VALUES ('workbench.panel.aichat.view', '{"lay
 test('cursor paths follow the platform layout', () => {
   assert.equal(cursorSettingsFor('/home/u', 'darwin'), path.posix.join('/home/u', 'Library', 'Application Support', 'Cursor', 'User', 'settings.json'));
   assert.equal(cursorGlobalStorageFor('/home/u', 'darwin'), path.posix.join('/home/u', 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage'));
-  assert.equal(cursorWorkspaceStorageFor('/home/u', 'linux'), path.posix.join('/home/u', '.config', 'Cursor', 'User', 'workspaceStorage'));
+  // Pass an explicit environment: GitHub's Linux runners export
+  // XDG_CONFIG_HOME, which would otherwise win over the /home/u argument.
+  assert.equal(
+    cursorWorkspaceStorageFor('/home/u', 'linux', {XDG_CONFIG_HOME: '/home/u/.config'}),
+    path.posix.join('/home/u', '.config', 'Cursor', 'User', 'workspaceStorage')
+  );
+  assert.equal(
+    cursorWorkspaceStorageFor('/home/u', 'linux', {}),
+    path.posix.join('/home/u', '.config', 'Cursor', 'User', 'workspaceStorage')
+  );
   assert.equal(
     cursorGlobalStorageFor('C:\\Users\\u', 'win32', {APPDATA: 'C:\\Users\\u\\AppData\\Roaming'}),
     path.win32.join('C:\\Users\\u\\AppData\\Roaming', 'Cursor', 'User', 'globalStorage')
