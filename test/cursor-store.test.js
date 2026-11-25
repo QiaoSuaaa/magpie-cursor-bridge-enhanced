@@ -44,7 +44,24 @@ function query(dbPath, statement) {
 
 function fakeStore(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-store-'));
-  t.after(() => fs.rmSync(home, {recursive: true, force: true}));
+  // Linux resolves Cursor's user dir from XDG_CONFIG_HOME before the home
+  // argument, and Windows from APPDATA. Without this every fixture would land
+  // in the same real database (the Ubuntu CI job caught exactly that).
+  const saved = {};
+  for (const key of ['XDG_CONFIG_HOME', 'APPDATA', 'LOCALAPPDATA']) saved[key] = process.env[key];
+  if (process.platform === 'win32') {
+    process.env.APPDATA = path.join(home, 'AppData', 'Roaming');
+    process.env.LOCALAPPDATA = path.join(home, 'AppData', 'Local');
+  } else if (process.platform !== 'darwin') {
+    process.env.XDG_CONFIG_HOME = path.join(home, 'xdg-config');
+  }
+  t.after(() => {
+    fs.rmSync(home, {recursive: true, force: true});
+    for (const key of Object.keys(saved)) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  });
   const globalStorage = cursorGlobalStorageFor(home);
   const workspaceStorage = cursorWorkspaceStorageFor(home);
   fs.mkdirSync(globalStorage, {recursive: true});
