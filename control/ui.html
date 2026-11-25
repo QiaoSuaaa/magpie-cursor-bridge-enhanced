@@ -152,6 +152,29 @@
     </form>
   </details>
 
+  <details id="agentCliCard" class="card db-card">
+    <summary>
+      <span class="db-title"><h2>Cursor CLI 接管</h2><span class="hint">命令行版共用同一套桥接与模型</span></span>
+      <span class="hint db-state" id="agentCliState">展开时检测</span>
+    </summary>
+    <div class="db-body">
+      <div id="agentCliSummary" class="grid db-grid" aria-live="polite" hidden></div>
+      <div class="db-toolbar">
+        <span class="hint" id="agentCliHint">接管不会修改官方 Cursor CLI：包装器只注入 HTTPS_PROXY 与证书路径。</span>
+        <button id="agentCliEntryInstall" class="primary" type="button">接管官方入口</button>
+        <button id="agentCliEntryRemove" class="ghost" type="button">恢复官方入口</button>
+        <button id="agentCliInstall" class="ghost" type="button">安装包装器</button>
+        <button id="agentCliRemove" class="ghost" type="button">移除包装器</button>
+        <button id="agentCliOrcaInstall" class="ghost" type="button">接管 Orca 聊天</button>
+        <button id="agentCliOrcaRemove" class="ghost" type="button">取消 Orca 接管</button>
+        <button id="agentCliCopy" class="ghost" type="button">复制启动命令</button>
+      </div>
+      <pre id="agentCliCommand" class="output" hidden></pre>
+      <p class="hint mode-hint">Cursor CLI 不读取 Cursor 的 settings.json，只能通过环境变量进入代理。安装包装器后会生成 <code>cursor-agent-bridge</code>：它先载入桥接写出的环境文件，再启动官方 cursor-agent。桥接断开时环境文件会被删除，包装器自动退回直连。首次使用建议先执行一次简短对话验证。CLI 首次运行会改写 <code>~/.cursor/cli-config.json</code> 的默认模型，属正常行为，可用 <code>/model</code> 切回。</p>
+      <p class="hint mode-hint">若后台被强制终止（SIGKILL、系统休眠被杀）而来不及删除环境文件，CLI 可能提示代理不可达：重新启动后台或删除 <code>agent-env</code> 即可恢复。</p>
+    </div>
+  </details>
+
   <details id="modelNamesCard" class="card model-names-card">
     <summary>
       <span class="model-names-title"><h2>模型显示名</h2><span class="hint">仅改 Cursor 菜单显示，不改模型 ID、路由与计费</span></span>
@@ -251,6 +274,136 @@
     </div>
   </details>
 
+  <details id="storeCard" class="card db-card">
+    <summary>
+      <span class="db-title"><h2>Cursor 存储</h2><span class="hint">state.vscdb · 会话浏览、体积诊断与清理</span></span>
+      <span class="hint db-state" id="storeState">展开时读取</span>
+    </summary>
+    <div class="db-body">
+      <div class="db-toolbar">
+        <span class="hint" id="storeHint">浏览与统计只读，不会在打开面板时扫盘；删除与压缩是显式写操作，执行前必须完全退出 Cursor。</span>
+        <button id="storeRefresh" class="ghost" type="button">刷新</button>
+      </div>
+      <div id="storeSummary" class="grid db-grid" aria-live="polite" hidden></div>
+
+      <div class="store-filters">
+        <label class="store-filter"><span>项目</span>
+          <select id="storeWorkspace" aria-label="按项目筛选">
+            <option value="">全部项目</option>
+          </select>
+        </label>
+        <label class="store-filter"><span>类型</span>
+          <select id="storeKind" aria-label="按类型筛选">
+            <option value="main">主会话</option>
+            <option value="subagent">子代理会话</option>
+            <option value="all">全部会话</option>
+            <option value="archived">已归档</option>
+          </select>
+        </label>
+        <label class="store-filter"><span>时间</span>
+          <select id="storeRange" aria-label="按时间筛选">
+            <option value="all">全部时间</option>
+            <option value="recent-7">最近 7 天</option>
+            <option value="recent-30">最近 1 个月</option>
+            <option value="recent-90">最近 3 个月</option>
+            <option value="recent-180">最近半年</option>
+            <option value="recent-365">最近一年</option>
+            <option value="older-7">早于 7 天</option>
+            <option value="older-30">早于 1 个月</option>
+            <option value="older-90">早于 3 个月</option>
+            <option value="older-180">早于半年</option>
+            <option value="custom">自定义…</option>
+          </select>
+        </label>
+        <label class="store-filter"><span>命名</span>
+          <select id="storeNamed" aria-label="按命名筛选">
+            <option value="all">全部命名</option>
+            <option value="named">已命名</option>
+            <option value="unnamed">未命名</option>
+          </select>
+        </label>
+        <label class="store-filter"><span>模式</span>
+          <select id="storeMode" aria-label="按模式筛选">
+            <option value="">全部模式</option>
+            <option value="agent">Agent</option>
+            <option value="chat">Chat</option>
+            <option value="multitask">Multitask</option>
+          </select>
+        </label>
+        <div class="store-filter store-filter-action"><span>&nbsp;</span><button id="storeResetFilters" class="ghost" type="button">重置</button></div>
+        <span class="hint store-list-hint" id="storeListHint"></span>
+      </div>
+      <div class="store-filters" id="storeCustomRange" hidden>
+        <label class="store-filter"><span>开始</span><input type="date" id="storeSince" aria-label="开始日期"></label>
+        <label class="store-filter"><span>结束</span><input type="date" id="storeUntil" aria-label="结束日期"></label>
+        <button id="storeRangeApply" class="ghost" type="button">应用</button>
+        <span class="hint">按最近活动时间筛选，留空表示不限</span>
+      </div>
+      <div id="storeSessions"></div>
+      <div class="store-bulk" id="storeBulk" hidden>
+        <span class="hint" id="storeBulkInfo">已选 0 个会话</span>
+        <button id="storeBulkDelete" class="danger" type="button">删除选中…</button>
+        <button id="storeBulkClear" class="ghost" type="button">取消选择</button>
+      </div>
+      <div class="store-pager" id="storePager" hidden>
+        <button id="storePrev" class="ghost" type="button">上一页</button>
+        <button id="storeNext" class="ghost" type="button">下一页</button>
+        <span class="hint" id="storePageInfo"></span>
+        <span class="store-pager-gap"></span>
+        <label class="store-filter"><span>每页</span>
+          <select id="storePageSize" aria-label="每页会话数">
+            <option value="10" selected>10 条</option>
+            <option value="20">20 条</option>
+            <option value="50">50 条</option>
+            <option value="100">100 条</option>
+          </select>
+        </label>
+      </div>
+
+      <details id="storeScanBox" class="db-sub">
+        <summary>体积诊断<span class="hint" id="storeScanHint">按类别统计，结果缓存 2 分钟</span></summary>
+        <div id="storeScanBody"></div>
+      </details>
+
+      <details class="db-sub" id="storeCleanBox">
+        <summary>清理与压缩<span class="hint">按当前筛选删除、回收磁盘</span></summary>
+        <div class="store-clean" id="storeCleanBody">
+          <div class="cleanup-row">
+            <div class="cleanup-copy">
+              <strong>删除筛选结果</strong>
+              <span class="hint">删除当前筛选条件下最多 100 个会话及其消息、检查点、差异；不可撤销</span>
+            </div>
+            <button id="storeCleanDelete" class="danger" type="button">删除筛选结果…</button>
+          </div>
+          <div class="cleanup-row">
+            <div class="cleanup-copy">
+              <strong>压缩数据库</strong>
+              <span class="hint" id="storeVacuumHint">删除后的空间需要 VACUUM 重写才会释放；需要 Cursor 完全退出</span>
+            </div>
+            <button id="storeVacuum" class="ghost" type="button">压缩…</button>
+          </div>
+        </div>
+      </details>
+      <details class="db-sub">
+        <summary>官方清理入口<span class="hint">Cursor 命令面板中的 Developer 命令</span></summary>
+        <div id="storeActions"></div>
+        <p class="hint">这些命令由 Cursor 官方实现，会保护仍在工作区会话列表中的聊天。本面板不代为执行：Agent 内容块回收与空闲页回收请在 Cursor 命令面板中完成；本面板的删除只处理会话自身的数据键。</p>
+      </details>
+
+      <div class="store-kv">
+        <div class="cleanup-head">
+          <h3>查看单条内容</h3>
+          <span class="hint">输入完整 key，例如 composerData:&lt;composerId&gt;</span>
+        </div>
+        <div class="store-kv-row">
+          <input id="storeKey" type="text" autocomplete="off" spellcheck="false" placeholder="composerData:<composerId>">
+          <button id="storeKeyLoad" class="ghost" type="button">读取</button>
+        </div>
+        <pre id="storeKeyBody" class="store-pre" hidden></pre>
+      </div>
+    </div>
+  </details>
+
   <details id="callsCard" class="card db-card">
     <summary>
       <span class="db-title"><h2>最近调用</h2><span class="hint">llm_calls · 只读</span></span>
@@ -303,29 +456,6 @@
     </div>
   </details>
 
-  <details id="agentCliCard" class="card db-card">
-    <summary>
-      <span class="db-title"><h2>Cursor CLI 接管</h2><span class="hint">命令行版共用同一套桥接与模型</span></span>
-      <span class="hint db-state" id="agentCliState">展开时检测</span>
-    </summary>
-    <div class="db-body">
-      <div id="agentCliSummary" class="grid db-grid" aria-live="polite" hidden></div>
-      <div class="db-toolbar">
-        <span class="hint" id="agentCliHint">接管不会修改官方 Cursor CLI：包装器只注入 HTTPS_PROXY 与证书路径。</span>
-        <button id="agentCliEntryInstall" class="primary" type="button">接管官方入口</button>
-        <button id="agentCliEntryRemove" class="ghost" type="button">恢复官方入口</button>
-        <button id="agentCliInstall" class="ghost" type="button">安装包装器</button>
-        <button id="agentCliRemove" class="ghost" type="button">移除包装器</button>
-        <button id="agentCliOrcaInstall" class="ghost" type="button">接管 Orca 聊天</button>
-        <button id="agentCliOrcaRemove" class="ghost" type="button">取消 Orca 接管</button>
-        <button id="agentCliCopy" class="ghost" type="button">复制启动命令</button>
-      </div>
-      <pre id="agentCliCommand" class="output" hidden></pre>
-      <p class="hint mode-hint">Cursor CLI 不读取 Cursor 的 settings.json，只能通过环境变量进入代理。安装包装器后会生成 <code>cursor-agent-bridge</code>：它先载入桥接写出的环境文件，再启动官方 cursor-agent。桥接断开时环境文件会被删除，包装器自动退回直连。首次使用建议先执行一次简短对话验证。CLI 首次运行会改写 <code>~/.cursor/cli-config.json</code> 的默认模型，属正常行为，可用 <code>/model</code> 切回。</p>
-      <p class="hint mode-hint">若后台被强制终止（SIGKILL、系统休眠被杀）而来不及删除环境文件，CLI 可能提示代理不可达：重新启动后台或删除 <code>agent-env</code> 即可恢复。</p>
-    </div>
-  </details>
-
   <section class="card">
     <div class="card-head"><h2>快捷入口</h2><span class="hint">在本机打开</span></div>
     <div class="links">
@@ -341,6 +471,70 @@
   </section>
 
   <p class="foot">控制台只监听 127.0.0.1；macOS 与 Linux 的「启动」「重启」「状态」调用 <code>bash setup.command</code>，Windows 通过宿主运行时调用 <code>install.js</code>（登录自启写入启动文件夹，无需管理员权限；首次安装证书会弹出一次管理员确认）。Linux 使用 systemd 用户单元，无 systemd 用户实例时回退为分离进程；证书写入 Cursor 的 <code>argv.json</code> 与用户 NSS 库，无需管理员权限。</p>
+
+<dialog id="storeDetailDialog" class="store-dialog store-detail-dialog">
+  <div class="store-dialog-head">
+    <div class="store-dialog-title">
+      <strong id="storeDetailTitle">会话</strong>
+      <span class="hint" id="storeDetailMeta"></span>
+    </div>
+    <span class="cleanup-controls">
+      <label class="hint store-tools-toggle"><input id="storeShowTools" type="checkbox" checked> 显示工具调用<span id="storeToolCount"></span></label>
+      <button id="storeDetailClose" class="ghost" type="button">关闭</button>
+    </span>
+  </div>
+  <div id="storeMessages" class="store-dialog-body"></div>
+</dialog>
+
+<dialog id="storeDeleteDialog" class="store-dialog store-confirm-dialog">
+  <div class="store-dialog-head">
+    <div class="store-dialog-title">
+      <strong id="storeDeleteTitle">删除会话</strong>
+      <span class="hint" id="storeDeleteMeta"></span>
+    </div>
+    <button id="storeDeleteCancel" class="ghost" type="button">取消</button>
+  </div>
+  <div class="store-dialog-body">
+    <div id="storeDeleteSummary" class="store-delete-summary"></div>
+    <label class="store-confirm-check"><input id="storeDeleteCursor" type="checkbox"> 我已完全退出 Cursor（仅关闭窗口不算）</label>
+    <label class="store-confirm-type">输入「<code>删除</code>」以确认 <input id="storeDeleteWord" type="text" autocomplete="off" spellcheck="false"></label>
+    <span class="hint" id="storeDeleteHint"></span>
+  </div>
+  <div class="store-dialog-foot">
+    <button id="storeDeleteGo" class="danger" type="button" disabled>确认删除</button>
+    <span class="hint">删除后无法撤销；空间需要再执行「压缩」才能释放。</span>
+  </div>
+</dialog>
+
+<dialog id="storeVacuumDialog" class="store-dialog store-confirm-dialog">
+  <div class="store-dialog-head">
+    <div class="store-dialog-title">
+      <strong>压缩 Cursor 数据库</strong>
+      <span class="hint" id="storeVacuumMeta"></span>
+    </div>
+    <button id="storeVacuumCancel" class="ghost" type="button">取消</button>
+  </div>
+  <div class="store-dialog-body">
+    <div id="storeVacuumSummary" class="store-delete-summary"></div>
+    <label class="store-confirm-check"><input id="storeVacuumCursor" type="checkbox"> 我已完全退出 Cursor（仅关闭窗口不算）</label>
+    <span class="hint">VACUUM 会重写整个数据库，几十 GB 的库通常需要数分钟到十几分钟；期间不要启动 Cursor。</span>
+  </div>
+  <div class="store-dialog-foot">
+    <button id="storeVacuumGo" class="danger" type="button" disabled>确认压缩</button>
+    <span class="hint" id="storeVacuumResult"></span>
+  </div>
+</dialog>
+
+<dialog id="storeValueDialog" class="store-dialog">
+  <div class="store-dialog-head">
+    <div class="store-dialog-title">
+      <strong id="storeDialogTitle">原文</strong>
+      <span class="hint" id="storeDialogMeta"></span>
+    </div>
+    <button id="storeDialogClose" class="ghost" type="button">关闭</button>
+  </div>
+  <pre id="storeDialogBody" class="store-pre"></pre>
+</dialog>
 </main>
 <script>window.__BRIDGE_TOKEN__="__CONTROL_TOKEN__";window.__BRIDGE_PORT__=__CONTROL_PORT__;window.__BRIDGE_REPO__=__REPO_URL__;</script>
 <script src="ui.js"></script>

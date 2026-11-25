@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {cursorCompatibility, compareVersions, CURSOR_TESTED} from '../lib/compatibility.js';
 
 test('cursor versions inside the tested range are marked tested', () => {
-  for (const version of ['3.28.0', '3.28.7', '3.30.20', '3.31.3', '3.31.17']) {
+  for (const version of ['3.28.0', '3.28.7', '3.30.20', '3.31.3', '3.31.17', '3.32.0', '3.32.5']) {
     const result = cursorCompatibility(version);
     assert.equal(result.status, 'tested', version);
     assert.equal(result.tested, true);
@@ -17,13 +17,13 @@ test('versions outside the range are flagged with direction', () => {
   assert.equal(older.status, 'older');
   assert.equal(older.tested, false);
   assert.match(older.hint, /低于已实测范围/);
-  const newer = cursorCompatibility('3.32.0');
+  const newer = cursorCompatibility('3.33.0');
   assert.equal(newer.status, 'newer');
   assert.equal(newer.tested, false);
   assert.match(newer.hint, /高于已实测范围/);
-  // The patch ceiling is part of the contract: the next 3.31 patch is already
+  // The patch ceiling is part of the contract: the next 3.32 patch is already
   // outside the tested range, so a widened max cannot slip through unnoticed.
-  assert.equal(cursorCompatibility('3.31.18').status, 'newer');
+  assert.equal(cursorCompatibility('3.32.6').status, 'newer');
 });
 
 test('version comparison orders releases', () => {

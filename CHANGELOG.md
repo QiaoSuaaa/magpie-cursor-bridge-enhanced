@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.2.38（Cursor 存储浏览、诊断与清理）
+
+- 控制台新增「Cursor 存储」折叠卡片，浏览 Cursor 自己的 `globalStorage/state.vscdb`（与桥接的 `bridge.db` 相互独立）。概览显示文件 / WAL / SHM 体积、页数 × 页大小、空闲页、会话总数、主 / 子代理数量、有会话的工作区数与最近写入时间。
+- 会话列表读取 `composerHeaders`（约 1.2 万行、13 MB，`recency` 与 `workspaceId` 均有索引），按 `recency` 倒序分页，可按主会话 / 子代理 / 归档筛选；`workspaceStorage/<hash>/workspace.json` 把 `workspaceId` 映射为真实项目路径，列表与筛选项显示项目名。
+- 会话列表列序为 ID / 会话 / 项目 / 体积 / 更新时间 / 类型：ID 显示 8 位短值、悬停查看完整 UUID；体积在列表渲染后异步计算——一次请求把当前页 50 个会话的主键区间合并为单条 `UNION ALL` 语句（每个会话的 `bubbleId:` 区间 + `composerData` 行），结果按会话缓存 5 分钟，浏览与会话打开不被体积统计阻塞。
+- 会话列表新增时间筛选：最近 7 天 / 1 个月 / 3 个月 / 半年 / 一年，反向的早于 7 天 / 1 个月 / 3 个月 / 半年，或自定义起止日期（按最近活动时间 `lastUpdatedAt`，为 0 的迁移行回退 `createdAt`）；时间参数按毫秒校验后才进入 SQL，非法值视为不限。
+- 会话列表新增命名与模式筛选：已命名 / 未命名，以及 agent / chat / multitask；两项都读 `composerHeaders.value` 的 JSON 字段，约 1.2 万行全表判断，无额外扫描成本。
+- 筛选区改为带标签的下拉组（项目 / 类型 / 时间 / 命名 / 模式），下拉统一 32 px 高度、圆角与自绘箭头（去掉各平台原生外观差异），「重置」按钮与下拉同高对齐；会话总数显示在重置按钮旁。
+- 会话列表默认每页 10 条，可选 10 / 20 / 50 / 100，分页区显示「第 X / Y 页」；切换条数或重置筛选都会回到第一页。
+- 会话详情由 `composerData:<composerId>` 单行读取加 `bubbleId:<composerId>:` 主键区间读取组成；消息按 value 内的 `createdAt` 排序（bubble key 是随机 UUID，key 顺序不等于时间顺序）。同一前缀下混有三类行：对话消息（UUID id）、Agent 工具调用（`call_*` id，正文在 `toolFormerData`）、流式快照（`/s:<n>` 后缀）。现在流式快照只计数不列出，工具调用默认显示（显示工具名 / 状态 / 参数摘要），可取消「显示工具调用」只看对话；详情头部同时给出消息、工具、分片三类数量。
+- 会话详情改为弹窗：点击列表「打开」后在居中的模态框中查看消息，列表保持原位，不再把详情堆在页面底部；支持 Esc、遮罩与关闭按钮退出；原文弹窗叠在其上，Esc 逐层关闭。
+- 会话详情改为 Cursor Chat 式布局：用户消息显示为浅灰气泡，助手回复为无边框正文；移除「上一页 / 下一页」，改为一次载入（上限 1500 条）后在弹窗内滚动到底自动追加 30 条，首屏不足一屏时自动补足。
+- 工具调用按 Cursor 自身的 `toolStatusText` / `agent-conversation-phrase-copy` 语义渲染：单行「完成态动词 + 精简目标」，读取显示文件名（带行号区间）、搜索文件显示 glob、搜索内容显示 `pattern in 文件`、执行命令显示命令行、子代理显示任务描述、MCP 显示工具名；状态非 completed 时动词改为进行态或「尝试…」。行高约 26 px，点击展开参数与结果（ANSI 转义已清理），失败行标注「尝试…」。
+- 修复 Magpie WebView 中会话弹窗消息区高度塌陷（只有标题栏、正文空白）：弹窗不再依赖 flex 自适应高度（WebView 内 flex 列布局把正文压成 0），改为内容自然撑开、正文区独立限高滚动（720 px，支持 `min(72vh, 780px)` 时取 72vh）。
+- 修复会话列表「打开」按钮在窄列中被压成竖排文字：列宽增至 84 px 并给按钮最小宽度。
+- 原文改为弹窗查看：点击消息上的「查看原文」打开模态框，显示格式化后的 JSON（超过 64 KB 不格式化）、原始大小与所在表；弹窗支持 Esc、遮罩点击与关闭按钮退出。
+- 修复展开原文时报「key 含有非法字符」：`safeKey` 原先只允许字母数字和 `._:-`，而流式分片的 key 带 `/s:<n>` 后缀（本机样本中约 20% 的 bubble 行受影响），现在放行可打印 ASCII，仅拒绝引号、反斜杠与 GLOB 通配符。
+- 体积诊断按 Cursor 官方 `storageSizeScanMain` 的 8 个前缀类别统计（Agent 内容块 / Agent 检查点 / Agent 产物 / 会话数据 / 消息正文 / 文件检查点 / 代码差异 / 云端代理缓存）外加 ItemTable；**打开面板不会扫盘**，每类需手动点击：小类直接精确统计（秒级），`Agent 内容块 / 会话数据 / 消息正文 / 文件检查点` 默认用 1/16 十六进制分桶采样外推（本机实测 1–25 秒），也可选择精确统计（内容块类可能数分钟）。结果按类别缓存 2 分钟，文件体积变化超过 1 GB 时提前失效；并发点击合并为同一个子进程。
+- 「Cursor CLI 接管」卡片移到「可编辑参数」下方，与接管开关相邻；其余卡片顺序不变。
+- Cursor 已实测范围升至 3.28.x–3.32.5，控制台对 3.32.5 显示「已实测」；兼容测试同步加入 3.32.0 / 3.32.5，范围外用例改为 3.33.0 与 3.32.6。
+- 新增会话管理与删除（二期）：列表支持逐行勾选与「全选当前页」，选中后出现批量操作栏；「删除选中…」与「删除筛选结果…」共用同一确认弹窗，删除前先统计会话数、数据行数、数据体积、数据库大小、磁盘可用，以及 `exact / bubbleId / checkpointId / codeBlockPartialInlineDiffFates / composerHeaders` 各类行数。
+- 删除范围严格限定在会话自身：`composerData` / `composerConversationState` / `composerConvHeaders` 精确键，`bubbleId:` / `checkpointId:` / `messageRequestContext:` / `codeBlockDiff:` / `codeBlockPartialInlineDiffFates:` 前缀，以及 `composerHeaders` 行和对应的 `composerChatViewPane` 残留键；**不触碰 `agentKv:blob`**（引用关系由 Cursor 官方 GC 负责），`inlineDiff:*` 按工作区归属、不随会话删除。
+- 删除安全：服务端每次执行前检测 Cursor 进程（macOS/Linux 用 `pgrep`，Windows 用 `tasklist`），运行中直接拒绝并返回原因；前端要求勾选「我已完全退出 Cursor」并输入「删除」才可提交，弹窗内实时显示 Cursor 运行状态；一次最多 100 个会话，超出提示缩小筛选范围。
+- 新增「清理与压缩」小节：「删除筛选结果」复用当前筛选条件（项目 / 类型 / 时间 / 命名 / 模式），超过 100 个会提示；「压缩…」显示数据库大小、空闲页、WAL、预计临时空间与磁盘可用，空间不足 1.1 倍时拒绝执行，完成后显示前后大小与释放量。
+- 卡片下方「官方清理入口」列出 Cursor 命令面板中的 `Developer: Delete Old Chats`、`Developer: GC Agent KV Blobs`、`Developer: Reclaim Free Space`，并注明它们会保护仍在工作区会话列表中的聊天；本模块不代为执行这些命令，删除与压缩走自己的确认与进程检测流程。
+- 所有查询通过 `-readonly` 打开数据库（Windows 回退 Bun 内置 SQLite），WAL 模式下可与 Cursor 的写入并存，Cursor 运行中即可浏览；查询带 `busy_timeout`、分级超时与结果上限，长统计不占用控制台的其他请求。
+- 实现分层：`lib/platform.js` 抽出 `cursorUserDirFor` 并新增 `cursorGlobalStorageFor` / `cursorWorkspaceStorageFor`（三平台一致）；`control/cursor-store.js` 提供查询、分类扫描与受保护的写操作（会话删除、VACUUM）；`control/server.js` 新增 `/api/cursor-store/*` 路由；`control/database.js` 导出 `sqlite` / `quoteText` 供复用，并允许调用方调整输出缓冲上限。
+- 新增 `test/cursor-store.test.js`（19 项：三平台路径、workspace 映射、概览、缺库降级、列表筛选与分页、消息时间排序与截断、单条读取与注入拒绝、分类精确统计、采样外推、类别定义、会话体积与缓存、时间窗口筛选、分片与工具分离、命名/模式筛选、删除预览与执行、压缩、Cursor 运行检测）；全量 153 项，145 通过、8 项按平台跳过。
+- 版本号升至 0.2.38；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.37（修复 Windows「对话一次后断开」与自启动被拦截）
 
 - 修复 Windows 上「对话一次后就断开」（issue #1）：自动保留策略原先在 supervisor 进程内执行，Windows 随包运行时（Bun）的 `bun:sqlite` 全同步，`quick_check` 与分批删除会让事件循环停顿数秒到数分钟；期间 supervisor 停止读取引擎 stderr，引擎写日志被 64 KiB 管道背压阻塞，Cursor 的回合随即卡死。默认保留策略恰好在启动 60 秒后首次执行，因此表现为「第一次对话后断开」。现在保留任务改由独立子进程 `bridge.js retain` 执行，supervisor 只等待并解析一行 JSON 结果，数据库再大也不阻塞引擎与对话。

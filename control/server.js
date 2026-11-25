@@ -12,6 +12,7 @@ import {agentStatus, installWrapper, removeWrapper, installShellHook, removeShel
 import {orcaStatus, reconcileOrca} from '../lib/orca.js';
 import {version} from '../version.js';
 import {readDatabase, readRecentCalls, cleanDatabase} from './database.js';
+import {cursorStorePaths, readStoreOverview, listWorkspaces, listComposers, readComposer, readSessionSizes, readKvValue, scanCategoryCached, previewComposers, deleteComposers, vacuumStore, storeFreeSpace, cursorRunning, clearStoreCaches, CATEGORIES, OFFICIAL_ACTIONS} from './cursor-store.js';
 import {tailFile, redact, classify} from './diagnostics.js';
 import {runSelfTest} from './selftest.js';
 import platform from '../lib/platform.js';
@@ -879,6 +880,127 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
           return sendJson(res, 200, {ok: true, cleanup, restart});
         } finally {
           busy = null;
+        }
+      }
+
+      // Cursor's own state.vscdb is not the bridge's database: every route
+      // here opens it -readonly and never writes. Session lists come from the
+      // indexed composerHeaders table; byte totals are explicit per-category
+      // scans that the panel triggers one at a time.
+      if (url.pathname.startsWith('/api/cursor-store')) {
+        const home = paths(repoRoot).home;
+        const store = cursorStorePaths(home);
+        try {
+          if (url.pathname === '/api/cursor-store/overview') {
+            const data = await readStoreOverview(store.stateDb, {workspaceRoot: store.workspaceStorage});
+            // `probe=1` additionally checks for a live Cursor process; the
+            // console only asks for it inside the write-confirmation dialogs.
+            const probe = url.searchParams.get('probe') === '1';
+            const running = probe ? await cursorRunning() : null;
+            return sendJson(res, 200, {ok: true, store: data, categories: CATEGORIES, actions: OFFICIAL_ACTIONS, cursorRunning: running});
+          }
+          if (url.pathname === '/api/cursor-store/workspaces') {
+            return sendJson(res, 200, {ok: true, workspaces: listWorkspaces(store.workspaceStorage)});
+          }
+          if (url.pathname === '/api/cursor-store/sessions') {
+            const data = await listComposers(store.stateDb, {
+              workspaceId: url.searchParams.get('workspace') || '',
+              kind: url.searchParams.get('kind') || 'all',
+              named: url.searchParams.get('named') || 'all',
+              mode: url.searchParams.get('mode') || '',
+              since: url.searchParams.get('since') || 0,
+              until: url.searchParams.get('until') || 0,
+              offset: Number(url.searchParams.get('offset')) || 0,
+              limit: Number(url.searchParams.get('limit')) || 50
+            });
+            return sendJson(res, 200, {ok: true, ...data});
+          }
+          if (url.pathname === '/api/cursor-store/session') {
+            const data = await readComposer(store.stateDb, {
+              id: url.searchParams.get('id') || '',
+              offset: Number(url.searchParams.get('offset')) || 0,
+              limit: Number(url.searchParams.get('limit')) || 30,
+              includeTools: url.searchParams.get('tools') === '1'
+            });
+            return sendJson(res, 200, {ok: true, session: data});
+          }
+          if (url.pathname === '/api/cursor-store/sizes') {
+            const ids = String(url.searchParams.get('ids') || '').split(',').filter(Boolean);
+            const data = await readSessionSizes(store.stateDb, ids);
+            return sendJson(res, 200, {ok: true, ...data});
+          }
+          if (url.pathname === '/api/cursor-store/value') {
+            const data = await readKvValue(store.stateDb, {key: url.searchParams.get('key') || ''});
+            return sendJson(res, 200, {ok: true, value: data});
+          }
+          if (req.method === 'GET' && url.pathname === '/api/cursor-store/delete-preview') {
+            const ids = String(url.searchParams.get('ids') || '').split(',').filter(Boolean);
+            const data = await previewComposers(store.stateDb, ids);
+            const free = storeFreeSpace(store.stateDb);
+            const size = fs.existsSync(store.stateDb) ? fs.statSync(store.stateDb).size : 0;
+            return sendJson(res, 200, {ok: true, preview: data, cursorRunning: await cursorRunning(), free, size});
+          }
+          if (req.method === 'POST' && url.pathname === '/api/cursor-store/delete') {
+            const body = await readBody(req);
+            if (body.confirm !== true) return sendJson(res, 400, {ok: false, error: '删除需要明确确认'});
+            const ids = Array.isArray(body.ids) ? body.ids : [];
+            if (!ids.length) return sendJson(res, 400, {ok: false, error: '未选择会话'});
+            if (await cursorRunning()) {
+              return sendJson(res, 409, {ok: false, error: 'Cursor 正在运行：请完全退出 Cursor 后再删除，否则它会把内存中的会话写回数据库'});
+            }
+            if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
+            busy = '删除 Cursor 会话';
+            log(`cursor store delete: ${ids.length} session(s)`);
+            try {
+              const deleted = await deleteComposers(store.stateDb, ids);
+              clearStoreCaches();
+              log(`cursor store delete: ${deleted.totalRows} rows / ${deleted.totalBytes} bytes in ${deleted.elapsedMs} ms`);
+              return sendJson(res, 200, {ok: true, deleted});
+            } finally {
+              busy = null;
+            }
+          }
+          if (req.method === 'POST' && url.pathname === '/api/cursor-store/vacuum') {
+            const body = await readBody(req);
+            if (body.confirm !== true) return sendJson(res, 400, {ok: false, error: '压缩需要明确确认'});
+            if (await cursorRunning()) {
+              return sendJson(res, 409, {ok: false, error: 'Cursor 正在运行：请完全退出 Cursor 后再压缩'});
+            }
+            if (!fs.existsSync(store.stateDb)) return sendJson(res, 404, {ok: false, error: '未找到 Cursor 数据库'});
+            const size = fs.statSync(store.stateDb).size;
+            const free = storeFreeSpace(store.stateDb);
+            if (free !== null && free < size * 1.1) {
+              return sendJson(res, 409, {ok: false, error: `可用空间不足：压缩需要约 ${Math.round(size / 1024 ** 3)} GB 临时空间`});
+            }
+            if (busy) return sendJson(res, 409, {ok: false, error: `正在执行「${busy}」，请稍候`});
+            busy = '压缩 Cursor 数据库';
+            log(`cursor store vacuum: ${Math.round(size / 1024 ** 3)} GB`);
+            try {
+              const result = await vacuumStore(store.stateDb);
+              clearStoreCaches();
+              log(`cursor store vacuum: ${result.before} -> ${result.after} bytes in ${result.elapsedMs} ms`);
+              return sendJson(res, 200, {ok: true, vacuum: result});
+            } finally {
+              busy = null;
+            }
+          }
+          if (url.pathname === '/api/cursor-store/scan') {
+            const data = await scanCategoryCached(store.stateDb, {
+              category: url.searchParams.get('category') || '',
+              mode: url.searchParams.get('mode') === 'exact' ? 'exact' : 'estimate'
+            });
+            return sendJson(res, 200, {ok: true, scan: data});
+          }
+          return sendJson(res, 404, {ok: false, error: '未知的 Cursor 存储接口'});
+        } catch (error) {
+          // A crashed Cursor can leave a WAL without its -shm file, and a
+          // -readonly opener then cannot rebuild the shared memory. The
+          // remaining failures here are lock timeouts from heavy Cursor
+          // writes; both are fixed by closing Cursor and retrying.
+          const hint = /unable to open database|database is locked|attempt to write/i.test(String(error?.message || ''))
+            ? '（数据库正被 Cursor 占用或共享内存缺失，请关闭 Cursor 后重试）'
+            : '';
+          return sendJson(res, 500, {ok: false, error: `读取 Cursor 存储失败：${error.message}${hint}`});
         }
       }
 
