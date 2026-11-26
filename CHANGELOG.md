@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.38（合并上游 Cursor 存储浏览、诊断与清理 + 本地引擎 0.2.20）
+
+- 保留并同步本地增强：
+  - 内置 Windows 原生引擎 `0.2.20`（桥接模式启用 `LocalCatalogOnly` 隔离并恢复防新建对话自动切回 `Auto` 配置，延续 `0.2.19` 的同流续发与运行中插话 Turn 持久化修复、`{{SessionId}}` 元数据与 HTTP 429 重试上限）。
+  - 保留引擎运行身份（PID、版本、SHA-256）、生命周期事件记录、过期 `connected` 状态检测、WMI 脱离 Job Object 后台启动、Tab 补全与数据目录迁移卡片。
+- 合并上游 `v0.2.38`：
+  - 控制台新增「Cursor 存储」折叠卡片，浏览 Cursor 自己的 `globalStorage/state.vscdb`（与桥接的 `bridge.db` 相互独立），支持概览统计、会话列表筛选分页、弹窗查看对话/工具调用/原文 JSON、按 8 个官方前缀类别进行空间占用诊断，以及退出 Cursor 后的安全批量删除与 `VACUUM` 压缩。
+  - 「Cursor CLI 接管」卡片移到「可编辑参数」下方，与接管开关相邻。
+  - Cursor 已实测范围升至 3.28.x–3.32.5。
+  - 新增 `control/cursor-store.js`、`/api/cursor-store/*` 路由与 `test/cursor-store.test.js`（19 项测试）。
+
 ## 0.2.37（合并上游 Windows 稳定性修复 + 本地引擎与诊断增强）
 
 - 合并上游 `v0.2.37`：

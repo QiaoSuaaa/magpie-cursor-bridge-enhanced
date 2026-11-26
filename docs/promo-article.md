@@ -19,7 +19,7 @@ Magpie 是一个本地模型管家：把各家供应商的 Key 和模型统一�
 
 ![在 Agents 里连接 Cursor Bridge](https://raw.githubusercontent.com/kingchen95272025/magpie-agent-cursor-bridge-enhanced/master/docs/images/magpie-agents.png)
 
-控制台可以启动、停止、重启，也能改模型显示名、隐藏不用的模型、查看最近调用和日志。3.31.17 及以下版本已实测可用。
+控制台可以启动、停止、重启，也能改模型显示名、隐藏不用的模型、查看最近调用和日志。3.32.5 及以下版本已实测可用。
 
 ![Cursor 桥接控制台](https://raw.githubusercontent.com/kingchen95272025/magpie-agent-cursor-bridge-enhanced/master/docs/images/console-overview.png)
 

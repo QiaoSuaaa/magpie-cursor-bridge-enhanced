@@ -149,11 +149,11 @@ const CATEGORIES = [
 const CATEGORY_BY_ID = new Map(CATEGORIES.map((entry) => [entry.id, entry]));
 const KNOWN_TABLES = new Set(Object.keys(TABLES));
 
-function quoteIdent(name) {
+export function quoteIdent(name) {
   return `"${String(name).replaceAll('"', '""')}"`;
 }
 
-function quoteText(value) {
+export function quoteText(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
@@ -183,7 +183,10 @@ async function bunSqlite(dbPath, sql, {readonly = false, json = false, busyTimeo
   }
 }
 
-function sqlite(dbPath, sql, {readonly = false, json = false, timeout = QUERY_TIMEOUT, busyTimeout = 0} = {}) {
+// `maxBuffer` is exposed for callers that legitimately read large rows (the
+// Cursor state store returns whole message bodies); the bridge statistics
+// queries never come close to the default.
+export function sqlite(dbPath, sql, {readonly = false, json = false, timeout = QUERY_TIMEOUT, busyTimeout = 0, maxBuffer = 16 * 1024 * 1024} = {}) {
   const binary = platform.current.sqlite3();
   if (!binary) {
     if (process.versions.bun) return bunSqlite(dbPath, sql, {readonly, json, busyTimeout});
@@ -197,7 +200,7 @@ function sqlite(dbPath, sql, {readonly = false, json = false, timeout = QUERY_TI
   if (busyTimeout) args.push('-cmd', `.timeout ${busyTimeout}`);
   args.push('-batch', dbPath, sql);
   return new Promise((resolve, reject) => {
-    execFile(binary, args, {encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024, windowsHide: true}, (error, stdout, stderr) => {
+    execFile(binary, args, {encoding: 'utf8', timeout, maxBuffer, windowsHide: true}, (error, stdout, stderr) => {
       if (error) {
         const detail = String(stderr || '').trim();
         reject(new Error(detail || String(error.message || error)));

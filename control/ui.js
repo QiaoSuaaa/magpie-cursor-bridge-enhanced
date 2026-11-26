@@ -792,6 +792,760 @@
     if (!result) rows.replaceChildren(...previous);
   }
 
+  // ---- Cursor 存储（state.vscdb） ----
+  let storeOverview = null;
+  let storeWorkspaceList = [];
+  let storeLoading = false;
+  let storeOffset = 0;
+  let storeDetail = {id: '', offset: 0, total: 0};
+  let storeScanning = '';
+  let storeSizeToken = 0;
+  let storeRangeReady = false;
+  let storeSelected = new Set();
+  let storeDeleteIds = [];
+  let storeDeleteMode = 'selected';
+  const storeScans = new Map();
+  const STORE_MESSAGE_CAP = 1500;
+  const CHAT_CHUNK = 30;
+  const STORE_PAGE_SIZES = [10, 20, 50, 100];
+  let storeChat = {messages: [], rendered: 0, id: ''};
+
+  function storePageSize() {
+    const value = Number($('storePageSize').value);
+    return STORE_PAGE_SIZES.includes(value) ? value : 10;
+  }
+
+  function storeWorkspaceName(id) {
+    const found = storeWorkspaceList.find((entry) => entry.id === id);
+    return found ? found.name : (id ? id.slice(0, 8) : '—');
+  }
+
+  async function loadStore() {
+    if (storeLoading) return;
+    storeLoading = true;
+    ensureStoreRangeDefaults();
+    $('storeState').textContent = '读取中…';
+    try {
+      const [overview, workspaces] = await Promise.all([
+        api('/api/cursor-store/overview'),
+        api('/api/cursor-store/workspaces')
+      ]);
+      storeOverview = overview;
+      storeWorkspaceList = workspaces.workspaces || [];
+      renderStore();
+      await loadStoreSessions({reset: true});
+    } catch (error) {
+      $('storeState').textContent = '读取失败';
+      $('storeHint').textContent = `读取 Cursor 存储失败：${error.message}`;
+    } finally {
+      storeLoading = false;
+    }
+  }
+
+  function renderStore() {
+    const store = storeOverview?.store;
+    if (!store || !store.exists) {
+      $('storeState').textContent = '未找到';
+      $('storeHint').textContent = store
+        ? `未找到 Cursor 数据库：${store.path}。请确认 Cursor 已安装并至少打开过一次。`
+        : '未读取到 Cursor 存储信息。';
+      $('storeSummary').hidden = true;
+      $('storeSessions').replaceChildren();
+      $('storePager').hidden = true;
+      return;
+    }
+    const composers = store.composers || {};
+    $('storeState').textContent = `${bytes(store.file.size)} · ${numberText(composers.total || 0)} 会话`;
+    $('storeHint').textContent = '浏览与统计只读，不会在打开面板时扫盘；删除与压缩是显式写操作，执行前必须完全退出 Cursor。';
+    $('storeSummary').replaceChildren(
+      item('数据库文件', bytes(store.file.size), {mono: true, title: store.path}),
+      item('WAL / SHM', `${bytes(store.file.wal)} / ${bytes(store.file.shm)}`, {mono: true}),
+      item('页数 × 页大小', `${numberText(store.page.pageCount)} × ${numberText(store.page.pageSize)} B`, {mono: true}),
+      item('空闲页', numberText(store.page.freelistCount), {mono: true}),
+      item('会话总数', numberText(composers.total || 0), {mono: true}),
+      item('主 / 子代理', `${numberText((composers.total || 0) - (composers.subagents || 0))} / ${numberText(composers.subagents || 0)}`, {mono: true}),
+      item('项目数', numberText(composers.workspaces || 0), {mono: true}),
+      item('最近写入', timeText(store.file.updated))
+    );
+    $('storeSummary').hidden = false;
+
+    const select = $('storeWorkspace');
+    const current = select.value;
+    const options = [new Option('全部项目', '')];
+    for (const workspace of storeWorkspaceList) {
+      options.push(new Option(`${workspace.name} · ${workspace.id.slice(0, 6)}`, workspace.id));
+    }
+    select.replaceChildren(...options);
+    select.value = current;
+
+    const free = (store.page.freelistCount || 0) * (store.page.pageSize || 0);
+    $('storeScanHint').textContent = free > 0
+      ? `按类统计（缓存 2 分钟）· 当前空闲页约 ${bytes(free)}`
+      : '按类统计（缓存 2 分钟）· 粗体两类默认 1/16 采样';
+    renderStoreScans(storeOverview.categories || []);
+    renderStoreActions(storeOverview.actions || []);
+  }
+
+  function renderStoreScans(categories) {
+    const table = document.createElement('table');
+    table.className = 'db-table store-scan-table';
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    for (const text of ['类别', '行数', '体积', '操作']) {
+      const th = document.createElement('th');
+      th.textContent = text;
+      headRow.append(th);
+    }
+    head.append(headRow);
+    const body = document.createElement('tbody');
+    for (const category of categories) {
+      const scan = storeScans.get(category.id);
+      const row = document.createElement('tr');
+      const name = document.createElement('td');
+      name.textContent = category.label;
+      name.title = category.hint;
+      if (category.heavy) name.className = 'store-heavy';
+      const rows = document.createElement('td');
+      rows.className = 'mono';
+      rows.textContent = scan ? `${scan.sampled ? '≈' : ''}${numberText(scan.rows)}` : '—';
+      const size = document.createElement('td');
+      size.className = 'mono';
+      size.textContent = scan ? bytes(scan.bytes) : '—';
+      if (scan) size.title = `${scan.sampled ? '1/16 采样估算' : '精确统计'} · ${numberText(scan.elapsedMs)} ms`;
+      const action = document.createElement('td');
+      action.className = 'store-scan-actions';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ghost';
+      button.textContent = storeScanning === category.id ? '统计中…' : (category.heavy ? '估算' : '统计');
+      button.disabled = Boolean(storeScanning);
+      button.addEventListener('click', () => loadStoreScan(category.id, category.heavy ? 'estimate' : 'exact'));
+      action.append(button);
+      if (category.heavy && scan) {
+        const exact = document.createElement('button');
+        exact.type = 'button';
+        exact.className = 'ghost';
+        exact.textContent = '精确';
+        exact.disabled = Boolean(storeScanning);
+        exact.addEventListener('click', () => loadStoreScan(category.id, 'exact'));
+        action.append(exact);
+      }
+      row.append(name, rows, size, action);
+      body.append(row);
+    }
+    table.append(head, body);
+    $('storeScanBody').replaceChildren(table);
+  }
+
+  function renderStoreActions(actions) {
+    const wrap = document.createElement('div');
+    wrap.className = 'store-actions';
+    for (const action of actions) {
+      const row = document.createElement('div');
+      row.className = 'cleanup-row';
+      const copy = document.createElement('div');
+      copy.className = 'cleanup-copy';
+      const title = document.createElement('strong');
+      title.textContent = action.title;
+      const hint = document.createElement('span');
+      hint.className = 'hint';
+      hint.textContent = action.hint;
+      const code = document.createElement('code');
+      code.className = 'store-command';
+      code.textContent = action.palette;
+      copy.append(title, hint, code);
+      row.append(copy);
+      wrap.append(row);
+    }
+    $('storeActions').replaceChildren(wrap);
+  }
+
+  async function loadStoreScan(category, mode) {
+    if (storeScanning) return;
+    storeScanning = category;
+    renderStoreScans(storeOverview?.categories || []);
+    $('storeScanHint').textContent = mode === 'exact'
+      ? '精确统计中，内容块类可能需要数分钟，请勿关闭面板…'
+      : '估算中（读取 1/16 的行），约 15–30 秒…';
+    try {
+      const data = await api(`/api/cursor-store/scan?category=${encodeURIComponent(category)}&mode=${mode}`);
+      storeScans.set(category, data.scan);
+      $('storeScanHint').textContent = `${data.scan.label}：${bytes(data.scan.bytes)} · ${numberText(data.scan.rows)} 行 · ${numberText(data.scan.elapsedMs)} ms${data.scan.cached ? '（缓存）' : ''}`;
+    } catch (error) {
+      $('storeScanHint').textContent = `统计失败：${error.message}`;
+    } finally {
+      storeScanning = '';
+      renderStoreScans(storeOverview?.categories || []);
+    }
+  }
+
+  function storeDateValue(date) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  // The custom range starts at "last 30 days" so the Apply button is useful
+  // immediately; anything the user cannot parse falls back to "no bound".
+  function ensureStoreRangeDefaults() {
+    if (storeRangeReady) return;
+    storeRangeReady = true;
+    const today = new Date();
+    $('storeSince').value = storeDateValue(new Date(today.getTime() - 30 * 86400000));
+    $('storeUntil').value = storeDateValue(today);
+  }
+
+  function storeRangeParams() {
+    const value = $('storeRange').value;
+    if (value === 'custom') {
+      const since = $('storeSince').value ? new Date(`${$('storeSince').value}T00:00:00`).getTime() : 0;
+      const until = $('storeUntil').value ? new Date(`${$('storeUntil').value}T23:59:59.999`).getTime() : 0;
+      return {
+        since: Number.isFinite(since) && since > 0 ? since : 0,
+        until: Number.isFinite(until) && until > 0 ? until : 0
+      };
+    }
+    if (value === 'all') return {since: 0, until: 0};
+    // recent-N keeps conversations active within N days; older-N keeps the
+    // ones that have been idle for at least N days.
+    const match = /^(recent|older)-(\d+)$/.exec(value);
+    if (!match) return {since: 0, until: 0};
+    const days = Number(match[2]);
+    if (!Number.isFinite(days) || days <= 0) return {since: 0, until: 0};
+    const cutoff = Date.now() - days * 86400000;
+    return match[1] === 'recent' ? {since: cutoff, until: 0} : {since: 0, until: cutoff};
+  }
+
+  function storeFilterParams(offset, limit) {
+    const params = new URLSearchParams({
+      kind: $('storeKind').value,
+      offset: String(offset),
+      limit: String(limit)
+    });
+    const workspace = $('storeWorkspace').value;
+    if (workspace) params.set('workspace', workspace);
+    params.set('named', $('storeNamed').value);
+    const mode = $('storeMode').value;
+    if (mode) params.set('mode', mode);
+    const range = storeRangeParams();
+    if (range.since) params.set('since', String(range.since));
+    if (range.until) params.set('until', String(range.until));
+    return params;
+  }
+
+  function updateStoreSelection() {
+    const count = storeSelected.size;
+    $('storeBulk').hidden = count === 0;
+    $('storeBulkInfo').textContent = `已选 ${numberText(count)} 个会话`;
+  }
+
+  async function loadStoreSessions({reset = false} = {}) {
+    if (reset) storeOffset = 0;
+    storeSelected.clear();
+    updateStoreSelection();
+    $('storeListHint').textContent = '读取会话…';
+    const pageSize = storePageSize();
+    const params = storeFilterParams(storeOffset, pageSize);
+    try {
+      const data = await api(`/api/cursor-store/sessions?${params}`);
+      if (!data.supported) {
+        $('storeListHint').textContent = '当前 Cursor 版本没有 composerHeaders 表，无法列出会话。';
+        $('storeSessions').replaceChildren();
+        $('storePager').hidden = true;
+        return;
+      }
+      renderStoreSessions(data.sessions || []);
+      $('storeListHint').textContent = `共 ${numberText(data.total)} 个会话`;
+      const pages = Math.max(1, Math.ceil(data.total / pageSize));
+      $('storePager').hidden = data.total === 0;
+      $('storePageInfo').textContent = data.total
+        ? `第 ${Math.floor(storeOffset / pageSize) + 1} / ${pages} 页`
+        : '';
+      $('storePrev').disabled = storeOffset <= 0;
+      $('storeNext').disabled = storeOffset + pageSize >= data.total;
+    } catch (error) {
+      $('storeListHint').textContent = `读取会话失败：${error.message}`;
+    }
+  }
+
+  function renderStoreSessions(sessions) {
+    if (!sessions.length) {
+      $('storeSessions').replaceChildren(Object.assign(document.createElement('p'), {
+        className: 'hint',
+        textContent: '没有符合条件的会话。'
+      }));
+      return;
+    }
+    const table = document.createElement('table');
+    table.className = 'db-table store-sessions';
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    const selectAll = document.createElement('input');
+    selectAll.type = 'checkbox';
+    selectAll.ariaLabel = '选择当前页全部会话';
+    selectAll.checked = sessions.every((session) => storeSelected.has(session.id));
+    selectAll.addEventListener('change', () => {
+      for (const session of sessions) {
+        if (selectAll.checked) storeSelected.add(session.id);
+        else storeSelected.delete(session.id);
+      }
+      for (const box of document.querySelectorAll('.store-row-check')) box.checked = selectAll.checked;
+      updateStoreSelection();
+    });
+    const selectAllCell = document.createElement('th');
+    selectAllCell.className = 'store-check-cell';
+    selectAllCell.append(selectAll);
+    headRow.append(selectAllCell);
+    for (const text of ['ID', '会话', '项目', '体积', '更新时间', '类型', '']) {
+      const th = document.createElement('th');
+      th.textContent = text;
+      headRow.append(th);
+    }
+    head.append(headRow);
+    const body = document.createElement('tbody');
+    for (const session of sessions) {
+      const row = document.createElement('tr');
+      const check = document.createElement('td');
+      check.className = 'store-check-cell';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'store-row-check';
+      box.checked = storeSelected.has(session.id);
+      box.ariaLabel = `选择 ${session.name || session.id.slice(0, 8)}`;
+      box.addEventListener('change', () => {
+        if (box.checked) storeSelected.add(session.id);
+        else storeSelected.delete(session.id);
+        updateStoreSelection();
+      });
+      check.append(box);
+      const name = document.createElement('td');
+      name.textContent = session.name || `（未命名 ${session.id.slice(0, 8)}）`;
+      name.title = session.id;
+      const id = document.createElement('td');
+      id.className = 'mono store-session-id';
+      id.textContent = session.id.slice(0, 8);
+      id.title = session.id;
+      const workspace = document.createElement('td');
+      workspace.textContent = storeWorkspaceName(session.workspaceId);
+      workspace.title = session.workspaceId;
+      const size = document.createElement('td');
+      size.className = 'mono store-size-cell';
+      size.dataset.id = session.id;
+      size.textContent = '…';
+      const updated = document.createElement('td');
+      updated.className = 'mono';
+      updated.textContent = timeText(session.lastUpdatedAt || session.createdAt);
+      const kind = document.createElement('td');
+      kind.textContent = session.archived ? '已归档' : (session.subagent ? '子代理' : '主会话');
+      const open = document.createElement('td');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ghost';
+      button.textContent = '打开';
+      button.addEventListener('click', () => openStoreSession(session.id));
+      open.append(button);
+      row.append(check, id, name, workspace, size, updated, kind, open);
+      body.append(row);
+    }
+    table.append(head, body);
+    $('storeSessions').replaceChildren(table);
+    fillSessionSizes(sessions, ++storeSizeToken);
+  }
+
+  // Sizes arrive after the list so browsing is never blocked by byte totals:
+  // the server resolves the whole page in one statement and caches per session.
+  async function fillSessionSizes(sessions, token) {
+    const ids = sessions.map((session) => session.id).filter(Boolean);
+    if (!ids.length) return;
+    try {
+      const data = await api(`/api/cursor-store/sizes?ids=${encodeURIComponent(ids.join(','))}`);
+      if (token !== storeSizeToken) return;
+      for (const cell of document.querySelectorAll('.store-size-cell')) {
+        const size = data.sizes?.[cell.dataset.id];
+        if (!size) {
+          cell.textContent = '—';
+          continue;
+        }
+        cell.textContent = bytes(size.bytes);
+        cell.title = `${numberText(size.messages)} 条记录（消息 / 工具 / 分片）+ 会话数据`;
+      }
+    } catch {
+      if (token !== storeSizeToken) return;
+      for (const cell of document.querySelectorAll('.store-size-cell')) cell.textContent = '—';
+    }
+  }
+
+  // ---- 删除与压缩 ----
+
+  function spaceTable(rows) {
+    const table = document.createElement('table');
+    table.className = 'db-table store-delete-table';
+    const body = document.createElement('tbody');
+    for (const [label, value] of rows) {
+      const row = document.createElement('tr');
+      const left = document.createElement('td');
+      left.textContent = label;
+      const right = document.createElement('td');
+      right.textContent = value;
+      row.append(left, right);
+      body.append(row);
+    }
+    table.append(body);
+    return table;
+  }
+
+  function storeDeleteReady() {
+    const ready = $('storeDeleteCursor').checked && $('storeDeleteWord').value.trim() === '删除';
+    $('storeDeleteGo').disabled = !ready || !storeDeleteIds.length;
+  }
+
+  async function openStoreDelete(ids, {mode = 'selected'} = {}) {
+    storeDeleteIds = ids;
+    storeDeleteMode = mode;
+    const dialog = $('storeDeleteDialog');
+    $('storeDeleteTitle').textContent = mode === 'filtered' ? '删除筛选结果' : '删除选中会话';
+    $('storeDeleteMeta').textContent = `共 ${numberText(ids.length)} 个会话`;
+    $('storeDeleteSummary').textContent = '正在统计将删除的数据…';
+    $('storeDeleteHint').textContent = '';
+    $('storeDeleteHint').className = 'hint';
+    $('storeDeleteWord').value = '';
+    $('storeDeleteCursor').checked = false;
+    $('storeDeleteGo').disabled = true;
+    if (!dialog.open) dialog.showModal();
+    try {
+      const data = await api(`/api/cursor-store/delete-preview?ids=${encodeURIComponent(ids.join(','))}`);
+      const preview = data.preview;
+      const kinds = Object.entries(preview.kinds)
+        .filter(([, value]) => value.rows)
+        .map(([kind, value]) => `${kind} ${numberText(value.rows)}`)
+        .join(' · ');
+      $('storeDeleteSummary').replaceChildren(
+        spaceTable([
+          ['会话', `${numberText(preview.ids.length)} 个`],
+          ['数据行', `${numberText(preview.totalRows)} 行`],
+          ['数据体积', bytes(preview.totalBytes)],
+          ['数据库大小', bytes(data.size)],
+          ['磁盘可用', data.free === null ? '未知' : bytes(data.free)]
+        ]),
+        Object.assign(document.createElement('p'), {className: 'hint', textContent: kinds})
+      );
+      $('storeDeleteHint').textContent = data.cursorRunning
+        ? '检测到 Cursor 正在运行：请完全退出 Cursor 后再删除（关闭窗口不算）。'
+        : '已确认 Cursor 未运行。';
+      $('storeDeleteHint').className = data.cursorRunning ? 'hint store-danger-text' : 'hint';
+    } catch (error) {
+      $('storeDeleteSummary').textContent = `统计失败：${error.message}`;
+    }
+  }
+
+  async function confirmStoreDelete() {
+    const button = $('storeDeleteGo');
+    button.disabled = true;
+    button.textContent = '删除中…';
+    try {
+      const data = await api('/api/cursor-store/delete', {method: 'POST', body: {ids: storeDeleteIds, confirm: true}});
+      $('storeDeleteDialog').close();
+      storeSelected.clear();
+      updateStoreSelection();
+      storeScans.clear();
+      notice(`已删除 ${numberText(data.deleted.ids.length)} 个会话（${numberText(data.deleted.totalRows)} 行 / ${bytes(data.deleted.totalBytes)}）。空间需执行「压缩」后释放。`, 'ok');
+      await loadStore();
+    } catch (error) {
+      $('storeDeleteHint').textContent = error.message;
+      $('storeDeleteHint').className = 'hint store-danger-text';
+    } finally {
+      button.textContent = '确认删除';
+      storeDeleteReady();
+    }
+  }
+
+  async function deleteFilteredStore() {
+    try {
+      const data = await api(`/api/cursor-store/sessions?${storeFilterParams(0, 100)}`);
+      if (!data.supported) return;
+      if (!data.total) {
+        notice('当前筛选没有会话。', 'error');
+        return;
+      }
+      if (data.total > 100) {
+        notice(`当前筛选有 ${numberText(data.total)} 个会话，超过单次上限 100；请缩小筛选范围后再试。`, 'error');
+        return;
+      }
+      openStoreDelete(data.sessions.map((session) => session.id), {mode: 'filtered'});
+    } catch (error) {
+      notice(`读取筛选结果失败：${error.message}`, 'error');
+    }
+  }
+
+  async function openStoreVacuum() {
+    const dialog = $('storeVacuumDialog');
+    $('storeVacuumMeta').textContent = '';
+    $('storeVacuumSummary').textContent = '正在读取空间信息…';
+    $('storeVacuumCursor').checked = false;
+    $('storeVacuumGo').disabled = true;
+    $('storeVacuumResult').textContent = '';
+    if (!dialog.open) dialog.showModal();
+    try {
+      const data = await api('/api/cursor-store/overview?probe=1');
+      const store = data.store;
+      if (!store.exists) {
+        $('storeVacuumSummary').textContent = '未找到 Cursor 数据库。';
+        return;
+      }
+      const freelist = (store.page.freelistCount || 0) * (store.page.pageSize || 0);
+      $('storeVacuumSummary').replaceChildren(spaceTable([
+        ['数据库大小', bytes(store.file.size)],
+        ['空闲页', `${numberText(store.page.freelistCount)} · 约 ${bytes(freelist)}`],
+        ['WAL', bytes(store.file.wal)],
+        ['预计需要临时空间', `约 ${bytes(store.file.size)}`],
+        ['磁盘可用', store.free === null ? '未知' : bytes(store.free)],
+        ['Cursor 状态', data.cursorRunning ? '运行中：请先完全退出' : '未运行']
+      ]));
+      $('storeVacuumMeta').textContent = data.cursorRunning
+        ? '检测到 Cursor 正在运行，压缩会被拒绝'
+        : 'VACUUM 会重写整个数据库';
+      $('storeVacuumMeta').className = data.cursorRunning ? 'hint store-danger-text' : 'hint';
+    } catch (error) {
+      $('storeVacuumSummary').textContent = `读取失败：${error.message}`;
+    }
+  }
+
+  async function confirmStoreVacuum() {
+    const button = $('storeVacuumGo');
+    button.disabled = true;
+    button.textContent = '压缩中…';
+    $('storeVacuumResult').textContent = '正在重写数据库，请勿启动 Cursor…';
+    try {
+      const data = await api('/api/cursor-store/vacuum', {method: 'POST', body: {confirm: true}});
+      $('storeVacuumResult').textContent = `完成：${bytes(data.vacuum.before)} → ${bytes(data.vacuum.after)}，释放 ${bytes(data.vacuum.saved)}（${Math.round(data.vacuum.elapsedMs / 1000)} 秒）`;
+      storeScans.clear();
+      notice(`压缩完成，释放 ${bytes(data.vacuum.saved)}。`, 'ok');
+      await loadStore();
+    } catch (error) {
+      $('storeVacuumResult').textContent = `压缩失败：${error.message}`;
+    } finally {
+      button.textContent = '确认压缩';
+      $('storeVacuumGo').disabled = !$('storeVacuumCursor').checked;
+    }
+  }
+
+  async function openStoreSession(id) {
+    storeDetail = {id, total: 0};
+    const dialog = $('storeDetailDialog');
+    if (!dialog.open) dialog.showModal();
+    $('storeDetailTitle').textContent = '会话';
+    $('storeDetailMeta').textContent = '读取中…';
+    $('storeMessages').replaceChildren();
+    storeChat = {messages: [], rendered: 0, id};
+    const tools = $('storeShowTools').checked ? '&tools=1' : '';
+    try {
+      const data = await api(`/api/cursor-store/session?id=${encodeURIComponent(id)}&limit=${STORE_MESSAGE_CAP}${tools}`);
+      renderStoreSession(data.session);
+    } catch (error) {
+      $('storeDetailMeta').textContent = `读取失败：${error.message}`;
+    }
+  }
+
+  function renderStoreSession(session) {
+    storeDetail = {id: session.id, total: session.listTotal};
+    $('storeDetailTitle').textContent = session.name || `会话 ${session.id.slice(0, 8)}`;
+    $('storeToolCount').textContent = session.toolCount ? `（${numberText(session.toolCount)}）` : '';
+    const meta = [
+      storeWorkspaceName(session.workspaceId),
+      session.subagent ? '子代理' : '主会话',
+      session.archived ? '已归档' : '',
+      `消息 ${numberText(session.messageCount)} 条`,
+      session.toolCount ? `工具 ${numberText(session.toolCount)} 条` : '',
+      session.fragmentCount ? `分片 ${numberText(session.fragmentCount)}` : '',
+      bytes(session.messageBytes + session.toolBytes),
+      `创建于 ${timeText(session.createdAt)}`
+    ].filter(Boolean);
+    if (session.truncated) meta.push(`仅载入前 ${numberText(STORE_MESSAGE_CAP)} 条`);
+    $('storeDetailMeta').textContent = meta.join(' · ');
+    const list = document.createElement('div');
+    list.className = 'chat-list';
+    $('storeMessages').replaceChildren(list);
+    $('storeMessages').scrollTop = 0;
+    storeChat = {messages: session.messages || [], rendered: 0, id: session.id};
+    appendChatMessages();
+    fillChatViewport();
+  }
+
+  // Chat messages keep the Cursor layout: user text in a bubble, assistant
+  // text plain. Tool steps collapse to one line (verb + target) and expand
+  // into params/result on click, instead of a tall card per call.
+  function chatMessageNode(message) {
+    if (message.kind === 'tool') return chatToolNode(message);
+    const wrap = document.createElement('div');
+    wrap.className = `chat-msg ${message.type === 1 ? 'chat-msg-user' : 'chat-msg-assistant'}`;
+    const head = document.createElement('div');
+    head.className = 'chat-msg-head';
+    const role = document.createElement('strong');
+    role.textContent = message.type === 1 ? '你' : 'Cursor';
+    const stats = document.createElement('span');
+    stats.className = 'hint';
+    stats.textContent = [
+      message.createdAt ? timeText(message.createdAt) : '',
+      bytes(message.bytes),
+      message.thinking ? `思考 ${message.thinking}` : ''
+    ].filter(Boolean).join(' · ');
+    head.append(role, stats);
+    const body = document.createElement('div');
+    body.className = 'chat-msg-body';
+    body.textContent = message.preview || '（无文本内容）';
+    wrap.append(head, body);
+    if (message.truncated || !message.preview) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'ghost chat-more';
+      more.textContent = '查看原文';
+      more.addEventListener('click', () => loadStoreValue(message.key));
+      wrap.append(more);
+    }
+    return wrap;
+  }
+
+  function chatToolNode(message) {
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-tool';
+    const row = document.createElement('div');
+    row.className = 'chat-tool-row';
+    row.tabIndex = 0;
+    const verb = document.createElement('span');
+    verb.className = 'chat-tool-verb';
+    verb.textContent = message.verb || message.toolName || '工具';
+    const target = document.createElement('span');
+    target.className = 'chat-tool-target';
+    target.textContent = message.target || '';
+    target.title = message.target || message.toolName || '';
+    const stats = document.createElement('span');
+    stats.className = 'chat-tool-stats';
+    stats.textContent = [
+      message.createdAt ? timeText(message.createdAt) : '',
+      bytes(message.bytes),
+      message.toolStatus
+    ].filter(Boolean).join(' · ');
+    const caret = document.createElement('span');
+    caret.className = 'chat-tool-caret';
+    caret.textContent = '▸';
+    row.append(verb, target, stats, caret);
+    const detail = document.createElement('div');
+    detail.className = 'chat-tool-detail';
+    detail.hidden = true;
+    const block = (label, text) => {
+      if (!text) return null;
+      const box = document.createElement('div');
+      box.className = 'chat-tool-block';
+      const head = document.createElement('span');
+      head.textContent = label;
+      const pre = document.createElement('pre');
+      pre.textContent = text;
+      box.append(head, pre);
+      return box;
+    };
+    for (const child of [block('参数', message.paramsPreview), block('结果', message.resultPreview)]) {
+      if (child) detail.append(child);
+    }
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'ghost chat-more';
+    more.textContent = '查看原文';
+    more.addEventListener('click', (event) => {
+      event.stopPropagation();
+      loadStoreValue(message.key);
+    });
+    detail.append(more);
+    const toggle = () => {
+      detail.hidden = !detail.hidden;
+      caret.textContent = detail.hidden ? '▸' : '▾';
+    };
+    row.addEventListener('click', toggle);
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        toggle();
+      }
+    });
+    wrap.append(row, detail);
+    return wrap;
+  }
+
+  function appendChatMessages() {
+    const list = document.querySelector('#storeMessages .chat-list');
+    if (!list) return;
+    const end = Math.min(storeChat.messages.length, storeChat.rendered + CHAT_CHUNK);
+    const fragment = document.createDocumentFragment();
+    for (let index = storeChat.rendered; index < end; index += 1) {
+      fragment.append(chatMessageNode(storeChat.messages[index]));
+    }
+    list.append(fragment);
+    storeChat.rendered = end;
+  }
+
+  // Fill the first screen without waiting for a scroll; short conversations
+  // then reveal everything at once.
+  function fillChatViewport() {
+    const box = $('storeMessages');
+    if (!box) return;
+    if (storeChat.rendered < storeChat.messages.length && box.scrollHeight <= box.clientHeight + 48) {
+      appendChatMessages();
+      requestAnimationFrame(fillChatViewport);
+    }
+  }
+
+  // Full bodies open in a modal: the list stays scannable and the dialog gets
+  // the whole viewport for code-heavy payloads.
+  async function loadStoreValue(key) {
+    const dialog = $('storeValueDialog');
+    $('storeDialogTitle').textContent = key.length > 90 ? `…${key.slice(-86)}` : key;
+    $('storeDialogMeta').textContent = '读取中…';
+    $('storeDialogBody').textContent = '';
+    if (!dialog.open) dialog.showModal();
+    try {
+      const data = await api(`/api/cursor-store/value?key=${encodeURIComponent(key)}`);
+      if (!data.value.found) {
+        $('storeDialogMeta').textContent = '未找到';
+        $('storeDialogBody').textContent = '该 key 不存在（已查 cursorDiskKV 与 ItemTable）。';
+        return;
+      }
+      let text = data.value.text || '（空值）';
+      if (text.length <= 65536) {
+        try { text = JSON.stringify(JSON.parse(text), null, 2); } catch { /* 非 JSON 原样展示 */ }
+      }
+      if (data.value.truncated) text += `\n\n…（已截断，原值 ${bytes(data.value.bytes)}）`;
+      $('storeDialogBody').textContent = text;
+      $('storeDialogMeta').textContent = `${bytes(data.value.bytes)} · ${data.value.table}`;
+    } catch (error) {
+      $('storeDialogMeta').textContent = '读取失败';
+      $('storeDialogBody').textContent = error.message;
+    }
+  }
+
+  async function loadStoreKeyValue() {
+    const key = $('storeKey').value.trim();
+    const box = $('storeKeyBody');
+    box.hidden = false;
+    if (!key) {
+      box.textContent = '请输入 key。';
+      return;
+    }
+    box.textContent = '读取中…';
+    try {
+      const data = await api(`/api/cursor-store/value?key=${encodeURIComponent(key)}`);
+      if (!data.value.found) {
+        box.textContent = '未找到该 key（先查 cursorDiskKV，再查 ItemTable）。';
+        return;
+      }
+      let text = data.value.text || '（空值）';
+      if (text.length <= 65536) {
+        try { text = JSON.stringify(JSON.parse(text), null, 2); } catch { /* 非 JSON 原样展示 */ }
+      }
+      if (data.value.truncated) text += `\n\n…（已截断，原值 ${bytes(data.value.bytes)}）`;
+      box.textContent = text;
+    } catch (error) {
+      box.textContent = `读取失败：${error.message}`;
+    }
+  }
+
   function renderDatabase(data) {
     dbData = data;
     $('dbState').textContent = data.exists ? bytes(data.file.db) : '未创建';
@@ -1368,6 +2122,87 @@
     });
     $('dbRefresh').addEventListener('click', () => loadDatabase({force: true}));
     $('dbDeep').addEventListener('click', () => loadDatabase({force: true, deep: true}));
+    $('storeCard').addEventListener('toggle', () => {
+      if ($('storeCard').open && !storeOverview && !storeLoading) loadStore();
+    });
+    $('storeRefresh').addEventListener('click', () => loadStore());
+    $('storeWorkspace').addEventListener('change', () => loadStoreSessions({reset: true}));
+    $('storeKind').addEventListener('change', () => loadStoreSessions({reset: true}));
+    $('storeRange').addEventListener('change', () => {
+      const custom = $('storeRange').value === 'custom';
+      $('storeCustomRange').hidden = !custom;
+      if (!custom) loadStoreSessions({reset: true});
+    });
+    $('storeRangeApply').addEventListener('click', () => loadStoreSessions({reset: true}));
+    $('storePageSize').addEventListener('change', () => loadStoreSessions({reset: true}));
+    $('storeResetFilters').addEventListener('click', () => {
+      $('storeWorkspace').value = '';
+      $('storeKind').value = 'main';
+      $('storeRange').value = 'all';
+      $('storeNamed').value = 'all';
+      $('storeMode').value = '';
+      $('storeCustomRange').hidden = true;
+      loadStoreSessions({reset: true});
+    });
+    $('storeNamed').addEventListener('change', () => loadStoreSessions({reset: true}));
+    $('storeMode').addEventListener('change', () => loadStoreSessions({reset: true}));
+    $('storeShowTools').addEventListener('change', () => {
+      if (storeDetail.id) openStoreSession(storeDetail.id);
+    });
+    $('storeDialogClose').addEventListener('click', () => $('storeValueDialog').close());
+    $('storeValueDialog').addEventListener('click', (event) => {
+      // A click on the backdrop targets the dialog element itself.
+      if (event.target === $('storeValueDialog')) $('storeValueDialog').close();
+    });
+    $('storePrev').addEventListener('click', () => {
+      storeOffset = Math.max(0, storeOffset - storePageSize());
+      loadStoreSessions();
+    });
+    $('storeNext').addEventListener('click', () => {
+      storeOffset += storePageSize();
+      loadStoreSessions();
+    });
+    $('storeMessages').addEventListener('scroll', () => {
+      const box = $('storeMessages');
+      if (!storeChat.messages.length) return;
+      if (box.scrollTop + box.clientHeight >= box.scrollHeight - 240) appendChatMessages();
+    });
+    $('storeDetailClose').addEventListener('click', () => {
+      $('storeDetailDialog').close();
+      storeDetail = {id: '', offset: 0, total: 0};
+    });
+    $('storeDetailDialog').addEventListener('click', (event) => {
+      if (event.target === $('storeDetailDialog')) $('storeDetailDialog').close();
+    });
+    $('storeBulkDelete').addEventListener('click', () => {
+      if (storeSelected.size) openStoreDelete([...storeSelected]);
+    });
+    $('storeBulkClear').addEventListener('click', () => {
+      storeSelected.clear();
+      updateStoreSelection();
+      loadStoreSessions();
+    });
+    $('storeCleanDelete').addEventListener('click', deleteFilteredStore);
+    $('storeVacuum').addEventListener('click', openStoreVacuum);
+    $('storeDeleteWord').addEventListener('input', storeDeleteReady);
+    $('storeDeleteCursor').addEventListener('change', storeDeleteReady);
+    $('storeDeleteGo').addEventListener('click', confirmStoreDelete);
+    $('storeDeleteCancel').addEventListener('click', () => $('storeDeleteDialog').close());
+    $('storeDeleteDialog').addEventListener('click', (event) => {
+      if (event.target === $('storeDeleteDialog')) $('storeDeleteDialog').close();
+    });
+    $('storeVacuumCursor').addEventListener('change', () => {
+      $('storeVacuumGo').disabled = !$('storeVacuumCursor').checked;
+    });
+    $('storeVacuumGo').addEventListener('click', confirmStoreVacuum);
+    $('storeVacuumCancel').addEventListener('click', () => $('storeVacuumDialog').close());
+    $('storeVacuumDialog').addEventListener('click', (event) => {
+      if (event.target === $('storeVacuumDialog')) $('storeVacuumDialog').close();
+    });
+    $('storeKeyLoad').addEventListener('click', loadStoreKeyValue);
+    $('storeKey').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') loadStoreKeyValue();
+    });
     $('callsCard').addEventListener('toggle', () => {
       if ($('callsCard').open) loadCalls();
     });
