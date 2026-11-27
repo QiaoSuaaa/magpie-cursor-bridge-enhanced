@@ -227,10 +227,10 @@ Cursor 请求里的 `requested_model.model_id` 是桥接生成的 `model_hash`�
 
 ### 3.2 安装
 
-从 Magpie 插件页安装（推荐）——在 **Magpie → Plugins** 添加固定版本地址：
+从 Magpie 插件页安装（推荐）——在 **Magpie → Plugins** 添加仓库地址：
 
 ```text
-github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.39
+github:QiaoSuaaa/magpie-cursor-bridge-enhanced
 ```
 
 安装后在终端运行一次包内初始化：
