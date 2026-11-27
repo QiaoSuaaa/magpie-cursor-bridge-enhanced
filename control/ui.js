@@ -116,7 +116,7 @@
   }
 
   function setBusy(value) {
-    for (const id of ['start', 'stop', 'status', 'restart', 'agentConnect', 'saveModelNames', 'updateRun']) {
+    for (const id of ['start', 'stop', 'status', 'restart', 'agentConnect', 'saveModelNames', 'updateRun', 'storageMigrate', 'saveTab', 'saveSettings']) {
       if ($(id)) $(id).disabled = value;
     }
     for (const button of document.querySelectorAll('.row-save')) button.disabled = value;
@@ -298,9 +298,20 @@
       ? `${cursor.version}${cursor.tested ? ' · 已实测' : ' · 未验证'}`
       : '未检测到';
 
+    const lifecycleReasons = {
+      initial_start: '首次启动', engine_recovery: '引擎退出后恢复', run_mode_changed: '运行模式变更',
+      subagent_mode_changed: '子代理模式变更', disconnected: '断开模型连接', proxy_changed: '代理设置被修改',
+      supervisor_error: '后台监视器异常', shutdown: '停止后台', unexpected_exit: '意外退出', requested_stop: '按要求停止'
+    };
+    const lifecycleEvents = {starting: '启动中', ready: '已就绪', stopping: '停止中', exited: '已退出', error: '发生异常'};
+
     const grid = $('overview');
     grid.replaceChildren(
-      item('版本', overview.version || overview.installation?.version || '—', {mono: true}),
+      item('插件版本（可用 / 已安装）', `${overview.versions?.availablePlugin || overview.version || '未知'} / ${overview.versions?.installedPlugin || overview.installation?.version || '未安装'}`, {mono: true}),
+      item('引擎版本（可用 / 运行中）', `${overview.versions?.availableEngine || '未知'} / ${overview.versions?.runningEngine || '未知'}`, {mono: true}),
+      item('更新生效状态', ({current: '已生效', restart_required: '待重启 · 请点击重启', stopped: '引擎未运行', unknown: '未知 · 重启后可确认'})[overview.versions?.state] || '未知', {tone: overview.versions?.state === 'current' ? 'ok' : 'warn'}),
+      item('本次引擎启动', timeText(runtime?.identity?.startedAt)),
+      item('本次启动原因', lifecycleReasons[runtime?.identity?.reason] || '未知'),
       item('Cursor', cursorText, {tone: cursor?.version && !cursor.tested ? 'warn' : '', title: cursor?.hint || ''}),
       item('运行模式', `${engineModeText}${switching ? ' · 切换中' : ''}`, {tone: switching ? 'warn' : ''}),
       item('数据库', databaseText, {tone: engineMode === 'lite' ? 'ok' : ''}),
@@ -332,14 +343,149 @@
       item('控制服务', `PID ${overview.control.pid} · ${overview.control.uptime}s`, {mono: true})
     );
 
+    const lifecycleList = Array.isArray(runtime?.lifecycle) ? runtime.lifecycle : [];
+    const entries = $('lifecycleEntries');
+    if (entries) {
+      entries.replaceChildren();
+      for (const entry of [...lifecycleList].reverse()) {
+        const row = document.createElement('p');
+        row.className = 'hint';
+        row.textContent = `${timeText(entry.at)} · ${lifecycleEvents[entry.event] || entry.event} · ${lifecycleReasons[entry.reason] || entry.reason}${entry.pid ? ` · PID ${entry.pid}` : ''}${entry.code != null ? ` · 退出码 ${entry.code}` : ''}${entry.signal ? ` · ${entry.signal}` : ''}`;
+        entries.append(row);
+      }
+      if (!entries.childNodes.length) entries.textContent = '暂无运行记录；更新后重启桥接即可开始记录。';
+    }
+    if ($('lifecycleState')) {
+      $('lifecycleState').textContent = lifecycleList.length ? `共 ${lifecycleList.length} 条` : '展开查看';
+    }
+
     const savedSettings = overview.settings?.values;
     if (!settingsFilled && savedSettings) {
       fillSettings(savedSettings);
       settingsFilled = true;
     }
     renderSettingsState();
+    if ($('currentDataDir')) $('currentDataDir').textContent = overview.paths?.dataDir || '—';
+    if ($('tabState')) {
+      $('tabState').textContent = overview.tabSupported === false
+        ? '当前平台需构建新引擎'
+        : (TAB_MODES[savedSettings?.tabMode] || TAB_MODES.direct);
+    }
+    if ($('tabMode')) {
+      for (const option of $('tabMode').options) {
+        option.disabled = option.value !== 'direct' && overview.tabSupported === false;
+      }
+    }
+    if (!tabFilled && savedSettings) fillTab(savedSettings);
     // The card is collapsed by default; only load the catalogue once opened.
     if ($('modelNamesCard')?.open && !modelNamesFilled) loadModelNames(overview);
+  }
+
+  const TAB_MODES = {direct: '沿用 Cursor 官方补全', official: '官方 Token 补全', custom: '自定义端点', public: '公共服务'};
+  let tabFilled = false;
+  let clearTabToken = false;
+
+  function updateTabMode() {
+    const mode = $('tabMode').value;
+    $('tabOfficialRow').hidden = mode !== 'official';
+    $('tabAddressRow').hidden = mode !== 'custom';
+    $('tabModeHint').textContent = {
+      direct: '使用 Cursor 原有登录与官方补全服务。',
+      official: '使用保存的 Cursor 登录 Token 请求官方补全服务，需有效的官方补全权限。Token 仅保存在本机配置中。',
+      custom: '将补全请求转发到兼容 Cursor 补全协议的服务地址。',
+      public: '代码上下文会发送至公共服务 https://tab.leokun.cn，请确认接受后保存。'
+    }[mode] || '';
+    tellSize();
+  }
+
+  function fillTab(values) {
+    for (const key of ['tabMode', 'tabAddress']) $(key).value = values[key] || (key === 'tabMode' ? 'direct' : '');
+    $('tabToken').value = '';
+    $('tabToken').placeholder = values.tabTokenConfigured ? '已保存；留空保持' : '填写 Token';
+    clearTabToken = false;
+    tabFilled = true;
+    updateTabMode();
+  }
+
+  async function saveTab(event) {
+    event.preventDefault();
+    $('saveTab').disabled = true;
+    try {
+      const body = {tabMode: $('tabMode').value, tabAddress: $('tabAddress').value};
+      if ($('tabToken').value.trim() || clearTabToken) body.tabToken = $('tabToken').value.trim();
+      const result = await api('/api/settings', {method: 'POST', body});
+      fillTab(result.settings);
+      $('tabHint').textContent = '已保存，运行中的引擎将在数秒内应用；无需重启 Cursor';
+      await loadStatus({quiet: true});
+    } catch (error) {
+      $('tabHint').textContent = `保存失败：${error.message}`;
+    } finally {
+      $('saveTab').disabled = false;
+    }
+  }
+
+  async function extractTabToken() {
+    $('tabExtract').disabled = true;
+    try {
+      const result = await api('/api/tab/token/extract', {method: 'POST'});
+      $('tabToken').value = result.token;
+      clearTabToken = false;
+      $('tabHint').textContent = `已提取${result.email ? `（${result.email}）` : ''}，点击保存后生效`;
+    } catch (error) {
+      $('tabHint').textContent = error.message;
+    } finally {
+      $('tabExtract').disabled = false;
+    }
+  }
+
+  function beginStorageMigration(event) {
+    event.preventDefault();
+    if (busy) return;
+    const form = $('storageForm');
+    if (!form.reportValidity()) return;
+    const targetDir = $('storageTarget').value.trim();
+    if (!targetDir) return;
+    $('storageConfirmText').textContent = `将数据目录切换至：${targetDir}。迁移期间会暂停桥接；空目录会复制数据，有效数据库目录会直接切换，原目录保留。`;
+    $('storageConfirm').hidden = false;
+    $('storageHint').textContent = '请确认目标目录后继续。';
+    tellSize();
+  }
+
+  async function migrateData() {
+    if (busy) return;
+    const targetDir = $('storageTarget').value.trim();
+    if (!targetDir) {
+      $('storageHint').textContent = '请先填写目标目录。';
+      return;
+    }
+    busy = 'storage';
+    setBusy(true);
+    $('storageConfirm').hidden = true;
+    $('storageHint').textContent = `正在迁移到 ${targetDir}：暂停桥接并处理数据，请保持页面打开…`;
+    try {
+      const result = await api('/api/storage/migrate', {method: 'POST', body: {targetDir}});
+      dbData = null;
+      pendingClean = null;
+      $('dbConfirm').hidden = true;
+      $('dbCategories').replaceChildren();
+      $('dbSummary').hidden = true;
+      $('dbConversations').hidden = true;
+      $('dbDaysBox').hidden = true;
+      $('dbState').textContent = '目录已切换，重新统计以读取';
+      $('callsBody').replaceChildren();
+      $('storageHint').textContent = result.restart?.ok === false
+        ? `目录已切换至 ${result.dataDir}，但后台启动失败：${result.restart.error || result.restart.stderr || '请展开「日志与诊断」查看原因'}`
+        : `已${result.mode === 'copied' ? '复制并切换' : '切换'}至 ${result.dataDir}；原目录保留`;
+      $('storageTarget').value = '';
+    } catch (error) {
+      $('storageHint').textContent = `迁移失败：${error.message}`;
+      notice(`数据目录迁移失败：${error.message}`, 'error');
+    } finally {
+      busy = null;
+      setBusy(false);
+      await loadStatus({quiet: true});
+      tellSize();
+    }
   }
 
   function fillSettings(values) {
@@ -2246,6 +2392,26 @@
     $('settingsForm').addEventListener('submit', saveSettings);
     $('settingsCard').addEventListener('toggle', renderSettingsState);
     initSettingTips();
+    $('lifecycleCard')?.addEventListener('toggle', tellSize);
+    $('tabForm')?.addEventListener('submit', saveTab);
+    $('tabMode')?.addEventListener('change', updateTabMode);
+    $('tabExtract')?.addEventListener('click', extractTabToken);
+    $('tabClear')?.addEventListener('click', () => {
+      $('tabToken').value = '';
+      clearTabToken = true;
+      $('tabToken').placeholder = '保存后清除';
+      $('tabHint').textContent = '已标记清除；请选择其他补全模式后保存';
+    });
+    $('tabCard')?.addEventListener('toggle', tellSize);
+    $('storageCard')?.addEventListener('toggle', tellSize);
+    $('storageForm')?.addEventListener('submit', beginStorageMigration);
+    $('storageMigrate')?.addEventListener('click', beginStorageMigration);
+    $('storageConfirmGo')?.addEventListener('click', migrateData);
+    $('storageConfirmCancel')?.addEventListener('click', () => {
+      $('storageConfirm').hidden = true;
+      $('storageHint').textContent = '已取消迁移。';
+      tellSize();
+    });
     $('saveModelNames').addEventListener('click', saveModelNames);
     $('modelNamesCard').addEventListener('toggle', () => {
       if ($('modelNamesCard').open && lastOverview) loadModelNames(lastOverview);

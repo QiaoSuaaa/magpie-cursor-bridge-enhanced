@@ -7,7 +7,8 @@ import {spawn,execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {atomic,applyProxy,restoreProxy} from './lib/settings.js';
 import {gatewayModels} from './lib/config.js';
-import {read as readBridgeSettings,applyModelPreferences} from './lib/bridge-settings.js';
+import {read as readBridgeSettings,applyModelPreferences,tabConfig} from './lib/bridge-settings.js';
+import {resolveDataDir,databasePath} from './lib/storage.js';
 import platform from './lib/platform.js';
 import {createSupervisor} from './lib/supervisor.js';
 import {pruneDatabase} from './control/database.js';
@@ -28,7 +29,7 @@ let lastStatus='';
 function syncAgentEnv(extra) {
   const proxy=typeof extra.proxy==='string'&&extra.proxy?extra.proxy:null;
   if(!proxy) { removeAgentEnv(root); return; }
-  const caPath=file('data/ca/ca.crt');
+  const caPath=path.join(resolveDataDir(root),'ca/ca.crt');
   writeAgentEnv(root,{proxy,caPath:fs.existsSync(caPath)?caPath:null});
 }
 const status=(state,extra={})=>{const signature=JSON.stringify({version,state,...extra});if(signature!==lastStatus){atomic(file('status.json'),JSON.stringify({version,state,...extra,updated:new Date().toISOString()},null,2));lastStatus=signature;syncAgentEnv(extra);}};
@@ -145,7 +146,7 @@ if(command==='status') {
   const target=process.argv[3]||root;
   const tracesDays=Number(process.argv[4])||0;
   const sessionsDays=Number(process.argv[5])||0;
-  const result=await pruneDatabase(path.join(target,'data/bridge.db'),{tracesDays,sessionsDays,check:false});
+  const result=await pruneDatabase(databasePath(resolveDataDir(target)),{tracesDays,sessionsDays,check:false});
   process.stdout.write(JSON.stringify(result));
 } else if(command==='supervise') {
   fs.mkdirSync(root,{recursive:true,mode:0o700});
@@ -159,7 +160,13 @@ if(command==='status') {
     fs.rmSync(lock,{recursive:true,force:true}); fs.mkdirSync(lock);
   }
   fs.writeFileSync(path.join(lock,'pid'),String(process.pid));
+  const stopRequest=file('stop-request.json');
+  fs.rmSync(stopRequest,{force:true});
   let ending=false;
+  const isEnding=()=>{
+    if(ending) return true;
+    try {return JSON.parse(fs.readFileSync(stopRequest,'utf8')).pid===process.pid;} catch {return false;}
+  };
   // Lite mode starts from an empty in-memory database, so the proxy port cannot
   // be read back from SQLite. Carry the last port across restarts: Cursor does
   // not re-read http.proxy until it restarts.
@@ -167,13 +174,17 @@ if(command==='status') {
   try {const last=JSON.parse(fs.readFileSync(file('status.json'),'utf8'));const url=new URL(last.proxy);if(url.port) preferredProxyPort=url.port;} catch {}
   const supervisor=createSupervisor({
     initialProxyPort:preferredProxyPort,
-    readSettings:()=>readBridgeSettings(root),
+    readSettings:()=>{
+      const config=readBridgeSettings(root);
+      if(config.tabMode!=='direct'&&!platform.engineSupportsTab(packageDir)) throw new Error('当前平台引擎不支持 Tab 接管，请先构建新引擎或使用 direct 模式');
+      return config;
+    },
     readConnection:connectionText,
     // gatewayModels returns the whole connection object; only its models array
     // takes the display-name and order overrides.
     fetchCatalogue:async(connection,config)=>{
       const catalogue=await gatewayModels(connection);
-      return {...catalogue,models:applyModelPreferences(catalogue.models,{modelNames:config.modelNames,modelOrder:config.modelOrder,modelHidden:config.modelHidden,keep:connection.model})};
+      return {...catalogue,tab:tabConfig(config),models:applyModelPreferences(catalogue.models,{modelNames:config.modelNames,modelOrder:config.modelOrder,modelHidden:config.modelHidden,keep:connection.model})};
     },
     writeEffective:text=>atomic(file('effective.json'),text),
     // status.json always advertises the configured mode, so the control panel
@@ -199,7 +210,7 @@ if(command==='status') {
       const sha256=createHash('sha256').update(fs.readFileSync(enginePath)).digest('hex');
       const engineVersion=execFileSync(enginePath,['--version'],{encoding:'utf8',timeout:5000,windowsHide:true}).trim();
       const engine=spawn(enginePath,[file('effective.json')],{
-        env:{...process.env,CURSOR_BYOK_DATA_DIR:file('data'),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
+        env:{...process.env,CURSOR_BYOK_DATA_DIR:resolveDataDir(root),CURSOR_BRIDGE_RUN_MODE:mode,CURSOR_BRIDGE_SUBAGENT_MODE:subagentMode,...(port?{CURSOR_BRIDGE_PROXY_PORT:port}:{})},stdio:['pipe','pipe','pipe'],windowsHide:true
       });
       engine.bridgeIdentity={engineVersion,sha256,pluginVersion:version};
       return engine;
@@ -208,12 +219,13 @@ if(command==='status') {
     onEngineStderr:appendEngineLog,
     onLifecycle:entry=>appendEngineLog(Buffer.from(`[bridge-lifecycle] ${JSON.stringify(entry)}\n`)),
     wait,
-    isEnding:()=>ending
+    isEnding
   });
   for(const signal of ['SIGTERM','SIGINT']) process.on(signal,()=>{ending=true;});
   try {
     await supervisor.run();
   } finally {
+    fs.rmSync(stopRequest,{force:true});
     fs.rmSync(lock,{recursive:true,force:true});
   }
 } else {throw new Error('usage: node bridge.js status|supervise|restore|retain');}

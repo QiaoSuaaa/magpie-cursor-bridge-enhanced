@@ -6,7 +6,7 @@
 - **适配范围**：Cursor 3.28.x ～ 3.32.10（已实测）；控制台会读取本机实际版本，超出范围时标记「未验证」并建议先运行自检
 - **平台支持**：macOS（Apple Silicon 与 Intel x64，LaunchAgent 守护；Intel 引擎为 `bin/darwin-x64/cursor-magpie-bridge`）、Windows x64（启动文件夹 VBS 守护，被安全软件拦截时自动回退到 `HKCU` Run 注册表项，`bin/win32-x64/cursor-magpie-bridge.exe`，无需管理员权限即可常驻；首次信任证书需一次管理员确认）与 Linux x64/arm64（systemd 用户单元守护，`bin/linux-<arch>/cursor-magpie-bridge`；证书写入 Cursor `argv.json` 与用户 NSS 库，无需 root；无 systemd 用户实例时回退为分离进程）
 - **与上游的关系**：基于 [nodlles/magpie-agent-cursor-bridge](https://github.com/nodlles/magpie-agent-cursor-bridge) `v0.2.2` 与本机 fork 增补，原生核心来自 [leookun/cursor-byok v1.0.1](https://github.com/leookun/cursor-byok/tree/v1.0.1)；Linux 适配参考 [Ice0828/magpie-agent-cursor-bridge-linux](https://github.com/Ice0828/magpie-agent-cursor-bridge-linux)
-- **本仓库定位**：公开增强版，GitHub topic 已标记 `magpie-plugin`；可从 Magpie 插件页安装 `github:kingchen95272025/magpie-agent-cursor-bridge-enhanced#v0.2.39`，也支持本机源码安装
+- **本仓库定位**：本地增强版，可从 Magpie 插件页安装 `github:QiaoSuaaa/magpie-cursor-bridge-enhanced`，也支持本机源码安装
 - **稳定性说明**：后台监视器会记录引擎 PID、版本和 SHA-256，并把启动、就绪、重启、退出事件写入运行状态与 `engine.log`；控制台检测到监视器和引擎都已退出时，会明确显示过期状态，而不是继续显示旧的「已连接」
 - **变更记录**：[CHANGELOG.md](CHANGELOG.md)
 
