@@ -6,6 +6,8 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {atomic} from '../lib/settings.js';
+import {stopBridge} from '../control/server.js';
+import platformModule from '../lib/platform.js';
 
 test('cooperative stop exits the real supervisor and releases its lock without starting an engine', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-supervisor-stop-'));
@@ -44,3 +46,55 @@ test('cooperative stop exits the real supervisor and releases its lock without s
   assert.equal(fs.existsSync(path.join(root, 'effective.json')), false, 'no model or native engine is started');
   assert.equal(fs.existsSync(path.join(root, 'cursor-settings.json')), false);
 });
+
+test('Windows stopBridge falls back to verified termination only when force is true', {skip: process.platform !== 'win32'}, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-win-stop-'));
+  const saved = {
+    CURSOR_BRIDGE_HOME: process.env.CURSOR_BRIDGE_HOME,
+    APPDATA: process.env.APPDATA,
+    LOCALAPPDATA: process.env.LOCALAPPDATA
+  };
+  process.env.CURSOR_BRIDGE_HOME = home;
+  process.env.APPDATA = path.join(home, 'AppData', 'Roaming');
+  process.env.LOCALAPPDATA = path.join(home, 'AppData', 'Local');
+
+  const root = platformModule.pathsFor(home).config;
+  const lock = path.join(root, 'supervisor.lock');
+  fs.mkdirSync(lock, {recursive: true});
+
+  const legacyScript = path.join(home, 'bridge.js');
+  fs.writeFileSync(legacyScript, 'setInterval(() => {}, 1000);\n');
+  const child = spawn(process.execPath, [legacyScript, 'supervise'], {
+    stdio: 'ignore',
+    windowsHide: true
+  });
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+
+  t.after(async () => {
+    if (child.exitCode === null) {
+      try { child.kill('SIGKILL'); } catch {}
+      await exited;
+    }
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(home, {recursive: true, force: true});
+  });
+
+  fs.writeFileSync(path.join(lock, 'pid'), String(child.pid));
+
+  await assert.rejects(
+    () => stopBridge(home, {force: false, graceMs: 300}),
+    /后台仍在处理数据，请稍后重试/
+  );
+  assert.equal(child.exitCode, null, 'non-force stop keeps unresponsive process alive');
+  assert.equal(fs.existsSync(path.join(root, 'stop-request.json')), false, 'stale stop-request.json is removed on timeout');
+
+  await stopBridge(home, {force: true, graceMs: 300});
+  await exited;
+  assert.notEqual(child.exitCode, null, 'force fallback terminates legacy bridge.js supervisor');
+  assert.equal(fs.existsSync(lock), false, 'supervisor.lock is cleaned up after forced termination');
+  assert.equal(fs.existsSync(path.join(root, 'stop-request.json')), false);
+});
+

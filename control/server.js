@@ -553,17 +553,27 @@ function runStatus(repoRoot) {
   });
 }
 
-async function stopBridge(repoRoot) {
+export async function stopBridge(repoRoot, {force = false, graceMs = 15000} = {}) {
   const p = paths(repoRoot);
   if (platform.IS_WIN) {
     // Windows process.kill(SIGTERM) is not graceful. Ask the supervisor to
     // finish retention and close the engine before it releases its lock.
     const pid = readPid(p.supervisorPid);
     if (pid && alive(pid)) {
-      atomic(path.join(p.root, 'stop-request.json'), JSON.stringify({pid}));
-      const until = Date.now() + 15000;
+      const stopFile = path.join(p.root, 'stop-request.json');
+      atomic(stopFile, JSON.stringify({pid}));
+      const until = Date.now() + graceMs;
       while (alive(pid) && Date.now() < until) await wait(150);
-      if (alive(pid)) throw new Error('后台仍在处理数据，请稍后重试');
+      if (alive(pid)) {
+        try { fs.rmSync(stopFile, {force: true}); } catch {}
+        if (!force) throw new Error('后台仍在处理数据，请稍后重试');
+        // Older supervisors (pre-0.2.38) do not poll stop-request.json; fall back
+        // to verified termination on explicit stop/restart so upgrades do not hang.
+        await stopProcess(pid, 'bridge.js', 5000);
+        if (!alive(pid)) {
+          try { fs.rmSync(path.join(p.root, 'supervisor.lock'), {recursive: true, force: true}); } catch {}
+        }
+      }
     }
   } else if (platform.IS_LINUX) {
     const systemctl = platform.current.systemctl();
@@ -572,7 +582,7 @@ async function stopBridge(repoRoot) {
     await run('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`], {timeout: 15000});
   }
   const supervisorPid = readPid(p.supervisorPid);
-  if (supervisorPid && !platform.IS_WIN) await stopProcess(supervisorPid, 'bridge.js', 10000, {force: false});
+  if (supervisorPid && !platform.IS_WIN) await stopProcess(supervisorPid, 'bridge.js', Math.min(graceMs, 10000), {force});
   if (supervisorPid && alive(supervisorPid)) throw new Error('后台仍在处理数据，请稍后重试');
   const runtime = readJson(p.status);
   const enginePid = Number(runtime?.pid) || null;
@@ -1285,7 +1295,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
           if (action === 'status') {
             result = await runStatus(repoRoot);
           } else if (action === 'stop') {
-            await stopBridge(repoRoot);
+            await stop(repoRoot, {force: true});
             const p = paths(repoRoot);
             // A force-killed supervisor cannot run its finally block; restore the
             // journal explicitly and leave a stopped status the panel can show.
@@ -1294,7 +1304,7 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
             atomic(p.status, JSON.stringify({...current, state: 'stopped', updated: new Date().toISOString()}, null, 2));
             result = {ok: true, code: 0, stdout: '后台已停止，Cursor 代理已还原。', stderr: '', error: ''};
           } else if (action === 'restart') {
-            await stopBridge(repoRoot);
+            await stop(repoRoot, {force: true});
             result = await runSetup(repoRoot);
           } else {
             result = await runSetup(repoRoot);
