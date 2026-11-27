@@ -7,7 +7,7 @@ import path from 'node:path';
 import platform from '../lib/platform.js';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {readDatabase, readRecentCalls, cleanDatabase, pruneDatabase, extractCursorAuthToken} from '../control/database.js';
+import {readDatabase, readRecentCalls, cleanDatabase, pruneDatabase, extractCursorAuthToken, sqlite} from '../control/database.js';
 import {createControlServer} from '../control/server.js';
 import {migrateStorage, resolveDataDir, databasePath} from '../lib/storage.js';
 
@@ -170,6 +170,83 @@ test('recent calls expose model, latency, tokens and redacted errors', {skip: SK
   assert.deepEqual(errors.calls.map((call) => call.id), ['call-new']);
   const missing = await readRecentCalls(path.join(path.dirname(dbPath), 'missing.db'));
   assert.equal(missing.exists, false);
+});
+
+test('read-only queries fall back when a WAL database lost its sidecars', {skip: SKIP}, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-bridge-wal-'));
+  t.after(() => fs.rmSync(home, {recursive: true, force: true}));
+  const dbPath = path.join(home, 'state.vscdb');
+  // Cursor leaves its store in WAL mode and removes -wal/-shm on a clean exit;
+  // a -readonly opener then cannot create the shared memory and every query
+  // fails with SQLITE_CANTOPEN. Reproduce that exact end state.
+  sql(dbPath, `
+PRAGMA journal_mode=WAL;
+CREATE TABLE kv(key TEXT PRIMARY KEY, value TEXT);
+INSERT INTO kv VALUES ('a', 'alpha'), ('b', 'beta');
+PRAGMA wal_checkpoint(TRUNCATE);`);
+  fs.rmSync(`${dbPath}-wal`, {force: true});
+  fs.rmSync(`${dbPath}-shm`, {force: true});
+
+  const rows = JSON.parse(await sqlite(dbPath, 'SELECT key, value FROM kv ORDER BY key;', {readonly: true, json: true}));
+  assert.deepEqual(rows, [{key: 'a', value: 'alpha'}, {key: 'b', value: 'beta'}]);
+
+  // The fallback connection must still refuse writes, and the data file itself
+  // must stay untouched (only the sidecars are recreated).
+  const before = fs.statSync(dbPath);
+  await assert.rejects(
+    () => sqlite(dbPath, "INSERT INTO kv VALUES ('c', 'gamma');", {readonly: true}),
+    /attempt to write a readonly database|readonly/i
+  );
+  const after = fs.statSync(dbPath);
+  assert.equal(after.size, before.size);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+  const count = JSON.parse(await sqlite(dbPath, 'SELECT COUNT(*) AS n FROM kv;', {readonly: true, json: true}));
+  assert.equal(count[0].n, 2);
+
+  // Once the fallback is remembered for this path, a deleted file must still
+  // fail instead of being recreated as an empty database.
+  fs.rmSync(dbPath, {force: true});
+  fs.rmSync(`${dbPath}-wal`, {force: true});
+  fs.rmSync(`${dbPath}-shm`, {force: true});
+  await assert.rejects(() => sqlite(dbPath, 'SELECT 1;', {readonly: true}), /unable to open database file/i);
+  assert.equal(fs.existsSync(dbPath), false);
+});
+
+test('read-only fallback never creates a missing database', {skip: SKIP}, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-bridge-missing-'));
+  t.after(() => fs.rmSync(home, {recursive: true, force: true}));
+  const dbPath = path.join(home, 'state.vscdb');
+  await assert.rejects(() => sqlite(dbPath, 'SELECT 1;', {readonly: true}), /unable to open database file/i);
+  assert.equal(fs.existsSync(dbPath), false);
+});
+
+test('concurrent cold-start reads wait out transient WAL locks', {skip: SKIP}, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-bridge-cold-'));
+  t.after(() => fs.rmSync(home, {recursive: true, force: true}));
+  const dbPath = path.join(home, 'bridge.db');
+  sql(dbPath, `
+PRAGMA journal_mode=WAL;
+CREATE TABLE conversations(conversation_id TEXT PRIMARY KEY, updated_at_ms INTEGER NOT NULL);
+CREATE TABLE messages(conversation_id TEXT, message_id TEXT, payload_json TEXT, created_at_ms INTEGER, PRIMARY KEY(conversation_id, message_id));
+INSERT INTO conversations VALUES ('c1', 1);
+INSERT INTO messages VALUES ('c1', 'm1', '{}', 1);
+PRAGMA wal_checkpoint(TRUNCATE);`);
+  // Every round drops the sidecars exactly like a clean Cursor exit, then runs
+  // the query shape readDatabase() uses: one schema read followed by three
+  // concurrent reads. Without the default busy_timeout some rounds failed with
+  // "database is locked" (5) while the sidecars were being recreated.
+  const read = (statement) => sqlite(dbPath, statement, {readonly: true, json: true}).then((text) => JSON.parse(text || '[]'));
+  for (let round = 0; round < 30; round += 1) {
+    fs.rmSync(`${dbPath}-wal`, {force: true});
+    fs.rmSync(`${dbPath}-shm`, {force: true});
+    await read("SELECT name FROM sqlite_master WHERE type = 'table';");
+    const rows = await Promise.all([
+      read('SELECT page_count FROM pragma_page_count;'),
+      read('SELECT conversation_id, COUNT(*) AS n FROM messages GROUP BY conversation_id;'),
+      read('SELECT COUNT(*) AS n FROM conversations;')
+    ]);
+    assert.equal(rows[1][0].n, 1, `round ${round} lost its rows`);
+  }
 });
 
 test('session cleanup removes old conversations and keeps shared blobs', {skip: SKIP}, async (t) => {

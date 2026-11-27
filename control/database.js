@@ -9,6 +9,15 @@ import {redact} from './diagnostics.js';
 // through the system sqlite3 binary: no npm dependency, no long-lived handle in
 // the Magpie process, and the same tool a user would reach for by hand.
 //
+// Reads prefer SQLITE_OPEN_READONLY (`-readonly`). A WAL database that lost its
+// -shm file cannot be opened that way: only a read-write connection may create
+// the shared-memory file, so the first statement fails with SQLITE_CANTOPEN.
+// Cursor deletes state.vscdb-wal/-shm when it exits cleanly, which made every
+// read fail exactly when deletion was allowed. sqlite() therefore falls back to
+// a read-write connection carrying `PRAGMA query_only = ON`: it creates the
+// sidecars but rejects every write, so read callers keep the read-only
+// guarantee without asking the user to start Cursor first.
+//
 // Sizes are content bytes (UTF-8 bytes: length(CAST(... AS BLOB))), not file pages.
 // A full dbstat walk costs ~45s on a multi-GB database and would freeze the
 // panel; "file size minus content bytes" is reported separately as index and
@@ -160,11 +169,12 @@ export function quoteText(value) {
 // Windows usually has no sqlite3 on PATH. Magpie runs this module inside its
 // own Bun, which carries SQLite in-process, so the panel keeps working without
 // asking the user to install anything. macOS keeps the CLI path byte-for-byte.
-async function bunSqlite(dbPath, sql, {readonly = false, json = false, busyTimeout = 0} = {}) {
+async function bunSqlite(dbPath, sql, {readonly = false, json = false, busyTimeout = 0, queryOnly = false} = {}) {
   const {Database} = await import('bun:sqlite');
   const database = new Database(dbPath, {readonly, create: !readonly});
   try {
     if (busyTimeout) database.exec(`PRAGMA busy_timeout = ${Math.max(0, Number(busyTimeout) || 0)}`);
+    if (queryOnly) database.exec('PRAGMA query_only = ON');
     // Generated scripts never embed ';' in a literal: split them and collect
     // the rows of the report SELECT that closes a cleanup script.
     const statements = String(sql).split(';').map((part) => part.trim()).filter(Boolean);
@@ -186,10 +196,10 @@ async function bunSqlite(dbPath, sql, {readonly = false, json = false, busyTimeo
 // `maxBuffer` is exposed for callers that legitimately read large rows (the
 // Cursor state store returns whole message bodies); the bridge statistics
 // queries never come close to the default.
-export function sqlite(dbPath, sql, {readonly = false, json = false, timeout = QUERY_TIMEOUT, busyTimeout = 0, maxBuffer = 16 * 1024 * 1024} = {}) {
+function runSqlite(dbPath, sql, {readonly = false, json = false, timeout = QUERY_TIMEOUT, busyTimeout = 0, maxBuffer = 16 * 1024 * 1024, queryOnly = false} = {}) {
   const binary = platform.current.sqlite3();
   if (!binary) {
-    if (process.versions.bun) return bunSqlite(dbPath, sql, {readonly, json, busyTimeout});
+    if (process.versions.bun) return bunSqlite(dbPath, sql, {readonly, json, busyTimeout, queryOnly});
     return Promise.reject(new Error('未找到 sqlite3 可执行文件；请安装 sqlite3 后重试（Magpie 内置运行时下会自动使用内置 SQLite）'));
   }
   const args = [];
@@ -198,16 +208,88 @@ export function sqlite(dbPath, sql, {readonly = false, json = false, timeout = Q
   // A .timeout dot-command emits no rows; PRAGMA busy_timeout would add a
   // JSON array of its own and break the single-result convention below.
   if (busyTimeout) args.push('-cmd', `.timeout ${busyTimeout}`);
+  if (queryOnly) args.push('-cmd', 'PRAGMA query_only = ON');
   args.push('-batch', dbPath, sql);
   return new Promise((resolve, reject) => {
     execFile(binary, args, {encoding: 'utf8', timeout, maxBuffer, windowsHide: true}, (error, stdout, stderr) => {
       if (error) {
+        // Keep the execFile error object: `killed` and `code` tell a timeout
+        // apart from a SQLite refusal, and stderr carries the real message.
         const detail = String(stderr || '').trim();
-        reject(new Error(detail || String(error.message || error)));
+        if (detail) error.message = detail;
+        reject(error);
         return;
       }
       resolve(String(stdout || ''));
     });
+  });
+}
+
+function cantOpen(error) {
+  return /unable to open database file|SQLITE_CANTOPEN/i.test(String(error?.message || error));
+}
+
+function shmPresent(dbPath) {
+  try {
+    return fs.statSync(`${dbPath}-shm`).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// Databases already known to need the query_only fallback. A panel load issues
+// several queries; without this every one would fail once before retrying. The
+// next call returns to plain -readonly as soon as Cursor runs again and its
+// -shm file reappears.
+const queryOnlyPaths = new Set();
+
+// A read-only connection can return SQLITE_BUSY while the -wal/-shm pair is
+// being created (the first read after Cursor exits) or checkpointed. The lock
+// is transient, but the CLI fails on the first attempt unless a timeout is set;
+// the Cursor panel issues several queries at once, so without a default the
+// cold start was flaky (about one failure in eight runs of readDatabase()).
+const READ_ONLY_BUSY_TIMEOUT = 5000;
+
+function dbFilePresent(dbPath) {
+  try {
+    return fs.statSync(dbPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// A read-write retry is only safe when the first attempt failed for the WAL
+// sidecar reason. A killed child is a timeout, not a refusal: retrying would
+// double the wait. A missing path must never reach the read-write opener
+// because the CLI and bun:sqlite would create an empty database exactly where
+// Cursor keeps its state.
+function mayRetryReadWrite(dbPath, error) {
+  if (error?.killed || error?.code === 'ETIMEDOUT') return false;
+  return dbFilePresent(dbPath);
+}
+
+export function sqlite(dbPath, sql, options = {}) {
+  const readonly = options.readonly === true;
+  const settings = readonly && options.busyTimeout === undefined
+    ? {...options, busyTimeout: READ_ONLY_BUSY_TIMEOUT}
+    : options;
+  const fallback = {readonly: false, queryOnly: true};
+  if (readonly && queryOnlyPaths.has(dbPath)) {
+    // Cursor is running again (-shm reappeared) or the database was removed:
+    // forget the shortcut and let the plain read-only attempt decide.
+    if (shmPresent(dbPath) || !dbFilePresent(dbPath)) {
+      queryOnlyPaths.delete(dbPath);
+    } else {
+      return runSqlite(dbPath, sql, {...settings, ...fallback});
+    }
+  }
+  return runSqlite(dbPath, sql, settings).catch((error) => {
+    if (!readonly || !cantOpen(error) || !mayRetryReadWrite(dbPath, error)) throw error;
+    return runSqlite(dbPath, sql, {...settings, ...fallback})
+      .then((output) => {
+        queryOnlyPaths.add(dbPath);
+        return output;
+      });
   });
 }
 

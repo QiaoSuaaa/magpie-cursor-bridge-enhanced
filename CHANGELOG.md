@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.39（合并上游 Cursor 存储关闭态读取修复 + 本地增强）
+
+- 合并上游 `v0.2.39`：
+  - 修复「Cursor 完全退出后，Cursor 存储面板读取失败」导致的删除死循环（`SQLITE_CANTOPEN (14)`）：`control/database.js` 在真实 `CANTOPEN` 时回退为读写打开并立即设置 `PRAGMA query_only = ON`（仍拒绝写入），默认增加 5 秒 `busy_timeout`，并加入文件存在校验与超时不重试等安全边界。
+  - 区分「被 Cursor 写入占用」与「文件或目录权限不足」错误提示；修复 Linux 下 `cursorRunning()` 的 `pgrep` 进程误判。
+  - Cursor 已实测范围升至 3.28.x–3.32.10；新增 4 项回归测试。
+- 保留本地增强：
+  - 内置 Windows 原生引擎保持 `0.2.20`（`LocalCatalogOnly` 隔离、防新建对话自动切回 `Auto`、Turn 持久化修复、`{{SessionId}}` 元数据与 HTTP 429 重试上限）。
+  - 保留引擎运行身份、生命周期记录、过期状态检测、WMI 脱离 Job Object 后台启动、Tab 补全与数据目录迁移卡片及优化后的控制台样式。
+
 ## 0.2.38（合并上游 Cursor 存储浏览、诊断与清理 + 本地引擎 0.2.20）
 
 - 保留并同步本地增强：

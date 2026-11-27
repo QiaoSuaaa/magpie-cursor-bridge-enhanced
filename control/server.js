@@ -1028,13 +1028,16 @@ export function createControlServer({repoRoot, port, log = console.log, connectA
           }
           return sendJson(res, 404, {ok: false, error: '未知的 Cursor 存储接口'});
         } catch (error) {
-          // A crashed Cursor can leave a WAL without its -shm file, and a
-          // -readonly opener then cannot rebuild the shared memory. The
-          // remaining failures here are lock timeouts from heavy Cursor
-          // writes; both are fixed by closing Cursor and retrying.
-          const hint = /unable to open database|database is locked|attempt to write/i.test(String(error?.message || ''))
-            ? '（数据库正被 Cursor 占用或共享内存缺失，请关闭 Cursor 后重试）'
-            : '';
+          // A WAL database without its -shm file is handled inside sqlite()
+          // (query_only fallback), so a CANTOPEN here means the file or its
+          // directory is genuinely inaccessible. The other common failure is a
+          // lock timeout while Cursor writes heavily.
+          const message = String(error?.message || '');
+          const hint = /database is locked|database table is locked|database is busy/i.test(message)
+            ? '（数据库正被 Cursor 写入占用，请稍后重试或完全退出 Cursor）'
+            : /unable to open database file|SQLITE_CANTOPEN/i.test(message)
+              ? '（无法打开数据库文件：请确认文件存在，且当前用户对数据库与所在目录有读写权限）'
+              : '';
           return sendJson(res, 500, {ok: false, error: `读取 Cursor 存储失败：${error.message}${hint}`});
         }
       }
