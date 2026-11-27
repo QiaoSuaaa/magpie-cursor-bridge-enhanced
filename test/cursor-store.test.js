@@ -268,6 +268,37 @@ test('streamed fragments and tool calls stay out of the default list', {skip: SK
   assert.match(tool.preview, /a\.md/);
 });
 
+test('a closed Cursor store stays browsable and deletable', {skip: SKIP}, async (t) => {
+  const store = fakeStore(t);
+  // Cursor keeps state.vscdb in WAL mode and removes the -wal/-shm sidecars
+  // when it exits; -readonly cannot recreate the shared memory, which used to
+  // make the panel fail exactly when deleting was allowed. Every read below
+  // runs against that end state.
+  sql(store.stateDb, 'PRAGMA journal_mode=WAL; PRAGMA wal_checkpoint(TRUNCATE);');
+  fs.rmSync(`${store.stateDb}-wal`, {force: true});
+  fs.rmSync(`${store.stateDb}-shm`, {force: true});
+
+  const data = await readStoreOverview(store.stateDb, {workspaceRoot: store.workspaceStorage});
+  assert.equal(data.exists, true);
+  assert.equal(data.composers.total, 4);
+  assert.equal(data.page.journalMode, 'wal');
+
+  const list = await listComposers(store.stateDb, {kind: 'main'});
+  assert.deepEqual(list.sessions.map((row) => row.id), [MAIN_A, MAIN_B]);
+  const detail = await readComposer(store.stateDb, {id: MAIN_A});
+  assert.equal(detail.messageCount, 3);
+  const scan = await scanCategory(store.stateDb, {category: 'messages', mode: 'exact'});
+  assert.ok(scan.rows > 0);
+
+  // The whole delete flow — preview included — works while Cursor is closed.
+  const preview = await previewComposers(store.stateDb, [MAIN_A]);
+  assert.equal(preview.kinds.composerHeaders.rows, 1);
+  const deleted = await deleteComposers(store.stateDb, [MAIN_A]);
+  assert.ok(deleted.totalRows >= 8);
+  const remaining = await listComposers(store.stateDb, {kind: 'all'});
+  assert.equal(remaining.total, 3);
+});
+
 test('session list filters by naming and mode', {skip: SKIP}, async (t) => {
   const store = fakeStore(t);
   const unnamed = await listComposers(store.stateDb, {kind: 'all', named: 'unnamed'});

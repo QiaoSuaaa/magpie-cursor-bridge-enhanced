@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.39（修复 Cursor 关闭后无法读取存储）
+
+- 修复「Cursor 完全退出后，Cursor 存储面板读取失败」：报错为 `in prepare, unable to open database file (14)`（`SQLITE_CANTOPEN`）。根因是 Cursor 干净退出时会删除 `state.vscdb-wal` / `state.vscdb-shm`，而 SQLite 的只读连接（`-readonly` / `bun:sqlite` 的 `readonly`）无权创建共享内存文件，第一条语句即失败。此前这形成一个死循环——Cursor 关闭时读不到会话列表、无法选择要删除的内容；Cursor 运行时能读，但删除被进程检测拒绝。
+- `control/database.js` 的 `sqlite()` 现在只在真正的 `CANTOPEN` 上回退：以读写连接打开并立即设置 `PRAGMA query_only = ON`，由语句层拒绝任何写入，读取语义不变（实测 `INSERT` 返回 `attempt to write a readonly database`）。回退按数据库路径记忆，`-shm` 重新出现（Cursor 启动）或数据库被移除时自动失效。
+- 只读连接默认设置 5 秒 `busy_timeout`：冷启动重建 sidecar 时，面板同一批并发查询（如 `readDatabase` 的一读加三路并发）会短暂争用 WAL 锁，此前约 4/30 的轮次直接报 `database is locked (5)`；等待即可通过，现在由 SQLite 内部重试。
+- 回退设置三道安全边界：目标必须是已存在的普通文件，避免读写连接凭空创建空数据库；超时被终止的子进程不重试，避免等待时间翻倍；回退失败时不记录记忆。CLI 与 Bun 两条路径语义一致。
+- 未放开删除约束：Cursor 运行中仍拒绝删除与压缩（它会把内存中的会话写回数据库）；关闭 Cursor 后即可在同一面板完成「浏览 → 选择 → 预览 → 删除」。错误提示改为区分「被 Cursor 写入占用」与「文件或目录权限不足」，不再一律建议关闭 Cursor。
+- 修复 Linux 上 `cursorRunning()` 的误判：原先 `pgrep -f 'cursor'` 会匹配命令行里含该词的所有进程（包括 Magpie 自身的 `magpie-agent-cursor-bridge` 路径与 `cursor-agent`），导致 Cursor 已退出时仍被判定为运行中、删除永久被拒；现在按可执行名锚定 `(^|/)cursor( |$)`。macOS 与 Windows 的判断未变。
+- 新增 4 项回归测试：WAL 库在 sidecar 被删除后仍可读取且拒绝写入、缺失路径不会被创建、冷启动并发读取等待瞬态锁、Cursor 存储面板「关闭态浏览 → 预览 → 删除」端到端用例。全量 157 项，149 通过、8 项按平台跳过。
+- 本机实测（48.5 GB / 1271 万页 / 11902 个会话）：概览 479 ms、会话列表首页 16 ms、会话详情 204 ms、统计端点正常返回。
+- Cursor 已实测范围升至 3.28.x–3.32.10（3.32.10 已验证）；控制台版本比较、README、使用文档与兼容测试同步更新。
+- 版本号升至 0.2.39；原生引擎不变（`engineVersion` 仍为 0.2.15）。
+
 ## 0.2.38（Cursor 存储浏览、诊断与清理）
 
 - 控制台新增「Cursor 存储」折叠卡片，浏览 Cursor 自己的 `globalStorage/state.vscdb`（与桥接的 `bridge.db` 相互独立）。概览显示文件 / WAL / SHM 体积、页数 × 页大小、空闲页、会话总数、主 / 子代理数量、有会话的工作区数与最近写入时间。

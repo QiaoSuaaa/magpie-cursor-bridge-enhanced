@@ -17,8 +17,9 @@ import {sqlite, quoteText} from './database.js';
 //    forked worker and a 900 s timeout; here the same scan is explicit,
 //    per-category, and cached, never triggered by merely opening the panel.
 //
-// Read paths open the database with -readonly. SQLite in WAL mode lets a
-// reader coexist with Cursor's writer, so browsing works while Cursor runs.
+// Read paths open the database read-only: `-readonly` while Cursor's shared
+// memory file exists, and a `PRAGMA query_only` connection when Cursor has
+// exited and removed its -wal/-shm sidecars (see sqlite() in database.js).
 // Writes (conversation delete, VACUUM) are explicit, confirmed actions and
 // are refused while a Cursor process is alive.
 const FAST_TIMEOUT = 15000;
@@ -700,7 +701,11 @@ export function cursorRunning() {
         });
         return;
       }
-      const pattern = platform.IS_DARWIN ? 'Cursor.app/Contents/MacOS/Cursor' : 'cursor';
+      // The Linux pattern must anchor on the executable name: a bare "cursor"
+      // matches every command line that merely contains the word, including
+      // Magpie's own magpie-agent-cursor-bridge path and the cursor-agent CLI,
+      // which made every delete look unsafe on Linux.
+      const pattern = platform.IS_DARWIN ? 'Cursor.app/Contents/MacOS/Cursor' : '(^|/)cursor( |$)';
       execFile('pgrep', ['-f', pattern], {timeout: 5000}, (error, stdout) => {
         done(!error && String(stdout || '').trim().length > 0);
       });

@@ -182,7 +182,7 @@ Bridge 会把 `group/<id>` 当作一个普通模型同步到 Cursor 菜单；显
 
 | 项目 | 要求 |
 |---|---|
-| Cursor | 3.28.x ～ 3.32.5 为已实测范围；更高版本控制台会标记「未验证」 |
+| Cursor | 3.28.x ～ 3.32.10 为已实测范围；更高版本控制台会标记「未验证」 |
 | Magpie | 已安装、正在运行，且至少有一个可用模型 |
 | 平台 | macOS（Apple Silicon / Intel）、Windows x64、Linux x64 / arm64 |
 | 权限 | macOS 首次信任证书需系统授权；Windows 首次信任证书需一次管理员确认；Linux 无需 root |
