@@ -1,6 +1,6 @@
 # Cursor · Magpie Bridge（增强版）
 
-让普通版 Cursor 使用 **Magpie** 中配置的模型与路由组：模型菜单只列出 Magpie 目录，隐藏 Cursor Auto 入口，保留 Cursor 原有登录与 Tab 补全。
+让 **Free 版 Cursor** 也能使用 **Magpie** 中配置的模型与路由组，无需 Cursor Pro 或任何订阅：模型菜单只列出 Magpie 目录，隐藏 Cursor Auto 入口，保留 Cursor 原有登录与 Tab 补全。
 
 - **当前版本**：`0.2.39`（本地增强版）
 - **适配范围**：Cursor 3.28.x ～ 3.32.10（已实测）；控制台会读取本机实际版本，超出范围时标记「未验证」并建议先运行自检
