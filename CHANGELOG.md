@@ -1,18 +1,26 @@
 # Changelog
 
-## 0.2.39（合并上游 Cursor 存储关闭态读取修复 + 本地引擎 0.2.21 子 Agent 修复）
+## 0.2.39（合并上游 Cursor 存储关闭态读取修复 + 本地引擎 0.2.21 子 Agent 修复与性能优化）
 
-- Windows 原生引擎升级至 `0.2.21`（修复子 Agent 立即 Stopped / 无法唤醒父对话问题）：
+- **Windows 原生引擎升级至 `0.2.21`（修复子 Agent 立即 Stopped / 无法唤醒父对话问题）**：
   - 对齐上游子 Agent 后台唤醒协议：支持 `BackgroundTaskCompletionAction`（独立请求与运行中流内注入）、Statsig `djb2` 门禁（显式关闭 `agent_host_local_loop`）、允许 agent-host 无模型 `BidiAppend`，以及后台子 Agent 完成时保持父传输通道打开并自动唤醒父对话。
   - 接入 `CURSOR_BRIDGE_SUBAGENT_MODE`（`async` / `sync`）环境变量：控制台切换为「同步阻塞」时强制 `run_in_background = false`，真正生效。
-  - 修复两处边界竞态：后台子 Agent 在父回合尚未结束时提前完成改为先入队等待父回合结束后再唤醒（避免抢占取消父回合或提前发 `turn_ended`），并在父传输退出时同步清理 `background_subagents` 映射条目防止残留。
-- 合并上游 `v0.2.39`：
-  - 修复「Cursor 完全退出后，Cursor 存储面板读取失败」导致的删除死循环（`SQLITE_CANTOPEN (14)`）：`control/database.js` 在真实 `CANTOPEN` 时回退为读写打开并立即设置 `PRAGMA query_only = ON`（仍拒绝写入），默认增加 5 秒 `busy_timeout`，并加入文件存在校验与超时不重试等安全边界。
-  - 区分「被 Cursor 写入占用」与「文件或目录权限不足」错误提示；修复 Linux 下 `cursorRunning()` 的 `pgrep` 进程误判。
-  - Cursor 已实测范围升至 3.28.x–3.32.10；新增 4 项回归测试。
-- 保留本地增强：
-  - 延续 `LocalCatalogOnly` 隔离、防新建对话自动切回 `Auto`、Turn 持久化修复、`{{SessionId}}` 元数据与 HTTP 429 重试上限。
-  - 保留引擎运行身份、生命周期记录、过期状态检测、WMI 脱离 Job Object 后台启动、Tab 补全与数据目录迁移卡片及优化后的控制台样式。
+  - 修复两处后台竞态与残留问题：子 Agent 在父回合尚未结束时提前完成改为先入队 `wake_pending`、等父回合结束后再统一唤醒（避免抢占取消父回合或提前发 `turn_ended`）；父传输断开注销时同步清理 `background_subagents` 映射条目防止长运行残留；服务端补充 2 条 Rust 回归单测（`cargo test --lib` 317/317 通过）。
+- **性能与存储清理优化**：
+  - 进程命令行探测缓存：`control/server.js` 新增 `createCommandLookup`（按 PID 缓存 60 秒并合并并发查询），避免 Windows 控制台打开期间每 5 秒重复拉起 PowerShell；停止进程前显式传入 `{fresh: true}` 实时校验。
+  - 孤立 Trace Blob 回收：`control/database.js` 在手动清空追踪记录与自动保留清理时，同步回收不再被 `cursor_run_trace_artifacts` 或 `blob_edges` 引用的孤立 `blobs` 记录，并建立 `cursor_run_trace_artifacts(blob_id)` 索引避免外键检查全表扫描；`pruneDatabase` 返回 `blobs` 清理计数。
+- **控制台卡片接线与仓库信息**：
+  - 完整接通「生命周期记录」「Tab 补全配置」「数据目录迁移」卡片前后端交互：`lib/bridge-settings.js` 新增 `tabMode`（`direct` / `official` / `custom` / `public`）、`tabToken`（敏感字段仅表单可用，不进入诊断与日志）及 `tabAddress` URL 校验。
+  - 恢复全量测试脚本覆盖（纳入 `features-control`、`storage`、`supervisor-lifecycle`、`tab` 及新增缓存与 blob 回收用例），全量 `npm test` 204 通过、6 项按平台跳过、0 失败。
+  - 仓库、主页、Issues 与安装链接统一指向 `QiaoSuaaa/magpie-cursor-bridge-enhanced`。
+- **合并上游 `v0.2.39`**：
+  - 修复「Cursor 完全退出后，Cursor 存储面板读取失败」导致的删除死循环（`SQLITE_CANTOPEN (14)`）：`control/database.js` 在真实 `CANTOPEN` 时回退为读写打开并立即设置 `PRAGMA query_only = ON`（仍拒绝写入），按路径记忆并在 `-shm` 重现或库移除后失效，增加文件存在校验与超时不重试边界。
+  - 只读连接默认增加 5 秒 `busy_timeout`，消除冷启动并发查询偶发的 `database is locked`。
+  - 错误提示区分「被 Cursor 写入占用」与「文件或目录权限不足」；修复 Linux 下 `cursorRunning()` 按可执行名锚定，避免误判 Magpie 自身或 `cursor-agent`。
+  - Cursor 已实测范围升至 3.28.x–3.32.10。
+- **保留本地增强**：
+  - 延续 `LocalCatalogOnly` 隔离、防新建对话自动切回 `Auto`、同流续发与运行中插话 Turn 持久化修复、`{{SessionId}}` 元数据与 HTTP 429 重试上限。
+  - 保留引擎运行身份（PID、版本、SHA-256）、生命周期记录、过期状态检测、WMI 脱离 Job Object 后台启动及优化后的控制台样式。
 
 ## 0.2.38（合并上游 Cursor 存储浏览、诊断与清理 + 本地引擎 0.2.20）
 
