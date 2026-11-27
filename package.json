@@ -2,7 +2,7 @@
   "name": "magpie-agent-cursor-bridge",
   "version": "0.2.39",
   "type": "module",
-  "description": "Use Magpie models in free Cursor — no subscription required",
+  "description": "No Cursor subscription needed — Magpie models inside Cursor",
   "license": "MIT",
   "main": "./control/host.js",
   "magpie": {
