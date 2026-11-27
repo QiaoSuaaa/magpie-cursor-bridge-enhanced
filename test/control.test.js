@@ -5,7 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createControlServer, paths, readConnection} from '../control/server.js';
+import {createCommandLookup, createControlServer, paths, readConnection} from '../control/server.js';
 import platformModule from '../lib/platform.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -290,3 +290,49 @@ test('control settings validate and are written to the bridge root', async (t) =
   assert.deepEqual(merged.modelNames, expected.modelNames);
   assert.deepEqual(merged.modelHidden, expected.modelHidden);
 });
+
+test('createCommandLookup caches live pids, deduplicates in-flight probes, and bypasses cache when fresh', async () => {
+  let clock = 1000;
+  const live = new Set([101, 202]);
+  let calls = 0;
+  let nextResult = 'node bridge.js supervise';
+  const lookup = createCommandLookup({
+    isAlive: (pid) => live.has(pid),
+    ttlMs: 60_000,
+    now: () => clock,
+    probe: async (pid) => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return pid === 101 ? nextResult : '';
+    }
+  });
+
+  // Concurrent calls for the same live pid share one probe.
+  const [first, second] = await Promise.all([lookup(101), lookup(101)]);
+  assert.equal(first, 'node bridge.js supervise');
+  assert.equal(second, 'node bridge.js supervise');
+  assert.equal(calls, 1);
+
+  // Subsequent polls within TTL hit cache without probing again.
+  clock += 5000;
+  assert.equal(await lookup(101), 'node bridge.js supervise');
+  assert.equal(calls, 1);
+
+  // {fresh: true} forces a re-probe (used before signalling a process).
+  nextResult = 'cursor-magpie-bridge';
+  assert.equal(await lookup(101, {fresh: true}), 'cursor-magpie-bridge');
+  assert.equal(calls, 2);
+
+  // Empty probe results are not cached so transient failures recover.
+  assert.equal(await lookup(202), '');
+  assert.equal(await lookup(202), '');
+  assert.equal(calls, 4);
+
+  // Once a pid exits, its cached command is dropped immediately.
+  live.delete(101);
+  assert.equal(await lookup(101), '');
+  live.add(101);
+  assert.equal(await lookup(101), 'cursor-magpie-bridge');
+  assert.equal(calls, 5);
+});
+

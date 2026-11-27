@@ -109,17 +109,55 @@ function run(command, args, {timeout = 15000} = {}) {
   });
 }
 
-async function commandOf(pid) {
-  if (!alive(pid)) return '';
-  const probe = platform.current.processCommand(pid);
-  if (!probe) return '';
-  const result = await run(probe.command, probe.args, {timeout: 5000});
-  return result.ok ? result.stdout.trim() : '';
+const COMMAND_CACHE_TTL = 60_000;
+
+export function createCommandLookup({probe, isAlive = alive, ttlMs = COMMAND_CACHE_TTL, now = () => Date.now()} = {}) {
+  const cache = new Map();
+  const pending = new Map();
+  return async function lookup(pid, {fresh = false} = {}) {
+    if (!isAlive(pid)) {
+      cache.delete(pid);
+      return '';
+    }
+    if (!fresh) {
+      const cached = cache.get(pid);
+      if (cached && now() - cached.at < ttlMs) return cached.command;
+      if (pending.has(pid)) return pending.get(pid);
+    }
+    const task = Promise.resolve().then(() => probe(pid)).then((command) => {
+      const text = typeof command === 'string' ? command.trim() : '';
+      if (text && isAlive(pid)) {
+        if (cache.size >= 64) {
+          for (const key of cache.keys()) {
+            if (!isAlive(key) || cache.size >= 64) cache.delete(key);
+            if (cache.size < 64) break;
+          }
+        }
+        cache.set(pid, {command: text, at: now()});
+      }
+      return text;
+    }).finally(() => {
+      if (pending.get(pid) === task) pending.delete(pid);
+    });
+    if (!fresh) pending.set(pid, task);
+    return task;
+  };
 }
+
+// Caching by pid avoids spawning PowerShell twice every 5s while the console
+// stays open on Windows; stopProcess passes {fresh: true} before signalling.
+const commandOf = createCommandLookup({
+  probe: async (pid) => {
+    const probe = platform.current.processCommand(pid);
+    if (!probe) return '';
+    const result = await run(probe.command, probe.args, {timeout: 5000});
+    return result.ok ? result.stdout.trim() : '';
+  }
+});
 
 async function stopProcess(pid, marker, graceMs, {force = true} = {}) {
   if (!alive(pid)) return false;
-  const command = await commandOf(pid);
+  const command = await commandOf(pid, {fresh: true});
   if (!command.includes(marker)) return false;
   for (const signal of force ? ['SIGTERM', 'SIGKILL'] : ['SIGTERM']) {
     try { process.kill(pid, signal); } catch { return false; }
@@ -333,15 +371,17 @@ async function overview(repoRoot, port) {
   const installation = readJson(p.installation);
   const savedRuntime = readJson(p.status);
   const supervisorPid = readPid(p.supervisorPid);
-  const supervisorCommand = supervisorPid ? await commandOf(supervisorPid) : '';
   const enginePid = Number(savedRuntime?.pid) || null;
-  const engineCommand = enginePid ? await commandOf(enginePid) : '';
+  const [supervisorCommand, engineCommand, agent] = await Promise.all([
+    supervisorPid ? commandOf(supervisorPid) : '',
+    enginePid ? commandOf(enginePid) : '',
+    launchAgentState(repoRoot)
+  ]);
   const supervisorAlive = !!supervisorPid && alive(supervisorPid) && supervisorCommand.includes('bridge.js') && supervisorCommand.includes('supervise');
   const engineAlive = !!enginePid && alive(enginePid) && engineCommand.includes('cursor-magpie-bridge');
   const runtime = runtimeStatus(savedRuntime, {supervisorAlive, engineAlive});
   const integrity = readJson(path.join(repoRoot, 'integrity.json'));
   const manifest = readJson(path.join(repoRoot, 'package.json'));
-  const agent = await launchAgentState(repoRoot);
   const key = `${process.platform}-${process.arch}`;
   return {
     versions: runtimeVersions({manifest, integrity, installation, runtime, engineAlive, key}),

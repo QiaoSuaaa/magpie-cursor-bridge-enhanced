@@ -266,16 +266,23 @@ test('session cleanup removes old conversations and keeps shared blobs', {skip: 
   assert.equal(query(dbPath, 'PRAGMA foreign_key_check;').trim(), '');
 });
 
-test('trace cleanup removes call logs but keeps conversations', {skip: SKIP}, async (t) => {
+test('trace cleanup removes call logs and orphan trace blobs while keeping shared blobs', {skip: SKIP}, async (t) => {
   const {dbPath} = fakeDatabase(t);
+  const blobC = '33'.repeat(32);
+  sql(dbPath, `
+    INSERT INTO blobs VALUES (X'${blobC}', 'orphan trace payload', 1700000000000);
+    INSERT INTO cursor_run_trace_artifacts VALUES ('trace-1', 1, 'response', 'byok_server', X'${blobC}', '{}', 1700000000000);
+  `);
   const result = await cleanDatabase(dbPath, {scope: 'traces', vacuum: false});
   assert.equal(result.counts.llm_calls, 2);
   assert.equal(result.counts.llm_call_requests, 1);
   assert.equal(result.counts.cursor_run_traces, 1);
-  assert.equal(result.counts.cursor_run_trace_artifacts, 1);
+  assert.equal(result.counts.cursor_run_trace_artifacts, 2);
+  assert.equal(result.counts.blobs, 1, 'unshared trace artifact blob is reclaimed');
   assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM llm_calls;'))[0].n), 0);
   assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM cursor_run_traces;'))[0].n), 0);
   assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM conversations;'))[0].n), 2);
+  assert.equal(Number(JSON.parse(query(dbPath, 'SELECT COUNT(*) AS n FROM blobs;'))[0].n), 2, 'blobs referenced by blob_edges remain intact');
   assert.equal(query(dbPath, 'PRAGMA foreign_key_check;').trim(), '');
 });
 
@@ -315,20 +322,32 @@ test('destructive cleanup writes a recoverable backup and verifies the database'
   assert.equal(fs.readdirSync(backupDir).length, 1);
 });
 
-test('retention prunes old traces and sessions while keeping recent data', {skip: SKIP}, async (t) => {
+test('retention prunes old traces, orphan trace blobs, and sessions while keeping recent data', {skip: SKIP}, async (t) => {
   const {dbPath} = fakeDatabase(t);
   const old = Date.now() - 20 * 86400000;
-  sql(dbPath, `INSERT INTO cursor_run_traces VALUES ('trace-old', 'completed', ${old});`);
+  const blobC = '33'.repeat(32);
+  const blobD = '44'.repeat(32);
+  sql(dbPath, `
+    INSERT INTO blobs VALUES (X'${blobC}', 'orphan trace payload', ${old}), (X'${blobD}', 'shared trace payload', ${old});
+    INSERT INTO cursor_run_traces VALUES ('trace-old', 'completed', ${old});
+    INSERT INTO cursor_run_trace_artifacts VALUES
+      ('trace-old', 0, 'request', 'cursor_client', X'${blobC}', '{}', ${old}),
+      ('trace-old', 1, 'response', 'byok_server', X'${blobD}', '{}', ${old}),
+      ('trace-1', 1, 'response', 'byok_server', X'${blobD}', '{}', ${old});
+  `);
   const result = await pruneDatabase(dbPath, {tracesDays: 5, sessionsDays: 5, batchSize: 1});
   assert.equal(result.exists, true);
   assert.equal(result.calls, 1, 'only the old model call is removed');
   assert.equal(result.traces, 1, 'only the old Cursor trace is removed');
+  assert.equal(result.blobs, 1, 'only the unreferenced old trace blob is reclaimed');
   assert.equal(result.sessions, 1, 'only the old conversation is removed');
   assert.equal(result.error, null);
   assert.equal(result.check, 'ok');
   assert.deepEqual(JSON.parse(query(dbPath, 'SELECT conversation_id FROM conversations;')), [{conversation_id: 'conv-new'}]);
   assert.equal(Number(JSON.parse(query(dbPath, "SELECT COUNT(*) AS n FROM llm_calls WHERE call_id = 'call-old';"))[0].n), 0);
   assert.equal(Number(JSON.parse(query(dbPath, "SELECT COUNT(*) AS n FROM llm_calls WHERE call_id = 'call-new';"))[0].n), 1);
+  assert.equal(Number(JSON.parse(query(dbPath, `SELECT COUNT(*) AS n FROM blobs WHERE blob_id = X'${blobC}';`))[0].n), 0);
+  assert.equal(Number(JSON.parse(query(dbPath, `SELECT COUNT(*) AS n FROM blobs WHERE blob_id = X'${blobD}';`))[0].n), 1);
   assert.equal(query(dbPath, 'PRAGMA foreign_key_check;').trim(), '');
 });
 

@@ -695,12 +695,35 @@ function buildSessionsScript(days, tables, limit = 0) {
   return statements.join('\n');
 }
 
+function appendOrphanTraceBlobCleanup(statements, tables) {
+  if (!tables.has('cursor_run_trace_artifacts') || !tables.has('blobs')) return;
+  // Index blob_id before deleting from blobs so SQLite's foreign-key check on
+  // cursor_run_trace_artifacts does not scan the entire artifacts table.
+  statements.push('CREATE INDEX IF NOT EXISTS cursor_run_trace_artifacts_blob ON cursor_run_trace_artifacts(blob_id);');
+  const filters = ['SELECT blob_id FROM _trace_blobs', 'EXCEPT SELECT blob_id FROM cursor_run_trace_artifacts'];
+  if (tables.has('blob_edges')) {
+    filters.push('EXCEPT SELECT parent_blob_id FROM blob_edges', 'EXCEPT SELECT child_blob_id FROM blob_edges');
+  }
+  statements.push(
+    `CREATE TEMP TABLE _orphan_blobs AS ${filters.join(' ')};`,
+    "INSERT OR REPLACE INTO _counts SELECT 'blobs', COUNT(*) FROM _orphan_blobs;",
+    'DELETE FROM blobs WHERE blob_id IN (SELECT blob_id FROM _orphan_blobs);'
+  );
+}
+
 function buildTracesScript(tables) {
+  const collectBlobs = tables.has('cursor_run_trace_artifacts') && tables.has('blobs');
   const statements = [
     'PRAGMA foreign_keys=ON;',
     'BEGIN IMMEDIATE;',
     'CREATE TEMP TABLE _counts(t TEXT PRIMARY KEY, n INTEGER NOT NULL);'
   ];
+  if (collectBlobs) {
+    statements.push(
+      'CREATE TEMP TABLE _trace_blobs(blob_id BLOB PRIMARY KEY);',
+      'INSERT OR IGNORE INTO _trace_blobs SELECT blob_id FROM cursor_run_trace_artifacts;'
+    );
+  }
   countRows(statements, 'llm_calls', '', tables);
   countRows(statements, 'llm_call_requests', '', tables);
   countRows(statements, 'llm_call_response_chunks', '', tables);
@@ -711,7 +734,9 @@ function buildTracesScript(tables) {
   deleteRows(statements, 'llm_calls', '', tables);
   deleteRows(statements, 'cursor_run_trace_artifacts', '', tables);
   deleteRows(statements, 'cursor_run_traces', '', tables);
+  appendOrphanTraceBlobCleanup(statements, tables);
   statements.push('COMMIT;', 'SELECT t, n FROM _counts ORDER BY t;', 'DROP TABLE _counts;');
+  if (collectBlobs) statements.push('DROP TABLE _trace_blobs;', 'DROP TABLE _orphan_blobs;');
   return statements.join('\n');
 }
 
@@ -721,6 +746,7 @@ function buildTracesScript(tables) {
 // foreign keys stay valid without relying on ON DELETE CASCADE.
 function buildRetentionTracesScript(tables, cutoff, limit) {
   const cap = Number.isInteger(limit) && limit > 0 ? ` LIMIT ${limit}` : '';
+  const collectBlobs = tables.has('cursor_run_trace_artifacts') && tables.has('blobs');
   const calls = tables.has('llm_calls')
     ? `CREATE TEMP TABLE _calls AS SELECT call_id FROM llm_calls WHERE created_at_ms < ${cutoff}${cap};`
     : 'CREATE TEMP TABLE _calls(call_id TEXT);';
@@ -737,12 +763,20 @@ function buildRetentionTracesScript(tables, cutoff, limit) {
     "INSERT OR REPLACE INTO _counts SELECT 'llm_calls', COUNT(*) FROM _calls;",
     "INSERT OR REPLACE INTO _counts SELECT 'cursor_run_traces', COUNT(*) FROM _traces;"
   ];
+  if (collectBlobs) {
+    statements.push(
+      'CREATE TEMP TABLE _trace_blobs(blob_id BLOB PRIMARY KEY);',
+      'INSERT OR IGNORE INTO _trace_blobs SELECT blob_id FROM cursor_run_trace_artifacts WHERE request_id IN (SELECT request_id FROM _traces);'
+    );
+  }
   deleteRows(statements, 'llm_call_requests', 'call_id IN (SELECT call_id FROM _calls)', tables);
   deleteRows(statements, 'llm_call_response_chunks', 'call_id IN (SELECT call_id FROM _calls)', tables);
   deleteRows(statements, 'llm_calls', 'call_id IN (SELECT call_id FROM _calls)', tables);
   deleteRows(statements, 'cursor_run_trace_artifacts', 'request_id IN (SELECT request_id FROM _traces)', tables);
   deleteRows(statements, 'cursor_run_traces', 'request_id IN (SELECT request_id FROM _traces)', tables);
+  appendOrphanTraceBlobCleanup(statements, tables);
   statements.push('COMMIT;', 'SELECT t, n FROM _counts ORDER BY t;', 'DROP TABLE _counts;', 'DROP TABLE _calls;', 'DROP TABLE _traces;');
+  if (collectBlobs) statements.push('DROP TABLE _trace_blobs;', 'DROP TABLE _orphan_blobs;');
   return statements.join('\n');
 }
 
@@ -849,6 +883,7 @@ export async function pruneDatabase(dbPath, {tracesDays = 0, sessionsDays = 0, b
     at: new Date().toISOString(),
     calls: 0,
     traces: 0,
+    blobs: 0,
     sessions: 0,
     batches: 0,
     durationMs: 0,
@@ -881,6 +916,7 @@ export async function pruneDatabase(dbPath, {tracesDays = 0, sessionsDays = 0, b
         const traces = counts.cursor_run_traces || 0;
         result.calls += calls;
         result.traces += traces;
+        result.blobs += counts.blobs || 0;
         if (!calls && !traces) break;
       }
     }
